@@ -2,8 +2,10 @@
 #include <cstdio>
 void checkCore();
 void checkReview();
+void checkStore();
 int main() {
     checkCore();
     checkReview();
+    checkStore();
     std::puts("all checks passed");
 }

@@ -8,7 +8,7 @@
     in {
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
-          packages = with pkgs; [ cmake ninja pkg-config gcc14 glfw libGL stockfish curl ];
+          packages = with pkgs; [ cmake ninja pkg-config gcc14 glfw libGL stockfish curl dbus wayland wayland-scanner libffi systemdLibs ];
           # GLFW dlopens wayland/x11/GL at runtime
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (with pkgs; [ libGL wayland libxkbcommon libx11 libxcursor libxi libxrandr ]);
         };

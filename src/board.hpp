@@ -24,6 +24,8 @@ public:
     // lastMove is highlighted; badge is drawn on lastMove's destination (Cls::None = no badge).
     chess::Move draw(const chess::Board& b, float size, chess::Move lastMove, Cls badge,
                      const std::vector<Arrow>& arrows);
+    // Piece image rasterized at px x px, cached (for avatars and icons). Null texture if not loaded.
+    ImTextureRef pieceTexture(chess::Piece p, int px);
 
 private:
     struct Impl;

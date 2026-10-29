@@ -8,6 +8,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdint>
+#include <map>
 #include <memory>
 
 #ifndef GL_CLAMP_TO_EDGE
@@ -139,8 +140,22 @@ struct BoardView::Impl {
     double animStart = -1;
     int animN = 0, animFrom[2] = {}, animTo[2] = {};
 
+    std::map<int, GLuint> extra;  // piece * 4096 + px -> texture
+
     ~Impl() {
         if (texPx) glDeleteTextures(12, tex);
+        for (auto& [k, t] : extra) glDeleteTextures(1, &t);
+    }
+
+    static void upload(GLuint t, lunasvg::Bitmap& bm) {
+        bm.convertToRGBA();
+        glBindTexture(GL_TEXTURE_2D, t);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, bm.stride() / 4);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, bm.width(), bm.height(), 0, GL_RGBA, GL_UNSIGNED_BYTE, bm.data());
     }
 
     void raster(int px) {
@@ -155,14 +170,7 @@ struct BoardView::Impl {
             if (!svg[i]) continue;
             lunasvg::Bitmap bm = svg[i]->renderToBitmap(px, px);
             if (bm.isNull()) continue;
-            bm.convertToRGBA();
-            glBindTexture(GL_TEXTURE_2D, tex[i]);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, bm.stride() / 4);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, bm.width(), bm.height(), 0, GL_RGBA, GL_UNSIGNED_BYTE, bm.data());
+            upload(tex[i], bm);
         }
         glBindTexture(GL_TEXTURE_2D, (GLuint)oldTex);
         glPixelStorei(GL_UNPACK_ALIGNMENT, oldAlign);
@@ -181,6 +189,29 @@ bool BoardView::load(const std::string& dir) {
     }
     impl_->texPx = impl_->texPx ? -1 : 0;  // force re-raster into existing textures
     return ok;
+}
+
+ImTextureRef BoardView::pieceTexture(Piece p, int px) {
+    if (!impl_) impl_ = std::make_shared<Impl>();
+    int i = (int)p;
+    if (i < 0 || i >= 12 || !impl_->svg[i] || px <= 0) return ImTextureRef();
+    int key = i * 4096 + px;
+    if (auto it = impl_->extra.find(key); it != impl_->extra.end()) return ImTextureRef((ImTextureID)(intptr_t)it->second);
+    lunasvg::Bitmap bm = impl_->svg[i]->renderToBitmap(px, px);
+    if (bm.isNull()) return ImTextureRef();
+    GLint oldTex = 0, oldAlign = 0, oldRow = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &oldTex);
+    glGetIntegerv(GL_UNPACK_ALIGNMENT, &oldAlign);
+    glGetIntegerv(GL_UNPACK_ROW_LENGTH, &oldRow);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    GLuint t = 0;
+    glGenTextures(1, &t);
+    Impl::upload(t, bm);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)oldTex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, oldAlign);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, oldRow);
+    impl_->extra[key] = t;
+    return ImTextureRef((ImTextureID)(intptr_t)t);
 }
 
 Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const std::vector<Arrow>& arrows) {

@@ -18,7 +18,16 @@ FetchContent_Declare(lunasvg GIT_REPOSITORY https://github.com/sammycage/lunasvg
 set(LUNASVG_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(lunasvg)
-FetchContent_MakeAvailable(imgui chesslib subprocess)
+FetchContent_Declare(stb GIT_REPOSITORY https://github.com/nothings/stb GIT_TAG 003501f6d7a8668ce8b6d875e34dd97ad0d5d5b5 SOURCE_SUBDIR none)
+FetchContent_Declare(sqlite URL https://www.sqlite.org/2026/sqlite-amalgamation-3540100.zip)
+FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz)
+FetchContent_Declare(nfd GIT_REPOSITORY https://github.com/btzy/nativefiledialog-extended GIT_TAG v1.4.1 GIT_SHALLOW ON)
+set(NFD_PORTAL ON CACHE BOOL "" FORCE)  # xdg portal on Linux instead of GTK
+FetchContent_MakeAvailable(imgui chesslib subprocess stb sqlite json nfd)
+
+add_library(sqlite3 STATIC ${sqlite_SOURCE_DIR}/sqlite3.c)
+target_include_directories(sqlite3 PUBLIC ${sqlite_SOURCE_DIR})
+target_compile_definitions(sqlite3 PRIVATE SQLITE_OMIT_LOAD_EXTENSION SQLITE_DQS=0)
 
 # ponytail: system glfw on Linux (nix), fetched elsewhere
 find_package(glfw3 3.4 QUIET)
@@ -41,14 +50,15 @@ target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/
 target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
 
 # core = everything but the window; shared by the app and the self-checks
-add_library(opcan_core STATIC src/engine.cpp src/review.cpp src/game.cpp src/openings.cpp)
+add_library(opcan_core STATIC src/engine.cpp src/review.cpp src/game.cpp src/openings.cpp src/store.cpp src/sync.cpp)
 target_include_directories(opcan_core PUBLIC src ${chesslib_SOURCE_DIR}/include ${subprocess_SOURCE_DIR})
-target_link_libraries(opcan_core PUBLIC Threads::Threads)
+target_link_libraries(opcan_core PUBLIC Threads::Threads sqlite3 nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
 
-add_executable(opcan src/main.cpp src/app.cpp src/board.cpp)
-target_link_libraries(opcan PRIVATE opcan_core imgui lunasvg::lunasvg)
+add_executable(opcan src/main.cpp src/app.cpp src/library.cpp src/board.cpp)
+target_link_libraries(opcan PRIVATE opcan_core imgui lunasvg::lunasvg nfd::nfd)
+target_include_directories(opcan PRIVATE ${stb_SOURCE_DIR})
 
-add_executable(opcan_check tests/check.cpp tests/check_core.cpp tests/check_review.cpp)
+add_executable(opcan_check tests/check.cpp tests/check_core.cpp tests/check_review.cpp tests/check_store.cpp)
 target_link_libraries(opcan_check PRIVATE opcan_core)
 target_compile_definitions(opcan_check PRIVATE OPCAN_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 

@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <lunasvg.h>
+#include <nfd.h>
 
 static App* g_app = nullptr;
 
@@ -58,6 +59,7 @@ static void applyStyle() {
 
 int main() {
     if (!glfwInit()) return 1;
+    NFD_Init();
 #ifdef __APPLE__
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
@@ -107,27 +109,27 @@ int main() {
     ImGui_ImplGlfw_InitForOpenGL(win, true);
     ImGui_ImplOpenGL3_Init(glsl);
 
-    App app(f);
-    g_app = &app;
+    auto app = std::make_unique<App>(f);
+    g_app = app.get();
     glfwSetDropCallback(win, [](GLFWwindow*, int n, const char** paths) {
         std::vector<std::string> v(paths, paths + n);
         g_app->dropFiles(v);
     });
 
     // dev hooks: OPCAN_OPEN=<pgn> loads a file, OPCAN_SHOT=<png> saves a screenshot after OPCAN_SHOT_AFTER seconds and quits
-    if (const char* o = std::getenv("OPCAN_OPEN")) app.dropFiles({o});
+    if (const char* o = std::getenv("OPCAN_OPEN")) app->dropFiles({o});
     const char* shot = std::getenv("OPCAN_SHOT");
     double shotAt = std::getenv("OPCAN_SHOT_AFTER") ? std::atof(std::getenv("OPCAN_SHOT_AFTER")) : 3;
 
     while (!glfwWindowShouldClose(win)) {
         // ponytail: idle-friendly loop; wakes at 30 Hz so engine output still streams in
-        if (app.animating()) glfwPollEvents();
+        if (app->animating()) glfwPollEvents();
         else glfwWaitEventsTimeout(1.0 / 30);
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
-        app.frame();
-        if (app.wantsQuit()) glfwSetWindowShouldClose(win, 1);
+        app->frame();
+        if (app->wantsQuit()) glfwSetWindowShouldClose(win, 1);
         ImGui::Render();
         glfwGetFramebufferSize(win, &fw, &fh);
         glViewport(0, 0, fw, fh);
@@ -150,6 +152,8 @@ int main() {
         glfwSwapBuffers(win);
     }
     g_app = nullptr;
+    app.reset();  // GL textures go before the context
+    NFD_Quit();
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();

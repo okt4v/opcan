@@ -118,7 +118,8 @@ std::string Game::pgn() const {
     for (size_t i = 0; i < mv.size(); i++) {
         char ch = mv[i];
         depth += ch == '{' ? 1 : ch == '}' ? -1 : 0;
-        if (ch == ' ' && !depth && col >= 72) ch = '\n';
+        // never right before a comment: chess-library's parser drops a comment that starts a line
+        if (ch == ' ' && !depth && col >= 72 && (i + 1 == mv.size() || mv[i + 1] != '{')) ch = '\n';
         out += ch;
         col = ch == '\n' ? 0 : col + 1;
     }
