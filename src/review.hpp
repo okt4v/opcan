@@ -23,6 +23,8 @@ double winPercent(Score s);  // 0..100 for the side to move (lichess formula)
 double moveAccuracy(double wpBefore, double wpAfter);  // lichess per-move accuracy, mover POV
 
 enum Phase { Opening, Middlegame, Endgame };
+// Game phase after the move with 0-based index moveIndex (bookMove: still in book). Never earlier than prev.
+Phase phaseAfter(const chess::Board& after, int moveIndex, bool bookMove, Phase prev);
 
 struct MoveReview {
     int node = 0;               // game node of the move

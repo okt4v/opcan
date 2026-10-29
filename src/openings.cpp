@@ -39,3 +39,15 @@ const Opening* Openings::at(const chess::Board& b) const {
 }
 
 bool Openings::isBook(const chess::Board& b) const { return book_.contains(b.hash()); }
+
+const Opening* Openings::of(const Game& g) const {
+    if (g.nodes.empty()) return nullptr;
+    chess::Board b(g.nodes[0].fen);
+    const Opening* r = at(b);
+    for (int n = 0; !g.nodes[n].children.empty();) {
+        n = g.nodes[n].children[0];
+        b.makeMove(g.nodes[n].move);
+        if (auto o = at(b)) r = o;
+    }
+    return r;
+}

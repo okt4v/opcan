@@ -111,7 +111,7 @@ App::Impl::Impl(Fonts fo) : f(fo) {
     if (!book.load(exeDir() + "/assets/openings/openings.tsv")) notify("Openings database missing");
     resolveEngine();
     if (storeErr.empty()) profiles = store.profiles();
-    // dev hooks: OPCAN_PROFILE=<id> skips the picker, OPCAN_PAGE=library|analyze|edit picks the page
+    // dev hooks: OPCAN_PROFILE=<id> skips the picker, OPCAN_PAGE=library|analyze|stats|edit picks the page
     const char* page = std::getenv("OPCAN_PAGE");
     if (const char* pid = std::getenv("OPCAN_PROFILE"))
         if (auto p = store.profile(std::atoll(pid))) {
@@ -119,6 +119,7 @@ App::Impl::Impl(Fonts fo) : f(fo) {
             else selectProfile(*p);
         }
     if (page && std::string(page) == "analyze") view = View::Analyze;
+    if (page && std::string(page) == "stats" && prof && !prof->guest) view = View::Stats;
 }
 
 void App::Impl::notify(std::string s) {
@@ -208,7 +209,7 @@ void App::Impl::openFileDialog() {
 }
 
 void App::Impl::open(Game g, int64_t id) {
-    if (view == View::Library || view == View::Analyze) backView = view;
+    if (view == View::Library || view == View::Analyze || view == View::Stats) backView = view;
     game = std::move(g);
     gameId = id;
     meta = id ? store.game(id) : std::nullopt;
@@ -348,6 +349,7 @@ void App::Impl::frame() {
         reviewer.reset();
     }
     if (prof) backgroundWork();
+    statsStale |= libDirty;  // any library change (sync, review saved, edits) invalidates stats
     keys();
     updateEval();
 
@@ -373,6 +375,7 @@ void App::Impl::frame() {
         ImGui::PopStyleVar();
         if (gameView) drawMain();
         else if (view == View::Analyze) drawHome();
+        else if (view == View::Stats) drawStats();
         else drawLibrary();
         ImGui::EndChild();
         drawLibraryModals();
@@ -444,8 +447,9 @@ void App::Impl::drawSidebar(float w) {
     for (auto& it : items) {
         ImGui::PushID(it.act);
         p = ImGui::GetCursorScreenPos();
-        bool disabled = it.act == 2;
-        bool active = (it.act == 0 && activeView == View::Library) || (it.act == 1 && activeView == View::Analyze);
+        bool disabled = it.act == 2 && prof && prof->guest;
+        bool active = (it.act == 0 && activeView == View::Library) || (it.act == 1 && activeView == View::Analyze) ||
+                      (it.act == 2 && activeView == View::Stats);
         bool clicked = ImGui::InvisibleButton("nav", {iw, 36}) && !disabled;
         bool hov = ImGui::IsItemHovered();
         if (active) {
@@ -456,22 +460,12 @@ void App::Impl::drawSidebar(float w) {
         }
         ImU32 col = disabled ? theme::rgb(0x8a919c, 110) : active || hov ? theme::text : theme::dim;
         drawIcon(dl, {slim ? p.x + iw / 2 : p.x + 22, p.y + 18}, it.icon, active ? theme::accent : col);
-        if (!slim) {
-            dl->AddText({p.x + 42, p.y + 18 - ImGui::GetFontSize() / 2}, col, it.label);
-            if (disabled) {
-                ImGui::PushFont(f.ui, 11);
-                ImVec2 ts = ImGui::CalcTextSize("soon");
-                ImVec2 a{p.x + iw - ts.x - 18, p.y + 18 - ts.y / 2 - 3};
-                dl->AddRectFilled(a, {a.x + ts.x + 12, a.y + ts.y + 6}, theme::panel2, 4);
-                dl->AddText({a.x + 6, a.y + 3}, theme::dim, "soon");
-                ImGui::PopFont();
-            }
-        }
-        if (hov && (slim || disabled)) ImGui::SetTooltip("%s", disabled ? "Stats — coming soon" : it.label);
+        if (!slim) dl->AddText({p.x + 42, p.y + 18 - ImGui::GetFontSize() / 2}, col, it.label);
+        if (hov && (slim || disabled)) ImGui::SetTooltip("%s", disabled ? "The Guest profile has no stats" : it.label);
         if (clicked) {
             if (it.act == 3) showSettings = true;
             else {
-                view = it.act == 0 ? View::Library : View::Analyze;
+                view = it.act == 0 ? View::Library : it.act == 1 ? View::Analyze : View::Stats;
                 if (it.act == 0) libDirty = true;
             }
         }
@@ -686,7 +680,7 @@ void App::Impl::drawEvalBar(float w, float h) {
 void App::Impl::drawPanel() {
     auto* dl = ImGui::GetWindowDrawList();
     ImVec2 p = ImGui::GetCursorScreenPos();
-    const char* back = backView == View::Analyze ? "Analyze" : "Library";
+    const char* back = backView == View::Analyze ? "Analyze" : backView == View::Stats ? "Stats" : "Library";
     ImGui::PushFont(f.ui, 14);
     float bw = ImGui::CalcTextSize(back).x + 30;
     if (ImGui::InvisibleButton("back", {bw, 28})) view = backView, libDirty = true;

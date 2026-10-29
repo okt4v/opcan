@@ -1,4 +1,5 @@
 #pragma once
+#include "openings.hpp"
 #include "store.hpp"
 #include <atomic>
 #include <memory>
@@ -32,7 +33,8 @@ public:
     ~Syncer();
     // older=false: new games since each account's `newest` (first sync: last kFirstSyncDays).
     // older=true: one more kOlderStepDays window before each account's `oldest`.
-    void start(Store& store, const Profile& p, bool older);
+    // book (optional, must outlive the sync): names openings from our openings database.
+    void start(Store& store, const Profile& p, bool older, const Openings* book = nullptr);
     void cancel();
     bool running() const;
     int added() const;          // new games inserted so far

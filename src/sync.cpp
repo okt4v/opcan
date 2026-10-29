@@ -314,11 +314,11 @@ struct Syncer::Impl {
 
 Syncer::~Syncer() { cancel(); }
 
-void Syncer::start(Store& store, const Profile& p, bool older) {
+void Syncer::start(Store& store, const Profile& p, bool older, const Openings* book) {
     cancel();
     impl_ = std::make_shared<Impl>();
     impl_->running = true;
-    impl_->th = std::thread([d = impl_, &store, p, older] {
+    impl_->th = std::thread([d = impl_, &store, p, older, book] {
         int64_t now = std::time(nullptr);
         for (auto& acc : p.accounts) {
             if (d->cancel) break;
@@ -336,6 +336,10 @@ void Syncer::start(Store& store, const Profile& p, bool older) {
                                [&](const std::string& st, std::vector<GameRow>& v) {
                                    d->set(&d->status, st);
                                    for (auto& g : v) {
+                                       if (book) {
+                                           auto gs = parsePgn(g.pgn);
+                                           if (auto* o = gs.empty() ? nullptr : book->of(gs[0])) g.eco = o->eco, g.opening = o->name;
+                                       }
                                        bool ins = false;
                                        store.upsertGame(g, &ins);
                                        if (ins) ++d->added;

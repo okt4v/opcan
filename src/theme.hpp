@@ -13,6 +13,10 @@ inline const ImU32 sqLight = rgb(0xdfe2dc), sqDark = rgb(0x7e958e);
 inline const ImU32 lastMove = rgb(0xe8d27a, 110), selected = rgb(0x5ab4a6, 130);
 inline const ImU32 arrowBest = rgb(0x6fbf73, 200), arrowThreat = rgb(0xe0605a, 170), arrowEngine = rgb(0x5aa0e0, 180);
 inline const ImU32 evalWhite = rgb(0xf0f0ee), evalBlack = rgb(0x3a3e46);
+inline const ImU32 win = rgb(0x7fb85a), draw = rgb(0x8a919c), loss = rgb(0xe0605a);
+// charts: categorical series (validated dark-surface order), gridlines, the user's sides
+inline const ImU32 series[5] = {rgb(0x3987e5), rgb(0xd95926), rgb(0x199e70), rgb(0xc98500), rgb(0xd55181)};
+inline const ImU32 grid = rgb(0x2a2e37), sideWhite = rgb(0xd8dbe0), sideBlack = rgb(0x5d6573);
 
 inline ImU32 cls(Cls c) {
     switch (c) {

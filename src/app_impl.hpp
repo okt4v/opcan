@@ -6,10 +6,12 @@
 #include "game.hpp"
 #include "openings.hpp"
 #include "review.hpp"
+#include "stats.hpp"
 #include "store.hpp"
 #include "sync.hpp"
 #include "theme.hpp"
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -66,8 +68,12 @@ bool accentButton(const char* label, ImVec2 size);
 void spinner(ImDrawList* dl, ImVec2 center, float r, ImU32 col);
 void openUrl(const std::string& url);  // system browser, never blocks
 std::string fmtDate(int64_t t, bool relative);
+inline ImU32 alpha(ImU32 c, int a) { return (c & 0x00ffffff) | ((ImU32)a << 24); }
+void textCentered(ImDrawList* dl, ImVec2 c, ImU32 col, const char* s);
+std::string ellipsize(const std::string& s, float maxW);
+int segmented(const char* id, const char* const* labels, int n, int sel, float w, bool enabled = true);  // returns selection
 
-enum class View { Library, Analyze, Summary, Review };
+enum class View { Library, Analyze, Stats, Summary, Review };
 enum class Icon { Library, Analyze, Stats, Settings, Back };
 void drawIcon(ImDrawList* dl, ImVec2 c, Icon i, ImU32 col);
 
@@ -141,6 +147,15 @@ struct App::Impl {
     bool syncWasRunning = false;
     int64_t editMetaId = 0, deleteId = 0;
     char editTags[256] = "", editNotes[2048] = "";
+
+    // stats page
+    int statsRange = 3, statsTc = 0, statsColor = 0, statsAcc = 0;  // UI selections (0 = any/all)
+    std::optional<Stats> stats;
+    Async<Stats> statsJob;
+    std::shared_ptr<std::atomic<bool>> statsCancel;
+    bool statsStale = true;
+    double statsAt = -100;
+    int statsPattern = -1;  // expanded mistake pattern
 
     // background analysis
     std::unique_ptr<Reviewer> bg;
@@ -219,8 +234,14 @@ struct App::Impl {
     void drawRowMenu(GameRow& g);
     void drawLibraryModals();
     void saveMeta(const GameRow& g);
-    void openStored(int64_t id);
+    void openStored(int64_t id, int ply = -1);  // ply >= 0: open the review at that mainline ply
     int64_t importGame(const Game& g);
     void drawGameInfo(float h);
     void backgroundWork();
+
+    // stats_ui.cpp
+    StatsFilter statsFilter() const;
+    void startStats();
+    void drawStats();
+    void drawStatsCards(const Stats& s, float W);
 };

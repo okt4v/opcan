@@ -1,4 +1,5 @@
 #pragma once
+#include "game.hpp"
 #include <chess.hpp>
 #include <cstdint>
 #include <string>
@@ -17,6 +18,8 @@ public:
     const Opening* at(const chess::Board& b) const;
     // Position occurs somewhere along any opening line ("book").
     bool isBook(const chess::Board& b) const;
+    // Deepest named opening along the game's mainline, nullptr if none.
+    const Opening* of(const Game& g) const;
     size_t size() const { return list_.size(); }
 
 private:

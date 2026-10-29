@@ -55,6 +55,7 @@ struct GameFilter {
     bool favoritesOnly = false;
     bool includeBots = true;
     bool countedOnly = false;
+    int64_t since = 0, until = 0;  // played_at in [since, until), 0 = open
     int limit = 200, offset = 0;  // newest first
 };
 
@@ -64,6 +65,13 @@ struct ReviewSummary {
     double phaseAccuracy[2][3] = {};
     std::vector<uint8_t> cls;       // Cls per mainline move
     std::vector<float> wpWhite;     // white win% per mainline position
+};
+
+// A counted game with its pgn and, if reviewed, the stored review.
+struct StatsGame {
+    GameRow row;
+    std::vector<PosEval> evals;  // empty if not reviewed
+    std::optional<ReviewSummary> summary;
 };
 
 // SQLite-backed library. All methods are thread-safe (one internal mutex).
@@ -91,11 +99,16 @@ public:
     std::optional<GameRow> game(int64_t id);
     std::vector<GameRow> games(int64_t profileId, const GameFilter& f);  // pgn left empty for speed
     int countGames(int64_t profileId, const GameFilter& f);
+    // Games that count toward stats (countsInStats, not vs bots) matching f, oldest first, no limit,
+    // with pgn and review. JSON is parsed outside the lock.
+    std::vector<StatsGame> statsGames(int64_t profileId, GameFilter f);
+    void setOpening(int64_t gameId, const std::string& eco, const std::string& name);
     void updateGameMeta(const GameRow& g);  // favorite, tags, notes, userColor, countsInStats, vsBot
     void deleteGame(int64_t id);
     std::vector<std::string> tags(int64_t profileId);
     std::vector<int64_t> unreviewed(int64_t profileId, int limit);  // newest first
 
+    // Also renames the game's opening to r.openingEco/openingName (our openings database) when known.
     void saveReview(int64_t gameId, int depth, const std::vector<PosEval>& evals, const ReviewResult& r);
     std::optional<std::vector<PosEval>> reviewEvals(int64_t gameId);
     std::optional<ReviewSummary> reviewSummary(int64_t gameId);

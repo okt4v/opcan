@@ -87,6 +87,36 @@ std::string likeEscape(const std::string& s) {
 
 json scoreJ(const Score& s) { return {s.cp, s.mate, s.mated ? 1 : 0}; }
 
+std::optional<std::vector<PosEval>> parseEvals(const std::string& text) {
+    auto j = json::parse(text, nullptr, false);
+    if (!j.is_array()) return std::nullopt;
+    std::vector<PosEval> r;
+    r.reserve(j.size());
+    for (auto& e : j) {
+        PosEval p;
+        p.best = {e[0].get<int>(), e[1].get<int>(), e[2].get<int>() != 0};
+        p.bestUci = e[3].get<std::string>();
+        p.pv = e[4].get<std::vector<std::string>>();
+        p.hasSecond = e[5].get<int>() != 0;
+        p.second = {e[6].get<int>(), e[7].get<int>(), e[8].get<int>() != 0};
+        r.push_back(std::move(p));
+    }
+    return r;
+}
+
+std::optional<ReviewSummary> parseSummary(const std::string& text) {
+    auto j = json::parse(text, nullptr, false);
+    if (!j.is_object()) return std::nullopt;
+    ReviewSummary s;
+    for (int c = 0; c < 2; ++c) {
+        for (int k = 0; k < (int)Cls::Count && k < (int)j["counts"][c].size(); ++k) s.counts[c][k] = j["counts"][c][k];
+        for (int k = 0; k < 3; ++k) s.phaseAccuracy[c][k] = j["phase"][c][k];
+    }
+    for (auto& v : j["cls"]) s.cls.push_back((uint8_t)v.get<int>());
+    for (auto& v : j["wp"]) s.wpWhite.push_back(v.get<float>());
+    return s;
+}
+
 }  // namespace
 
 struct Store::Impl {
@@ -140,6 +170,8 @@ struct Store::Impl {
         if (f.favoritesOnly) sql += " AND favorite=1";
         if (!f.includeBots) sql += " AND vs_bot=0";
         if (f.countedOnly) sql += " AND counts=1";
+        if (f.since) sql += " AND played_at>=?", argI(f.since);
+        if (f.until) sql += " AND played_at<?", argI(f.until);
     }
     static void bindArgs(Stmt& q, const std::vector<std::pair<bool, std::string>>& args) {
         for (auto& [isInt, v] : args) isInt ? (void)q.b((int64_t)std::stoll(v)) : (void)q.b(v);
@@ -325,6 +357,42 @@ int Store::countGames(int64_t profileId, const GameFilter& f) {
     return q.row() ? (int)q.i(0) : 0;
 }
 
+std::vector<StatsGame> Store::statsGames(int64_t profileId, GameFilter f) {
+    f.countedOnly = true, f.includeBots = false;
+    std::vector<StatsGame> r;
+    std::vector<std::pair<std::string, std::string>> raw;  // evals, summary JSON
+    {
+        std::lock_guard l(d->m);
+        std::string where;
+        std::vector<std::pair<bool, std::string>> args;
+        Impl::filterSql(profileId, f, where, args);
+        Stmt q(d->db, std::string("SELECT ") + kGameCols + ",pgn,reviews.evals,reviews.summary FROM games "
+                      "LEFT JOIN reviews ON reviews.game_id=games.id" + where + " ORDER BY played_at, id");
+        Impl::bindArgs(q, args);
+        while (q.row()) {
+            StatsGame g;
+            g.row = readGame(q);
+            g.row.pgn = q.t(25);
+            r.push_back(std::move(g));
+            raw.push_back({q.t(26), q.t(27)});
+        }
+        d->noteErr();
+    }
+    for (size_t i = 0; i < r.size(); i++) {
+        if (raw[i].first.empty()) continue;
+        if (auto e = parseEvals(raw[i].first)) r[i].evals = std::move(*e);
+        r[i].summary = parseSummary(raw[i].second);
+    }
+    return r;
+}
+
+void Store::setOpening(int64_t gameId, const std::string& eco, const std::string& name) {
+    std::lock_guard l(d->m);
+    Stmt q(d->db, "UPDATE games SET eco=?,opening=? WHERE id=?");
+    q.bind(eco, name, gameId).run();
+    d->noteErr();
+}
+
 void Store::updateGameMeta(const GameRow& g) {
     std::lock_guard l(d->m);
     Stmt q(d->db, "UPDATE games SET favorite=?,tags=?,notes=?,user_color=?,counts=?,vs_bot=? WHERE id=?");
@@ -400,45 +468,36 @@ void Store::saveReview(int64_t gameId, int depth, const std::vector<PosEval>& ev
     q.bind(gameId, depth, ev.dump(), sm.dump()).run();
     Stmt u(d->db, "UPDATE games SET review_depth=?,acc_white=?,acc_black=?,est_white=?,est_black=? WHERE id=?");
     u.bind(depth, r.accuracy[0], r.accuracy[1], r.estRating[0], r.estRating[1], gameId).run();
+    if (!r.openingName.empty()) {
+        Stmt o(d->db, "UPDATE games SET eco=?,opening=? WHERE id=?");
+        o.bind(r.openingEco, r.openingName, gameId).run();
+    }
     d->noteErr();
     d->exec("COMMIT");
 }
 
 std::optional<std::vector<PosEval>> Store::reviewEvals(int64_t gameId) {
-    std::lock_guard l(d->m);
-    Stmt q(d->db, "SELECT evals FROM reviews WHERE game_id=?");
-    q.bind(gameId);
-    if (!q.row()) return std::nullopt;
-    auto j = json::parse(q.t(0), nullptr, false);
-    if (!j.is_array()) return std::nullopt;
-    std::vector<PosEval> r;
-    for (auto& e : j) {
-        PosEval p;
-        p.best = {e[0].get<int>(), e[1].get<int>(), e[2].get<int>() != 0};
-        p.bestUci = e[3].get<std::string>();
-        p.pv = e[4].get<std::vector<std::string>>();
-        p.hasSecond = e[5].get<int>() != 0;
-        p.second = {e[6].get<int>(), e[7].get<int>(), e[8].get<int>() != 0};
-        r.push_back(std::move(p));
+    std::string text;
+    {
+        std::lock_guard l(d->m);
+        Stmt q(d->db, "SELECT evals FROM reviews WHERE game_id=?");
+        q.bind(gameId);
+        if (!q.row()) return std::nullopt;
+        text = q.t(0);
     }
-    return r;
+    return parseEvals(text);
 }
 
 std::optional<ReviewSummary> Store::reviewSummary(int64_t gameId) {
-    std::lock_guard l(d->m);
-    Stmt q(d->db, "SELECT summary FROM reviews WHERE game_id=?");
-    q.bind(gameId);
-    if (!q.row()) return std::nullopt;
-    auto j = json::parse(q.t(0), nullptr, false);
-    if (!j.is_object()) return std::nullopt;
-    ReviewSummary s;
-    for (int c = 0; c < 2; ++c) {
-        for (int k = 0; k < (int)Cls::Count && k < (int)j["counts"][c].size(); ++k) s.counts[c][k] = j["counts"][c][k];
-        for (int k = 0; k < 3; ++k) s.phaseAccuracy[c][k] = j["phase"][c][k];
+    std::string text;
+    {
+        std::lock_guard l(d->m);
+        Stmt q(d->db, "SELECT summary FROM reviews WHERE game_id=?");
+        q.bind(gameId);
+        if (!q.row()) return std::nullopt;
+        text = q.t(0);
     }
-    for (auto& v : j["cls"]) s.cls.push_back((uint8_t)v.get<int>());
-    for (auto& v : j["wp"]) s.wpWhite.push_back(v.get<float>());
-    return s;
+    return parseSummary(text);
 }
 
 std::string Store::setting(const std::string& key, const std::string& def) {

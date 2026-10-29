@@ -6,6 +6,7 @@
 #define STBI_ONLY_PNG
 #define STBI_ONLY_JPEG
 #include <stb_image.h>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <ctime>
@@ -25,9 +26,7 @@ namespace {
 const ImU32 kPreset[12] = {theme::rgb(0x4f9e93), theme::rgb(0x4b84c4), theme::rgb(0x7a6fc0), theme::rgb(0xa8679a),
                            theme::rgb(0xc4645f), theme::rgb(0xcc8650), theme::rgb(0xbfa04e), theme::rgb(0x7fa055),
                            theme::rgb(0x4d8f6c), theme::rgb(0x4a93ad), theme::rgb(0x6b7891), theme::rgb(0x8f7360)};
-const ImU32 kWin = theme::rgb(0x7fb85a), kLoss = theme::rgb(0xe0605a), kDraw = theme::rgb(0x8a919c);
-
-ImU32 alpha(ImU32 c, int a) { return (c & 0x00ffffff) | ((ImU32)a << 24); }
+const ImU32 kWin = theme::win, kLoss = theme::loss, kDraw = theme::draw;
 
 std::string trim(std::string s) {
     s.erase(0, s.find_first_not_of(" \t\r\n"));
@@ -54,6 +53,8 @@ std::string joinTags(const std::vector<std::string>& v) {
     return s;
 }
 
+}  // namespace
+
 std::string ellipsize(const std::string& s, float maxW) {
     if (ImGui::CalcTextSize(s.c_str()).x <= maxW) return s;
     std::string t = s;
@@ -69,6 +70,8 @@ void textCentered(ImDrawList* dl, ImVec2 c, ImU32 col, const char* s) {
     ImVec2 ts = ImGui::CalcTextSize(s);
     dl->AddText({std::floor(c.x - ts.x / 2), std::floor(c.y - ts.y / 2)}, col, s);
 }
+
+namespace {
 
 void drawStar(ImDrawList* dl, ImVec2 c, float r, ImU32 col, bool filled) {
     ImVec2 p[10];
@@ -102,8 +105,9 @@ void drawLock(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {
     dl->PathStroke(col, r * 0.2f);
 }
 
-// Segmented control; returns the selected index.
-int segmented(const char* id, const char* const* labels, int n, int sel, float w, bool enabled = true) {
+}  // namespace
+
+int segmented(const char* id, const char* const* labels, int n, int sel, float w, bool enabled) {
     auto* dl = ImGui::GetWindowDrawList();
     ImVec2 p = ImGui::GetCursorScreenPos();
     float h = 30, sw = w / n;
@@ -126,6 +130,8 @@ int segmented(const char* id, const char* const* labels, int n, int sel, float w
     ImGui::Dummy({w, 0});
     return sel;
 }
+
+namespace {
 
 // Small pill toggle button.
 bool toggle(const char* label, bool on, bool star = false) {
@@ -253,6 +259,9 @@ void drawIcon(ImDrawList* dl, ImVec2 c, Icon i, ImU32 col) {
 }
 
 App::Impl::~Impl() {
+    // the stats thread uses the store and the book: stop it before they go away
+    if (statsCancel) *statsCancel = true;
+    for (int i = 0; i < 400 && statsJob.busy(); i++) std::this_thread::sleep_for(std::chrono::milliseconds(5));
     for (auto& [k, t] : photos)
         if (t) {
             GLuint id = (GLuint)t;
@@ -302,18 +311,37 @@ ImTextureID App::Impl::photo(const std::string& path) {
     return out = (ImTextureID)(intptr_t)t;
 }
 
+// "piece:<pnbrqk><w|b>:<color index>"; legacy "preset:<n>" and "preset:guest" still read.
+const char kPieceChars[] = "pnbrqk";
+std::string avatarKey(int piece, bool black, int color) {
+    return std::string("piece:") + kPieceChars[piece] + (black ? 'b' : 'w') + ":" + std::to_string(color);
+}
+
+std::pair<Piece, ImU32> parseAvatar(const std::string& av) {
+    if (av == "preset:guest") return {Piece::WHITEPAWN, theme::rgb(0x5b616c)};
+    if (av.rfind("preset:", 0) == 0) {
+        int n = std::clamp(std::atoi(av.c_str() + 7), 0, 23);
+        return {n < 12 ? Piece::WHITEKNIGHT : Piece::WHITEKING, kPreset[n % 12]};
+    }
+    if (av.size() >= 10 && av.rfind("piece:", 0) == 0) {
+        const char* k = std::strchr(kPieceChars, av[6]);
+        int idx = k && *k ? int(k - kPieceChars) : 1;
+        return {Piece(PieceType(PieceType::underlying(idx)), av[7] == 'b' ? Color::BLACK : Color::WHITE),
+                kPreset[std::clamp(std::atoi(av.c_str() + 9), 0, 11)]};
+    }
+    return {Piece::WHITEKNIGHT, kPreset[0]};
+}
+
 void App::Impl::drawAvatar(ImDrawList* dl, ImVec2 a, float s, const std::string& av, float r) {
     ImVec2 b{a.x + s, a.y + s};
-    if (av.rfind("preset:", 0) != 0) {
+    if (av.rfind("preset:", 0) != 0 && av.rfind("piece:", 0) != 0) {
         if (ImTextureID t = photo(av)) {
             dl->AddRectFilled(a, b, theme::panel2, r);
             return dl->AddImageRounded(ImTextureRef(t), a, b, {0, 0}, {1, 1}, IM_COL32_WHITE, r);
         }
     }
-    bool guest = av == "preset:guest";
-    int n = av.rfind("preset:", 0) == 0 && !guest ? std::clamp(std::atoi(av.c_str() + 7), 0, 23) : 0;
-    dl->AddRectFilled(a, b, guest ? theme::rgb(0x5b616c) : kPreset[n % 12], r);
-    Piece pc = guest ? Piece::WHITEPAWN : n < 12 ? Piece::WHITEKNIGHT : Piece::WHITEKING;
+    auto [pc, bg] = parseAvatar(av);
+    dl->AddRectFilled(a, b, bg, r);
     float q = s * 0.7f, need = q * ImGui::GetStyle().FontScaleDpi;
     int px = need <= 32 ? 32 : need <= 64 ? 64 : need <= 128 ? 128 : 256;
     ImVec2 c{a.x + s / 2, a.y + s / 2 + s * 0.02f};
@@ -339,6 +367,10 @@ void App::Impl::selectProfile(const Profile& p) {
     filter = GameFilter{};
     search[0] = 0;
     showBots = false;
+    stats.reset();
+    statsJob.reset();
+    statsStale = true;
+    statsAcc = 0, statsPattern = -1;
     bgFailed.clear();
     unreviewedAt = -100;
     syncer = std::make_unique<Syncer>();
@@ -526,7 +558,7 @@ void App::Impl::openEditor(const Profile* p) {
     ed = ProfileEditor{};
     ed.open = true;
     if (p) ed.p = *p;
-    else ed.p.avatar = "preset:" + std::to_string((profiles.size() * 7) % 24);
+    else ed.p.avatar = avatarKey(1, false, int(profiles.size() * 5) % 12);
     std::snprintf(ed.name, sizeof ed.name, "%s", ed.p.name.c_str());
     for (auto& a : ed.p.accounts) {
         AccRow r;
@@ -581,20 +613,78 @@ void App::Impl::drawEditor() {
 
     // picture
     section("Picture");
-    float ts = std::floor((iw - 11 * 8) / 12);
-    for (int i = 0; i < 24; i++) {
-        if (i % 12) ImGui::SameLine(0, 8);
-        std::string key = "preset:" + std::to_string(i);
-        ImGui::PushID(i);
-        p = ImGui::GetCursorScreenPos();
-        if (ImGui::InvisibleButton("pre", {ts, ts})) ed.p.avatar = key;
-        bool hov = ImGui::IsItemHovered();
-        drawAvatar(dl, p, ts, key, 8);
-        if (ed.p.avatar == key) dl->AddRect({p.x - 3, p.y - 3}, {p.x + ts + 3, p.y + ts + 3}, theme::accent, 10, 2);
-        else if (hov) dl->AddRect({p.x - 3, p.y - 3}, {p.x + ts + 3, p.y + ts + 3}, theme::dim, 10, 1.5f);
-        ImGui::PopID();
+    {
+        // piece, piece color and background are picked separately; a photo replaces all three
+        bool isPiece = ed.p.avatar.rfind("piece:", 0) == 0 || ed.p.avatar.rfind("preset:", 0) == 0;
+        auto [cp, cbg] = parseAvatar(isPiece ? ed.p.avatar : "");
+        int curPiece = (int)cp.type(), curColor = 0;
+        bool curBlack = cp.color() == Color::BLACK;
+        for (int i = 0; i < 12; i++)
+            if (kPreset[i] == cbg) curColor = i;
+        auto set = [&](int pc, bool blk, int col) { ed.p.avatar = avatarKey(pc, blk, col); };
+        auto ring = [&](ImVec2 q, float sz, bool on, bool hov, float rr) {
+            if (on) dl->AddRect({q.x - 3, q.y - 3}, {q.x + sz + 3, q.y + sz + 3}, theme::accent, rr + 3, 2);
+            else if (hov) dl->AddRect({q.x - 3, q.y - 3}, {q.x + sz + 3, q.y + sz + 3}, theme::dim, rr + 3, 1.5f);
+        };
+        float ts = 52, cs = 30;
+        auto label = [&](const char* t, float rowH) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (rowH - ImGui::GetTextLineHeight()) / 2);
+            ImGui::TextDisabled("%s", t);
+            ImGui::TableNextColumn();
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 4);  // room for the selection ring
+        };
+        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, {0, 6});
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {10, 14});
+        if (ImGui::BeginTable("picture", 2)) {
+            ImGui::TableSetupColumn("l", ImGuiTableColumnFlags_WidthFixed, 110);
+            ImGui::TableSetupColumn("v", ImGuiTableColumnFlags_WidthStretch);
+            label("Piece", ts);
+            for (int i = 0; i < 6; i++) {
+                if (i) ImGui::SameLine(0, 10);
+                ImGui::PushID(i);
+                ImVec2 q = ImGui::GetCursorScreenPos();
+                if (ImGui::InvisibleButton("pc", {ts, ts})) set(i, curBlack, curColor);
+                drawAvatar(dl, q, ts, avatarKey(i, curBlack, curColor), 8);
+                ring(q, ts, isPiece && curPiece == i, ImGui::IsItemHovered(), 8);
+                ImGui::PopID();
+            }
+            label("Piece color", ts);
+            for (int b = 0; b < 2; b++) {
+                if (b) ImGui::SameLine(0, 10);
+                ImGui::PushID(100 + b);
+                ImVec2 q = ImGui::GetCursorScreenPos();
+                if (ImGui::InvisibleButton("pcol", {ts, ts})) set(curPiece, b, curColor);
+                drawAvatar(dl, q, ts, avatarKey(curPiece, b, curColor), 8);
+                ring(q, ts, isPiece && curBlack == (bool)b, ImGui::IsItemHovered(), 8);
+                ImGui::PopID();
+            }
+            label("Background", cs + 8);
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4);
+            float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x - 4;
+            for (int i = 0; i < 12; i++) {
+                if (i) {
+                    ImGui::SameLine(0, 10);
+                    if (ImGui::GetCursorScreenPos().x + cs > right) {
+                        ImGui::NewLine();
+                        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 4);
+                    }
+                }
+                ImGui::PushID(200 + i);
+                ImVec2 q = ImGui::GetCursorScreenPos();
+                if (ImGui::InvisibleButton("bg", {cs, cs})) set(curPiece, curBlack, i);
+                ImVec2 c{q.x + cs / 2, q.y + cs / 2};
+                dl->AddCircleFilled(c, cs / 2, kPreset[i]);
+                if (isPiece && curColor == i) dl->AddCircle(c, cs / 2 + 4, theme::accent, 0, 2);
+                else if (ImGui::IsItemHovered()) dl->AddCircle(c, cs / 2 + 4, theme::dim, 0, 1.5f);
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+        ImGui::PopStyleVar(2);
     }
-    ImGui::Dummy({0, 4});
+    ImGui::Dummy({0, 8});
     if (ImGui::Button("Upload photo…")) {
         nfdu8char_t* out = nullptr;
         nfdu8filteritem_t flt[1] = {{"Images", "png,jpg,jpeg"}};
@@ -795,7 +885,7 @@ void App::Impl::startSync(bool older) {
     if (prof->accounts.empty()) return;
     if (!syncer) syncer = std::make_unique<Syncer>();
     lastAdded = 0;
-    syncer->start(store, *prof, older);
+    syncer->start(store, *prof, older, &book);
     syncWasRunning = true;
 }
 
@@ -1166,12 +1256,17 @@ void App::Impl::saveMeta(const GameRow& g) {
     }
 }
 
-void App::Impl::openStored(int64_t id) {
+void App::Impl::openStored(int64_t id, int ply) {
     auto row = store.game(id);
     if (!row) return notify("That game is gone");
     auto games = parsePgn(row->pgn);
     if (games.empty()) return notify("Couldn't read this game's PGN");
     open(std::move(games[0]), id);
+    if (ply >= 0 && review && !review->line.empty()) {
+        view = View::Review;
+        cur = review->line[std::min<size_t>(ply, review->line.size() - 1)];
+        scrollToCur = true;
+    }
 }
 
 int64_t App::Impl::importGame(const Game& g) {
@@ -1190,10 +1285,7 @@ int64_t App::Impl::importGame(const Game& g) {
     r.playedAt = parseDate(g);
     r.timeClass = timeClassOf(h("TimeControl"));
     r.eco = h("ECO"), r.opening = h("Opening");
-    if (r.opening.empty()) {  // deepest book position of the mainline
-        for (int n : g.mainline())
-            if (auto* o = book.at(g.board(n))) r.eco = o->eco, r.opening = o->name;
-    }
+    if (auto* o = book.of(g)) r.eco = o->eco, r.opening = o->name;  // same names as synced games
     for (const char* k : {"Link", "Site"})
         if (auto u = h(k); u.rfind("http", 0) == 0) {
             r.url = u;

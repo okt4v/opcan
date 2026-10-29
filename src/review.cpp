@@ -136,6 +136,16 @@ double stddev(const std::vector<double>& xs) {
 }
 }  // namespace
 
+// ponytail: simplified phase detection by piece count, ply and book; never goes backwards
+Phase phaseAfter(const Board& after, int moveIndex, bool bookMove, Phase prev) {
+    int pieces = nonPawnPieces(after);
+    Phase p = pieces <= kEndgamePieces ? Endgame
+              : (moveIndex < kOpeningMaxPly && pieces > kOpeningPieces && (bookMove || moveIndex < kOpeningNoBookPly))
+                  ? Opening
+                  : Middlegame;
+    return std::max(prev, p);
+}
+
 ReviewResult buildReview(const Game& game, const std::vector<PosEval>& evals, const Openings& book) {
     ReviewResult r;
     r.line = game.mainline();
@@ -226,13 +236,7 @@ ReviewResult buildReview(const Game& game, const std::vector<PosEval>& evals, co
             mr.cls = cl;
         }
 
-        // ponytail: simplified phase detection by piece count, ply and book; never goes backwards
-        int pieces = nonPawnPieces(after);
-        Phase p = pieces <= kEndgamePieces ? Endgame
-                  : ((int)i < kOpeningMaxPly && pieces > kOpeningPieces && (mr.cls == Cls::Book || (int)i < kOpeningNoBookPly))
-                      ? Opening
-                      : Middlegame;
-        phase = mr.phase = std::max(phase, p);
+        phase = mr.phase = phaseAfter(after, (int)i, mr.cls == Cls::Book, phase);
         phaseSum[c][phase] += mr.accuracy;
         phaseCnt[c][phase]++;
         r.counts[c][(int)mr.cls]++;
