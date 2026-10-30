@@ -3,6 +3,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <map>
+#include <set>
 #include <sstream>
 #ifdef _WIN32
 #include <windows.h>
@@ -54,6 +56,7 @@ bool parseInfo(std::string_view line, int& multipv, PvLine& out) {
     bool score = false, pv = false;
     for (size_t i = 1; i < t.size(); i++) {
         if (t[i] == "depth" && i + 1 < t.size()) l.depth = toInt(t[++i]);
+        else if (t[i] == "tbhits" && i + 1 < t.size()) l.tbhits = std::atoll(std::string(t[++i]).c_str());
         else if (t[i] == "multipv" && i + 1 < t.size()) mpv = toInt(t[++i]);
         else if (t[i] == "score" && i + 2 < t.size()) {
             if (t[i + 1] == "cp") l.score.cp = toInt(t[i + 2]);
@@ -117,9 +120,21 @@ std::string findEngine() {
     return "";
 }
 
+namespace {
+std::mutex optMu;
+std::map<std::string, std::string> defaultOpts;
+}  // namespace
+
+void setDefaultUciOption(const std::string& name, const std::string& value) {
+    std::lock_guard l(optMu);
+    if (value.empty()) defaultOpts.erase(name);
+    else defaultOpts[name] = value;
+}
+
 struct UciProcess::Impl {
     subprocess_s proc{};
     bool alive = false;
+    std::set<std::string> options;
 };
 
 UciProcess::UciProcess() : impl_(std::make_unique<Impl>()) {}
@@ -142,21 +157,30 @@ bool UciProcess::start(const std::string& path, int threads, int hashMb) {
     int opts = subprocess_option_inherit_environment | subprocess_option_search_user_path | subprocess_option_no_window;
     if (subprocess_create(argv, opts, &impl_->proc) != 0) return false;
     impl_->alive = true;
+    impl_->options.clear();
     auto waitFor = [&](std::string_view token) {
-        for (std::string l; readLine(l);)
+        for (std::string l; readLine(l);) {
             if (l == token) return true;
+            if (startsWith(l, "option name ")) impl_->options.insert(l.substr(12, l.find(" type ") - 12));
+        }
         return false;
     };
     send("uci");
     if (!waitFor("uciok")) return kill(), false;
     send("setoption name Threads value " + std::to_string(threads));
     send("setoption name Hash value " + std::to_string(hashMb));
+    {
+        std::lock_guard l(optMu);
+        for (auto& [k, v] : defaultOpts)
+            if (hasOption(k)) send("setoption name " + k + " value " + v);
+    }
     send("isready");
     if (!waitFor("readyok")) return kill(), false;
     return true;
 }
 
 bool UciProcess::running() const { return impl_->alive; }
+bool UciProcess::hasOption(const std::string& name) const { return impl_->options.count(name) > 0; }
 
 void UciProcess::send(const std::string& line) {
     if (!impl_->alive) return;

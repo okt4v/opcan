@@ -4,10 +4,14 @@ void checkCore();
 void checkReview();
 void checkStore();
 void checkStats();
+void checkCoach();
+void checkPlay();
 int main() {
     checkCore();
     checkReview();
     checkStore();
     checkStats();
+    checkCoach();
+    checkPlay();
     std::puts("all checks passed");
 }

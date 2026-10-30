@@ -8,9 +8,9 @@
     in {
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
-          packages = with pkgs; [ cmake ninja pkg-config gcc14 glfw libGL stockfish curl dbus wayland wayland-scanner libffi systemdLibs ];
+          packages = with pkgs; [ cmake ninja pkg-config gcc14 glfw libGL stockfish curl dbus wayland wayland-scanner libffi systemdLibs vulkan-headers vulkan-loader shaderc ];
           # GLFW dlopens wayland/x11/GL and miniaudio dlopens pulse/alsa at runtime
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (with pkgs; [ libGL alsa-lib libpulseaudio wayland libxkbcommon libx11 libxcursor libxi libxrandr ]);
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (with pkgs; [ libGL vulkan-loader alsa-lib libpulseaudio wayland libxkbcommon libx11 libxcursor libxi libxrandr ]);
         };
       });
     };

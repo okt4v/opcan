@@ -3,13 +3,16 @@
 #include "app.hpp"
 #include "audio.hpp"
 #include "board.hpp"
+#include "coach.hpp"
 #include "engine.hpp"
 #include "game.hpp"
 #include "openings.hpp"
+#include "play.hpp"
 #include "review.hpp"
 #include "stats.hpp"
 #include "store.hpp"
 #include "sync.hpp"
+#include "tablebase.hpp"
 #include "theme.hpp"
 #include <algorithm>
 #include <atomic>
@@ -31,7 +34,7 @@ struct Settings {
 };
 
 // Rebindable actions; each has up to two key chords.
-enum class Act { Prev, Next, Start, End, BackToGame, NextMistake, PrevMistake, PlayBest, Flip, Lines, Threat,
+enum class Act { Prev, Next, Start, End, BackToGame, NextMistake, PrevMistake, PlayBest, Retry, PlayEngine, Flip, Lines, Threat, CoachChat,
                  Paste, Open, Settings, Help, Quit, Count };
 constexpr int kActCount = (int)Act::Count;
 struct ActDef {
@@ -48,9 +51,12 @@ inline const ActDef kActs[kActCount] = {
     {"nextMistake", "Next mistake", {ImGuiKey_N, 0}},
     {"prevMistake", "Previous mistake", {ImGuiKey_P, 0}},
     {"best", "Play the best move", {ImGuiKey_Space, 0}},
+    {"retry", "Retry mistake", {ImGuiKey_Y, 0}},
+    {"playEngine", "Play vs engine from here", {ImGuiKey_V, 0}},
     {"flip", "Flip board", {ImGuiKey_F, 0}},
     {"lines", "Engine lines", {ImGuiKey_E, 0}},
     {"threat", "Threat arrow", {ImGuiKey_T, 0}},
+    {"coachChat", "Toggle coach chat", {ImGuiKey_C, 0}},
     {"paste", "Paste PGN / FEN", {ImGuiMod_Ctrl | ImGuiKey_V, 0}},
     {"open", "Open a PGN file", {ImGuiMod_Ctrl | ImGuiKey_O, 0}},
     {"settings", "Settings", {ImGuiMod_Ctrl | ImGuiKey_Comma, 0}},
@@ -153,6 +159,39 @@ struct ProfileEditor {
     float height = 0;
 };
 
+// Retry mistake: the position before a bad move, the user looks for a better one. Never touches the game.
+struct RetryState {
+    enum Phase { Waiting, Checking, Correct, Wrong, Solution };
+    bool on = false, wasFlipped = false;
+    int node = 0;                   // mainline node of the mistake
+    Phase phase = Waiting;
+    chess::Board board;             // what the board shows
+    chess::Move shown = chess::Move::NO_MOVE;
+    std::string san;                // the try, or the solution
+    Async<std::optional<Score>> eval;
+    double revertAt = 0;            // Wrong: when the try is taken back
+};
+
+// A game against the engine from a review position. Never written into the reviewed game.
+struct PlaySession {
+    std::string startFen, white, black;
+    chess::Board board;             // with history, for repetition
+    std::vector<chess::Move> moves;
+    std::vector<std::string> sans;
+    int user = 0, elo = 0;          // user: 0 white, 1 black; elo 0 = full strength
+    int baseMs = 0, incMs = 0, clockMs[2] = {};  // baseMs 0 = no clock
+    double tickAt = 0, thinkAt = 0, minDelay = 0.3;
+    bool thinking = false, wasFlipped = false;
+    std::unique_ptr<EngineOpponent> engine;
+    std::optional<GameEnd> end;
+};
+struct PlaySetup {
+    bool open = false;
+    int color = 0, elo = 1500, clock = 0, minutes = 15, inc = 10;  // clock: none, 5+0, 10+0, custom
+    bool full = false;
+    std::string fen;  // start position
+};
+
 struct App::Impl {
     Fonts f;
     Store store;
@@ -180,6 +219,14 @@ struct App::Impl {
     std::unordered_map<int, int> lineIdx;   // mainline node -> review line index
     std::unique_ptr<LiveAnalyzer> live;
     std::string enginePath, toast;
+    RetryState retry;
+    std::set<int> retrySolved;  // mistakes solved in this session (per open game)
+    std::unique_ptr<PlaySession> play;
+    PlaySetup playSetup;
+    TbDownloader tbDl;
+    std::shared_ptr<struct CoachState> cs;  // AI coach (coach_ui.cpp)
+    bool tbRunning = false;
+    std::string syzygyPath;  // "" = <data>/syzygy
     double toastUntil = 0, animUntil = 0;
     float evalShown = 50, evalTarget = 50;
     std::string evalText = "0.0";
@@ -311,7 +358,7 @@ struct App::Impl {
     void drawLibraryModals();
     void saveMeta(const GameRow& g);
     void openStored(int64_t id, int ply = -1);  // ply >= 0: open the review at that mainline ply
-    int64_t importGame(const Game& g);
+    int64_t importGame(const Game& g, bool vsBot = false);  // vsBot: never counts in stats
     void drawGameInfo(float h);
     void backgroundWork();
 
@@ -321,12 +368,52 @@ struct App::Impl {
     void drawStats();
     void drawStatsCards(const Stats& s, float W);
 
+    // play_ui.cpp
+    std::string tbDir() const;  // the tablebase folder in use ("" if none)
+    void applyTablebases();     // SyzygyPath for every new engine process, restarts live analysis
+    void pollTablebases();      // download finished / failed
+    void startRetry(int node);
+    void exitRetry();
+    void retryMove(chess::Move m);
+    void retryNext();
+    void updateRetry();
+    void drawRetryCard();
+    void openPlaySetup();
+    void drawPlaySetup();
+    void startPlay();
+    void playMove(chess::Move m);
+    void updatePlay();
+    void drawPlayBoard(ImVec2 avail);
+    void drawPlayPanel();
+    void reviewPlayed();
+    void exitPlay();
+    void devHooks();
+
+    // coach_ui.cpp (drawCoach above is the coach card)
+    static constexpr int kCoachTab = 7;  // settings tab
+    void drawCoachCard();
+    void coachInit();
+    void coachSave();
+    void coachFrame();
+    std::string coachModelPath() const;
+    bool coachReady() const;  // on, and the model file exists
+    bool coachWantsLive() const;
+    FactInput coachFacts(int node);
+    void drawPip(ImDrawList* dl, ImVec2 center, float size, int mood, bool talking);
+    void toggleCoachChat();
+    float richText(const Parsed& pr, int msgIdx, float width, bool draw, ImU32 col);
+    void sendCoachQuestion();
+    void drawCoachChat(bool docked);
+    void coachAnnotations(std::vector<Arrow>& arrows, std::vector<std::pair<int, ImU32>>& marks);
+    void settingsCoach(float w);
+
     // settings_ui.cpp
     void drawSettings();
     void settingsAppearance(float w);
     void settingsBoard(float w);
     void settingsSound(float w);
     void settingsEngine(float w);
+    void settingsTablebases();
     void settingsKeys(float w);
     void settingsLayout(float w);
     void settingsProfile(float w);

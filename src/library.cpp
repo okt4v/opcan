@@ -1047,7 +1047,7 @@ void App::Impl::drawLibrary() {
     ImGui::PopStyleColor();
     float lw = ImGui::GetContentRegionAvail().x;
     ImGuiListClipper clip;
-    clip.Begin((int)rows.size(), 52);
+    clip.Begin((int)rows.size(), 52 + ImGui::GetStyle().ItemSpacing.y);  // rows end with ItemSpacing
     while (clip.Step())
         for (int i = clip.DisplayStart; i < clip.DisplayEnd; i++) drawGameRow(rows[i], lw);
     ImGui::Dummy({0, 12});
@@ -1302,7 +1302,7 @@ void App::Impl::openStored(int64_t id, int ply) {
     }
 }
 
-int64_t App::Impl::importGame(const Game& g) {
+int64_t App::Impl::importGame(const Game& g, bool vsBot) {
     if (!prof || g.mainline().size() <= 1) return 0;
     GameRow r;
     r.profileId = prof->id;
@@ -1325,7 +1325,7 @@ int64_t App::Impl::importGame(const Game& g) {
             break;
         }
     r.userColor = -1;
-    r.vsBot = isBotGame(g);  // same rule as synced games
+    r.vsBot = vsBot || isBotGame(g);  // same rule as synced games
     r.countsInStats = false;
     int64_t id = store.upsertGame(r);
     libDirty = true;

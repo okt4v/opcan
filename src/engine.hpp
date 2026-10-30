@@ -17,11 +17,16 @@ struct Score {
 struct PvLine {
     int depth = 0;
     Score score;
+    long long tbhits = 0;  // endgame tablebase probes that hit
     std::vector<std::string> pv;  // UCI moves, e.g. "e2e4", "e7e8q"
 };
 
 // Parses a UCI "info ..." line. Returns false if it has no score or no pv.
 bool parseInfo(std::string_view line, int& multipv, PvLine& out);
+
+// Option set on every engine process started from now on, if the engine advertises it ("" removes it).
+// Used for SyzygyPath.
+void setDefaultUciOption(const std::string& name, const std::string& value);
 
 // Directory of the running executable, no trailing slash.
 std::string exeDir();
@@ -39,6 +44,7 @@ public:
     // Starts the process and completes the uci/isready handshake.
     bool start(const std::string& path, int threads = 1, int hashMb = 64);
     bool running() const;
+    bool hasOption(const std::string& name) const;  // advertised during the handshake
     void send(const std::string& line);
     bool readLine(std::string& out);  // blocking, false on EOF
     void kill();

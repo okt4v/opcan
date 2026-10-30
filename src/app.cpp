@@ -72,22 +72,6 @@ Cls phaseCls(double a) {
          : a >= 45 ? Cls::Mistake : Cls::Blunder;
 }
 
-const char* verdict(Cls c) {
-    switch (c) {
-        case Cls::Brilliant: return "is brilliant";
-        case Cls::Great: return "is a great move";
-        case Cls::Best: return "is best";
-        case Cls::Excellent: return "is excellent";
-        case Cls::Good: return "is good";
-        case Cls::Book: return "is a book move";
-        case Cls::Inaccuracy: return "is an inaccuracy";
-        case Cls::Mistake: return "is a mistake";
-        case Cls::Miss: return "is a miss";
-        case Cls::Blunder: return "is a blunder";
-        default: return "";
-    }
-}
-
 }  // namespace
 
 bool accentButton(const char* label, ImVec2 size) {
@@ -112,6 +96,7 @@ App::Impl::Impl() {
     applyPrefs();
     if (!book.load(exeDir() + "/assets/openings/openings.tsv")) notify("Openings database missing");
     resolveEngine();
+    coachInit();
     if (storeErr.empty()) profiles = store.profiles();
     // dev hooks: OPCAN_PROFILE=<id> skips the picker, OPCAN_PAGE=library|analyze|stats|edit picks the page
     const char* page = std::getenv("OPCAN_PAGE");
@@ -156,6 +141,8 @@ void App::Impl::loadSettings() {
     s.threatArrow = num("threatArrow", s.threatArrow);
     s.autoAnalyze = num("autoAnalyze", s.autoAnalyze);
     set = s;
+    syzygyPath = store.setting("syzygyPath");
+    setDefaultUciOption("SyzygyPath", tbDir());
 }
 
 void App::Impl::saveSettings() {
@@ -331,6 +318,9 @@ void App::Impl::openFileDialog() {
 }
 
 void App::Impl::open(Game g, int64_t id) {
+    exitPlay();
+    if (game) exitRetry();
+    retrySolved.clear();
     if (view == View::Library || view == View::Analyze || view == View::Stats) backView = view;
     game = std::move(g);
     gameId = id;
@@ -398,6 +388,7 @@ void App::Impl::finishReview() {
 // ---------- navigation ----------
 
 void App::Impl::go(int n) {
+    exitRetry();
     if (n == cur || n < 0) return;
     if (game->nodes[n].parent == cur) moveSound(n);
     cur = n;
@@ -489,6 +480,13 @@ void App::Impl::keys() {
     if (act(Act::Open)) openFileDialog();
     if (act(Act::Settings)) openSettings();
     if (!game || (view != View::Summary && view != View::Review)) return;
+    if (play) {
+        if (act(Act::Flip)) board.flipped = !board.flipped;
+        return;
+    }
+    if (retry.on && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) exitRetry();
+    if (act(Act::Retry)) startRetry(retry.on ? retry.node : cur);
+    if (act(Act::PlayEngine)) openPlaySetup();
     if (act(Act::Next, true)) next();
     if (act(Act::Prev, true)) prev();
     if (act(Act::Start)) go(0);
@@ -497,9 +495,10 @@ void App::Impl::keys() {
     if (act(Act::BackToGame)) backToGame();
     if (act(Act::Lines)) set.engineLines = !set.engineLines, saveSettings();
     if (act(Act::Threat)) set.threatArrow = !set.threatArrow, saveSettings();
-    if (act(Act::NextMistake)) jumpMistake(+1);
+    if (act(Act::CoachChat)) toggleCoachChat();
+    if (act(Act::NextMistake)) retry.on ? retryNext() : jumpMistake(+1);
     if (act(Act::PrevMistake)) jumpMistake(-1);
-    if (act(Act::PlayBest))
+    if (act(Act::PlayBest) && !retry.on)
         if (auto u = bestHere(); !u.empty()) playUci(u);
 }
 
@@ -518,7 +517,12 @@ void App::Impl::frame() {
         io.WantSaveIniSettings = false;
     }
     keys();
+    pollTablebases();
+    devHooks();
+    updateRetry();
+    updatePlay();
     updateEval();
+    coachFrame();
 
     auto* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
@@ -550,12 +554,17 @@ void App::Impl::frame() {
         drawLibraryModals();
     }
     drawPicker();
+    drawPlaySetup();
     drawHelp();
     drawToast();
     ImGui::End();
 }
 
 void App::Impl::updateEval() {
+    if (play) {
+        if (live) live->halt();
+        return;
+    }
     if (!game || (view != View::Summary && view != View::Review)) {
         if (live) live->halt();
         return;
@@ -565,7 +574,7 @@ void App::Impl::updateEval() {
     bool reviewed = review && lineIdx.count(cur);
     if (live) {
         bool busy = reviewer && reviewer->running();  // don't steal cores from the review
-        if ((!reviewed && !busy) || set.engineLines) live->setPosition(game->nodes[cur].fen, set.liveDepth);
+        if ((!reviewed && !busy) || set.engineLines || coachWantsLive()) live->setPosition(game->nodes[cur].fen, set.liveDepth);
         else live->halt();
     }
     std::optional<Score> s;
@@ -758,15 +767,17 @@ void App::Impl::drawMain() {
     ImGui::PopStyleVar();
     drawPanel();
     ImGui::EndChild();
+    drawCoachChat(false);
 }
 
 // Eval bar, board and player strips, centered in avail from the cursor.
 void App::Impl::drawBoardArea(ImVec2 avail) {
+    if (play) return drawPlayBoard(avail);
     auto origin = ImGui::GetCursorPos();
     float boardSize = fitBoard(avail);
     float x0 = origin.x + std::max(0.f, (avail.x - kBarW - 2 * kGap - boardSize) / 2);
     float y0 = origin.y + std::max(0.f, (avail.y - boardSize - 2 * kStripH) / 2);
-    Board b = game->board(cur);
+    Board b = retry.on ? retry.board : game->board(cur);
     bool topIsBlack = !board.flipped;
     ImGui::SetCursorPos({x0 + kBarW + kGap, y0});
     drawStrip(b, topIsBlack ? Color::BLACK : Color::WHITE, boardSize, kStripH);
@@ -774,8 +785,17 @@ void App::Impl::drawBoardArea(ImVec2 avail) {
     drawEvalBar(kBarW, boardSize);
     ImGui::SetCursorPos({x0 + kBarW + kGap, y0 + kStripH});
     auto* mr = curReview();
-    Move mv = board.draw(b, boardSize, game->nodes[cur].move, mr ? mr->cls : Cls::None, arrows());
-    if (mv != Move::NO_MOVE) go(game->addMove(cur, mv));
+    Cls badge = mr ? mr->cls : Cls::None;
+    if (retry.on) {  // no arrows or engine hints while the user looks for the move
+        badge = retry.phase == RetryState::Correct ? (retry.san == review->forNode(retry.node)->bestSan ? Cls::Best : Cls::Excellent) : Cls::None;
+        board.interactive = retry.phase == RetryState::Waiting || (retry.phase == RetryState::Wrong && retry.revertAt == 0);
+    }
+    Move mv = board.draw(b, boardSize, retry.on ? retry.shown : game->nodes[cur].move, badge, retry.on ? std::vector<Arrow>{} : arrows());
+    board.interactive = true;
+    if (mv != Move::NO_MOVE) {
+        if (retry.on) retryMove(mv);
+        else go(game->addMove(cur, mv));
+    }
     ImGui::SetCursorPos({x0 + kBarW + kGap, y0 + kStripH + boardSize});
     drawStrip(b, topIsBlack ? Color::WHITE : Color::BLACK, boardSize, kStripH);
 }
@@ -812,7 +832,8 @@ void App::Impl::drawDocked() {
             if (i == 0) drawBoardArea(avail);
             else if (i == 1) drawPanel();
             else if (i == 2) {
-                if (set.engineLines) drawEngineLines();
+                if (retry.on || play) ImGui::TextDisabled("Engine lines are hidden while you play.");
+                else if (set.engineLines) drawEngineLines();
                 else if (ImGui::Button(("Show engine lines  (" + chordName(prefs.keys[(int)Act::Lines][0]) + ")").c_str()))
                     set.engineLines = true, saveSettings();
             } else if (i == 3) {
@@ -825,6 +846,7 @@ void App::Impl::drawDocked() {
         }
         ImGui::End();
     }
+    drawCoachChat(true);
 }
 
 std::vector<Arrow> App::Impl::arrows() {
@@ -842,7 +864,10 @@ std::vector<Arrow> App::Impl::arrows() {
         if (s.fen == game->nodes[cur].fen && !s.lines.empty() && !s.lines[0].pv.empty())
             add(s.lines[0].pv[0], theme::arrowEngine);
     }
-    return out;
+    std::vector<Arrow> chat;
+    board.marks.clear();
+    coachAnnotations(chat, board.marks);  // the chat's board tags replace the review arrows
+    return chat.empty() && board.marks.empty() ? out : chat;
 }
 
 void App::Impl::drawStrip(const Board& b, Color c, float w, float h) {
@@ -913,6 +938,7 @@ void App::Impl::drawEvalBar(float w, float h) {
 // ---------- right panel ----------
 
 void App::Impl::drawPanel() {
+    if (play) return drawPlayPanel();
     auto* dl = ImGui::GetWindowDrawList();
     ImVec2 p = ImGui::GetCursorScreenPos();
     const char* back = backView == View::Analyze ? "Analyze" : backView == View::Stats ? "Stats" : "Library";
@@ -926,7 +952,12 @@ void App::Impl::drawPanel() {
     ImGui::PopFont();
     float right = ImGui::GetWindowContentRegionMax().x;
     ImGui::SameLine();
-    ImGui::SetCursorPosX(right - 28);
+    float pw = ImGui::CalcTextSize("Play vs engine").x + 20;
+    ImGui::SetCursorPosX(right - 28 - 6 - pw);
+    if (ImGui::Button("Play vs engine", {pw, 28})) openPlaySetup();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Play the engine from this position  (%s)", chordName(prefs.keys[(int)Act::PlayEngine][0]).c_str());
+    ImGui::SameLine(0, 6);
     if (ImGui::Button("?", {28, 28})) showHelp = true;
     ImGui::Dummy({0, 2});
     ImGui::PushFont(f.bold, 18);
@@ -954,6 +985,8 @@ void App::Impl::drawSummary() {
         return;
     }
     auto& r = *review;
+    // everything above the button scrolls as one, so nothing is cut off at small window heights
+    ImGui::BeginChild("summaryScroll", {0, -50});
     float w = ImGui::GetContentRegionAvail().x;
     // accuracy boxes
     float col = (w - 10) / 2;
@@ -987,7 +1020,6 @@ void App::Impl::drawSummary() {
     drawGraph(w, 70);
     ImGui::Dummy({0, 6});
 
-    ImGui::BeginChild("summaryScroll", {0, -50});
     if (ImGui::BeginTable("cls", 4, ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("name", ImGuiTableColumnFlags_WidthStretch, 3);
         ImGui::TableSetupColumn("w", ImGuiTableColumnFlags_WidthStretch, 1);
@@ -1050,6 +1082,12 @@ void App::Impl::drawSummary() {
         ImGui::PopStyleColor();
     }
     drawKeyMoments();
+    ImGui::Dummy({0, 12});
+    if (ImGui::GetScrollY() < ImGui::GetScrollMaxY() - 1) {  // more below: fade the bottom edge
+        ImVec2 a = ImGui::GetWindowPos(), sz = ImGui::GetWindowSize();
+        ImGui::GetWindowDrawList()->AddRectFilledMultiColor({a.x, a.y + sz.y - 28}, {a.x + sz.x - ImGui::GetStyle().ScrollbarSize, a.y + sz.y},
+                                                            alpha(theme::panel, 0), alpha(theme::panel, 0), theme::panel, theme::panel);
+    }
     ImGui::EndChild();
     if (accentButton("Start Review", {-1, 40})) {
         view = View::Review;
@@ -1172,7 +1210,7 @@ void App::Impl::drawReview() {
     } else if (reviewer && reviewer->running()) {
         ImGui::ProgressBar(reviewer->progress(), {-1, 6}, "");
     }
-    if (set.engineLines && !prefs.docking) drawEngineLines();
+    if (set.engineLines && !prefs.docking && !retry.on) drawEngineLines();
     float infoH = !meta || prefs.docking ? 0 : infoOpen ? std::min(304.f, ImGui::GetContentRegionAvail().y * 0.55f) : 40;
     ImGui::BeginChild("moves", {0, -46 - infoH}, ImGuiChildFlags_None);
     drawMoveList();
@@ -1182,64 +1220,11 @@ void App::Impl::drawReview() {
 }
 
 void App::Impl::drawCoach() {
-    auto* dl = ImGui::GetWindowDrawList();
-    ImVec2 p = ImGui::GetCursorScreenPos();
-    float w = ImGui::GetContentRegionAvail().x, h = 84;
-    dl->AddRectFilled(p, {p.x + w, p.y + h}, theme::panel2, 8);
-    ImGui::SetCursorScreenPos({p.x + 14, p.y + 12});
-    ImGui::BeginGroup();
-    ImGui::PushTextWrapPos(p.x + w - 14 - ImGui::GetWindowPos().x);
-    auto* mr = curReview();
-    if (mr) {
-        auto& nd = game->nodes[cur];
-        ImVec2 bp = ImGui::GetCursorScreenPos();
-        drawBadge(dl, {bp.x + 10, bp.y + 10}, 10, mr->cls);
-        ImGui::SetCursorScreenPos({bp.x + 28, bp.y});
-        ImGui::PushFont(f.bold, 16);
-        ImGui::TextUnformatted(nd.san.c_str());
-        ImGui::SameLine(0, 5);
-        ImGui::PushStyleColor(ImGuiCol_Text, theme::clsText(mr->cls));
-        ImGui::TextUnformatted(verdict(mr->cls));
-        ImGui::PopStyleColor();
-        ImGui::PopFont();
-        // eval chip
-        int i = lineIdx[cur];
-        bool wtm = game->board(cur).sideToMove() == Color::WHITE;
-        std::string ev = scoreLabel(review->evals[i].best, wtm);
-        ImGui::PushFont(f.mono, 13);
-        ImVec2 ts = ImGui::CalcTextSize(ev.c_str());
-        ImVec2 a{p.x + w - ts.x - 26, p.y + 12};
-        bool wa = wpWhite[i] >= 50;
-        dl->AddRectFilled(a, {a.x + ts.x + 12, a.y + ts.y + 6}, wa ? theme::evalWhite : theme::evalBlack, 5);
-        if (wa) dl->AddRect(a, {a.x + ts.x + 12, a.y + ts.y + 6}, theme::edge, 5);
-        dl->AddText({a.x + 6, a.y + 3}, wa ? theme::evalBlack : theme::evalWhite, ev.c_str());
-        ImGui::PopFont();
-        ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
-        ImGui::TextWrapped("%s", explain(*mr, i).c_str());
-        ImGui::PopStyleColor();
-    } else if (cur == 0) {
-        ImGui::PushFont(f.bold, 16);
-        ImGui::TextUnformatted("Starting position");
-        ImGui::PopFont();
-        ImGui::TextDisabled("Use the arrow keys or click a move.");
-    } else if (!game->isMainline(cur)) {
-        ImGui::PushFont(f.bold, 16);
-        ImGui::TextUnformatted("Exploring a variation");
-        ImGui::PopFont();
-        ImGui::TextDisabled("Press R to return to the game.");
-    } else {
-        ImGui::PushFont(f.bold, 16);
-        ImGui::TextUnformatted(game->nodes[cur].san.c_str());
-        ImGui::PopFont();
-        ImGui::TextDisabled(reviewer && reviewer->running() ? "Analyzing..." : "Not reviewed");
-    }
-    ImGui::PopTextWrapPos();
-    ImGui::EndGroup();
-    ImGui::SetCursorScreenPos({p.x, p.y + h + 8});
-    ImGui::Dummy({0, 0});
+    if (retry.on) return drawRetryCard();
+    drawCoachCard();  // coach_ui.cpp: Pip, the AI explanation (or explain() below), Retry
 }
 
-// ponytail: template text until the local LLM coach (phase 5)
+// Template explanation: shown without an AI coach model, while it thinks, or when its answer fails the checks.
 std::string App::Impl::explain(const MoveReview& m, int i) {
     auto& before = review->evals[i - 1].best;
     auto& after = review->evals[i].best;  // opponent to move
@@ -1280,7 +1265,17 @@ void App::Impl::drawEngineLines() {
         ImGui::TextUnformatted(line.c_str(), nullptr);
         ImGui::PopStyleColor();
     }
-    if (!s.lines.empty() && s.fen == fen) ImGui::TextDisabled("depth %d", s.lines[0].depth);
+    if (!s.lines.empty() && s.fen == fen) {
+        ImGui::TextDisabled("depth %d", s.lines[0].depth);
+        if (s.lines[0].tbhits > 0) {  // the engine probed the endgame tablebases: exact result
+            ImGui::SameLine(0, 8);
+            ImVec2 p = ImGui::GetCursorScreenPos(), ts = ImGui::CalcTextSize("TB");
+            ImGui::GetWindowDrawList()->AddRectFilled({p.x, p.y - 1}, {p.x + ts.x + 10, p.y + ts.y + 1}, alpha(theme::accent, 60), 4);
+            ImGui::GetWindowDrawList()->AddText({p.x + 5, p.y}, theme::accent, "TB");
+            ImGui::Dummy({ts.x + 10, ts.y});
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Endgame tablebase hit: this result is exact");
+        }
+    }
     ImGui::PopFont();
     ImGui::Dummy({0, 4});
 }

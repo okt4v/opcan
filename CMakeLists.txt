@@ -26,15 +26,35 @@ set(NFD_PORTAL ON CACHE BOOL "" FORCE)  # xdg portal on Linux instead of GTK
 FetchContent_Declare(miniaudio GIT_REPOSITORY https://github.com/mackron/miniaudio GIT_TAG 0.11.25 GIT_SHALLOW ON SOURCE_SUBDIR none)
 FetchContent_MakeAvailable(imgui chesslib subprocess stb sqlite json nfd miniaudio)
 
+# llama.cpp for the local AI coach: static, CPU always; Metal on macOS, Vulkan optional (iGPUs included)
+find_package(Vulkan QUIET COMPONENTS glslc)
+set(OPCAN_VULKAN_DEFAULT OFF)
+if(NOT APPLE AND Vulkan_FOUND AND Vulkan_glslc_FOUND)
+  set(OPCAN_VULKAN_DEFAULT ON)
+endif()
+option(OPCAN_VULKAN "AI coach: Vulkan GPU backend for llama.cpp" ${OPCAN_VULKAN_DEFAULT})
+set(GGML_VULKAN ${OPCAN_VULKAN} CACHE BOOL "" FORCE)
+if(APPLE)
+  set(GGML_METAL ON CACHE BOOL "" FORCE)
+  set(GGML_METAL_EMBED_LIBRARY ON CACHE BOOL "" FORCE)
+endif()
+foreach(o LLAMA_BUILD_COMMON LLAMA_BUILD_TESTS LLAMA_BUILD_TOOLS LLAMA_BUILD_EXAMPLES LLAMA_BUILD_SERVER LLAMA_BUILD_APP
+          LLAMA_OPENSSL LLAMA_CURL GGML_BUILD_TESTS GGML_BUILD_EXAMPLES)
+  set(${o} OFF CACHE BOOL "" FORCE)
+endforeach()
+FetchContent_Declare(llama GIT_REPOSITORY https://github.com/ggml-org/llama.cpp GIT_TAG b11850 GIT_SHALLOW ON)  # b11850+: builds with GCC 14 (std::find include)
+FetchContent_MakeAvailable(llama)
+
 add_library(sqlite3 STATIC ${sqlite_SOURCE_DIR}/sqlite3.c)
 target_include_directories(sqlite3 PUBLIC ${sqlite_SOURCE_DIR})
 target_compile_definitions(sqlite3 PRIVATE SQLITE_OMIT_LOAD_EXTENSION SQLITE_DQS=0)
 
-add_library(miniaudio STATIC src/miniaudio_impl.c)
-target_include_directories(miniaudio PUBLIC ${miniaudio_SOURCE_DIR})
-target_link_libraries(miniaudio PUBLIC ${CMAKE_DL_LIBS})
+# opcan_ prefix: llama.cpp vendors its own "miniaudio" target
+add_library(opcan_miniaudio STATIC src/miniaudio_impl.c)
+target_include_directories(opcan_miniaudio PUBLIC ${miniaudio_SOURCE_DIR})
+target_link_libraries(opcan_miniaudio PUBLIC ${CMAKE_DL_LIBS})
 if(UNIX AND NOT APPLE)
-  target_link_libraries(miniaudio PUBLIC m)
+  target_link_libraries(opcan_miniaudio PUBLIC m)
 endif()
 
 # ponytail: system glfw on Linux (nix), fetched elsewhere
@@ -58,15 +78,15 @@ target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/
 target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
 
 # core = everything but the window; shared by the app and the self-checks
-add_library(opcan_core STATIC src/engine.cpp src/review.cpp src/game.cpp src/openings.cpp src/store.cpp src/stats.cpp src/sync.cpp)
+add_library(opcan_core STATIC src/engine.cpp src/review.cpp src/game.cpp src/openings.cpp src/store.cpp src/stats.cpp src/sync.cpp src/coach.cpp src/play.cpp src/tablebase.cpp)
 target_include_directories(opcan_core PUBLIC src ${chesslib_SOURCE_DIR}/include ${subprocess_SOURCE_DIR})
-target_link_libraries(opcan_core PUBLIC Threads::Threads sqlite3 nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
+target_link_libraries(opcan_core PUBLIC Threads::Threads sqlite3 llama nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
 
-add_executable(opcan src/main.cpp src/app.cpp src/library.cpp src/stats_ui.cpp src/settings_ui.cpp src/board.cpp src/theme.cpp src/audio.cpp)
-target_link_libraries(opcan PRIVATE opcan_core imgui lunasvg::lunasvg nfd::nfd miniaudio)
+add_executable(opcan src/main.cpp src/app.cpp src/library.cpp src/coach_ui.cpp src/play_ui.cpp src/stats_ui.cpp src/settings_ui.cpp src/board.cpp src/theme.cpp src/audio.cpp)
+target_link_libraries(opcan PRIVATE opcan_core imgui lunasvg::lunasvg nfd::nfd opcan_miniaudio)
 target_include_directories(opcan PRIVATE ${stb_SOURCE_DIR})
 
-add_executable(opcan_check tests/check.cpp tests/check_core.cpp tests/check_review.cpp tests/check_store.cpp tests/check_stats.cpp)
+add_executable(opcan_check tests/check.cpp tests/check_core.cpp tests/check_review.cpp tests/check_store.cpp tests/check_stats.cpp tests/check_coach.cpp tests/check_play.cpp)
 target_link_libraries(opcan_check PRIVATE opcan_core)
 target_compile_definitions(opcan_check PRIVATE OPCAN_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 

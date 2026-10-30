@@ -27,6 +27,9 @@ constexpr int kMinPliesForStats = 4;
 constexpr int kMinMovesForAccuracy = 5;
 
 double winPercent(Score s);  // 0..100 for the side to move (lichess formula)
+// Retry a mistake: a try is accepted when it loses at most the Excellent margin of win% vs the best move.
+// best: eval before the move (mover POV); after: eval after the try (opponent to move POV).
+bool retryAccepted(Score best, Score after);
 double moveAccuracy(double wpBefore, double wpAfter);  // lichess per-move accuracy, mover POV
 
 enum Phase { Opening, Middlegame, Endgame };

@@ -19,6 +19,8 @@ using namespace chess;
 
 namespace {
 
+constexpr ImU32 kPremove = IM_COL32(214, 72, 64, 120);  // queued premove squares
+
 ImU32 withAlpha(ImU32 c, float a) {
     return (c & ~IM_COL32_A_MASK) | ((ImU32)(((c >> IM_COL32_A_SHIFT) & 255) * a) << IM_COL32_A_SHIFT);
 }
@@ -261,7 +263,13 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
         if (col < 0 || col > 7 || row < 0 || row > 7) return -1;
         return (flipped ? row : 7 - row) * 8 + (flipped ? 7 - col : col);
     };
-    auto pieceAt = [&](int sq) { return (int)b.at(Square(sq)); };  // 0..11, 12 = none
+    if (premoveSide < 0) premoves.clear();
+    // premove mode: the user moves premoveSide's pieces on the board with the queued premoves applied
+    const bool pre = premoveSide >= 0 && (int)b.sideToMove() != premoveSide;
+    Cells cells = cellsOf(b);
+    if (pre)
+        for (const Premove& p : premoves) applyPremove(cells, p);
+    auto pieceAt = [&](int sq) { return cells[sq]; };  // 0..11, 12 = none
     auto drawPiece = [&](int p, ImVec2 min, float alpha = 1) {
         if (p >= 0 && p < 12 && s.texPx > 0)
             dl->AddImage(ImTextureRef((ImTextureID)(intptr_t)s.tex[p]), min, min + ImVec2(q, q), {0, 0}, {1, 1},
@@ -294,8 +302,11 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
         s.prevHash = h;
         s.havePrev = true;
         s.noAnim = Move::NO_MOVE;
-        s.selected = s.dragFrom = -1;
-        s.dragging = s.promo = false;
+        // a premove drag survives the opponent's move as long as the piece is still ours
+        bool keep = premoveSide >= 0 && s.dragging && s.dragFrom >= 0 && pieceAt(s.dragFrom) < 12 &&
+                    pieceAt(s.dragFrom) / 6 == premoveSide;
+        if (!keep) s.selected = s.dragFrom = -1, s.dragging = false;
+        s.promo = false;
     }
     float animT = 1;
     if (s.animN) {
@@ -306,10 +317,21 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
 
     Movelist legal;
     movegen::legalmoves(legal, b);
-    const int stm = (int)b.sideToMove();
-    auto own = [&](int sq) { int p = pieceAt(sq); return p < 12 && p / 6 == stm; };
+    const int stm = (int)b.sideToMove(), mover = pre ? premoveSide : stm;
+    auto own = [&](int sq) { int p = pieceAt(sq); return p < 12 && p / 6 == mover; };
+    std::vector<int> preTargets;  // premove destinations of the selected piece
+    if (pre && s.selected >= 0) preTargets = premoveTargets(cells, s.selected);
     // Resolve a user gesture to a legal move; opens the promotion picker if needed.
     auto tryMove = [&](int from, int to, bool dropped) -> bool {
+        if (pre) {
+            auto t = premoveTargets(cells, from);
+            if (pieceAt(from) % 6 == 5 && pieceAt(to) == pieceAt(from) - 2)  // king onto own rook: castle
+                to = (from & ~7) | ((to & 7) > (from & 7) ? 6 : 2);
+            if (std::find(t.begin(), t.end(), to) == t.end()) return false;
+            premoves.push_back({from, to});
+            s.selected = -1;
+            return true;
+        }
         int n = 0;
         for (const Move& m : legal) {
             if (m.from().index() != from || (m.to().index() != to && shownTo(m) != to)) continue;
@@ -368,6 +390,7 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             s.selected = s.dragFrom = -1;
             s.dragging = false;
+            premoves.clear();
         }
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             bool moved = false;
@@ -405,7 +428,15 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
     if (showLastMove && lastMove.move() != Move::NO_MOVE) {
         for (int sq : {lastMove.from().index(), shownTo(lastMove)}) dl->AddRectFilled(sqPos(sq), sqPos(sq) + ImVec2(q, q), theme::lastMove);
     }
+    if (pre)
+        for (const Premove& p : premoves)
+            for (int sq : {p.from, p.to}) dl->AddRectFilled(sqPos(sq), sqPos(sq) + ImVec2(q, q), kPremove);
     if (s.selected >= 0) dl->AddRectFilled(sqPos(s.selected), sqPos(s.selected) + ImVec2(q, q), theme::selected);
+    for (auto [sq, col] : marks) {
+        if (sq < 0 || sq > 63) continue;
+        dl->AddRectFilled(sqPos(sq), sqPos(sq) + ImVec2(q, q), (col & 0x00ffffff) | (((col >> 24) * 110 / 255) << 24));
+        dl->AddRect(sqPos(sq) + ImVec2(1.5f, 1.5f), sqPos(sq) + ImVec2(q - 1.5f, q - 1.5f), col, 0, 0, std::max(2.0f, q * 0.05f));
+    }
     if (coords == 1) {
         ImFont* f = ImGui::GetFont();
         float fs = std::max(9.0f, size / 40), pad = q * 0.06f;
@@ -439,7 +470,13 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
 
     // Legal-move hints.
     if (interactive && s.selected >= 0 && !s.promo) {
-        for (const Move& m : legal) {
+        for (int to : preTargets) {
+            if (!showLegal) break;
+            ImVec2 c = sqPos(to) + ImVec2(q, q) * 0.5f;
+            if (pieceAt(to) < 12) dl->AddCircle(c, q * 0.455f, IM_COL32(0, 0, 0, 45), 48, q * 0.085f);
+            else dl->AddCircleFilled(c, q * 0.165f, IM_COL32(0, 0, 0, 45), 32);
+        }
+        for (const Move& m : pre ? Movelist() : legal) {
             if (!showLegal) break;
             if (m.from().index() != s.selected) continue;
             int to = shownTo(m);

@@ -3,13 +3,14 @@
 #include <cfloat>
 #include <cmath>
 #include <filesystem>
+#include <nfd.h>
 
 namespace fs = std::filesystem;
 using namespace chess;
 
 namespace {
 
-const char* kTabs[] = {"Appearance", "Board & animation", "Sound", "Engine & analysis", "Keyboard", "Layout", "Profile"};
+const char* kTabs[] = {"Appearance", "Board & animation", "Sound", "Engine & analysis", "Keyboard", "Layout", "Profile", "AI coach"};  // AI coach = kCoachTab
 constexpr int kTabCount = sizeof kTabs / sizeof kTabs[0];
 const Fonts* F = nullptr;
 
@@ -215,6 +216,7 @@ void App::Impl::drawSettings() {
         case 3: settingsEngine(cw); break;
         case 4: settingsKeys(cw); break;
         case 5: settingsLayout(cw); break;
+        case kCoachTab: settingsCoach(cw); break;
         default: settingsProfile(cw); break;
     }
     ImGui::EndChild();
@@ -525,6 +527,7 @@ void App::Impl::settingsEngine(float) {
         rowsEnd();
     }
     cardEnd();
+    settingsTablebases();
 }
 
 void App::Impl::settingsKeys(float) {
@@ -638,5 +641,83 @@ void App::Impl::settingsProfile(float) {
     }
     ImGui::Dummy({0, 6});
     hint("Appearance, board, sound, keyboard and layout settings are saved per profile. Engine settings are shared.");
+    cardEnd();
+}
+
+void App::Impl::settingsTablebases() {
+    cardBegin("tb", "Endgame tablebases",
+              "With these the engine knows the exact result of every position with 5 or fewer pieces, "
+              "so endgames are judged perfectly instead of estimated.");
+    static int tables = -1;
+    static double countedAt = -10;
+    if (ImGui::GetTime() - countedAt > 2) tables = countTables(tbDir()), countedAt = ImGui::GetTime();
+    std::string own = dataDir + "/syzygy";
+    ImGui::PushFont(f.ui, 13);
+    if (tables > 0) ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(theme::win), "Installed: %d tables in %s", tables, tbDir().c_str());
+    else ImGui::TextDisabled(syzygyPath.empty() ? "Not installed" : "No tables found in %s", syzygyPath.c_str());
+    ImGui::PopFont();
+    ImGui::Dummy({0, 4});
+    if (tbDl.running()) {
+        float pr = tbDl.progress();
+        ImGui::ProgressBar(pr, {-1, 8}, "");
+        ImGui::PushFont(f.ui, 13);
+        if (tbDl.total() > 0) ImGui::TextDisabled("Downloading…  %.0f%% of %.2f GB", pr * 100, tbDl.total() / 1e9);
+        else ImGui::TextDisabled("Getting the list of tables…");
+        ImGui::PopFont();
+        if (ImGui::Button("Cancel")) tbDl.cancel(), countedAt = -10;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Downloaded files are kept; the next download continues from here.");
+    } else {
+        if (syzygyPath.empty() && tables < 290) {  // 145 WDL + 145 DTZ
+            std::error_code ec;
+            bool partial = fs::exists(own, ec) && !fs::is_empty(own, ec);
+            if (accentButton(partial ? "Continue download (~1 GB in all)" : "Download 3–5 piece tables (~1 GB)", {0, 32}))
+                tbDl.start(own);
+            ImGui::SameLine(0, 8);
+        }
+        if (ImGui::Button("Use existing folder…", {0, 32})) {
+            nfdu8char_t* out = nullptr;
+            if (NFD_PickFolderU8(&out, nullptr) == NFD_OKAY) {
+                syzygyPath = out;
+                NFD_FreePathU8(out);
+                store.setSetting("syzygyPath", syzygyPath);
+                applyTablebases();
+                countedAt = -10;
+                if (!countTables(syzygyPath)) notify("No Syzygy tables (.rtbw) in that folder");
+            }
+        }
+        if (!syzygyPath.empty()) {
+            ImGui::SameLine(0, 8);
+            if (ImGui::Button("Stop using this folder", {0, 32})) {
+                syzygyPath.clear();
+                store.setSetting("syzygyPath", "");
+                applyTablebases();
+                countedAt = -10;
+            }
+        } else if (std::error_code ec; fs::exists(own, ec)) {
+            ImGui::SameLine(0, 8);
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::loss);
+            if (ImGui::Button("Delete", {0, 32})) ImGui::OpenPopup("Delete tablebases?");
+            ImGui::PopStyleColor();
+        }
+        if (ImGui::BeginPopup("Delete tablebases?")) {
+            ImGui::TextUnformatted("Delete the downloaded tablebases?");
+            ImGui::TextDisabled("You can download them again any time.");
+            if (ImGui::Button("Delete")) {
+                std::error_code ec;
+                fs::remove_all(own, ec);
+                applyTablebases();
+                countedAt = -10;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Keep")) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        if (auto e = tbDl.error(); !e.empty()) {
+            ImGui::PushFont(f.ui, 13);
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(theme::loss), "%s", e.c_str());
+            ImGui::PopFont();
+        }
+    }
     cardEnd();
 }

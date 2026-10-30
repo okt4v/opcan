@@ -29,6 +29,10 @@ double winPercent(Score s) {
     return 50 + 50 * (2 / (1 + std::exp(-0.00368208 * cp)) - 1);
 }
 
+bool retryAccepted(Score best, Score after) {
+    return winPercent(best) - (100 - winPercent(after)) <= kExcellent;
+}
+
 double moveAccuracy(double before, double after) {
     if (after >= before) return 100;
     double a = 103.1668100711649 * std::exp(-0.04354415386753951 * (before - after)) - 3.166924740191411 + 1;

@@ -1,4 +1,5 @@
 #pragma once
+#include "play.hpp"
 #include "review.hpp"
 #include <chess.hpp>
 #include <imgui.h>
@@ -26,6 +27,12 @@ public:
     float animTime = 0.14f;  // seconds per slide, 0 = no animation
     int coords = 1;          // 0 off, 1 inside the squares, 2 outside the board
     bool showLegal = true, showLastMove = true;
+    // Premoves: with premoveSide set (0 white, 1 black) the user may also move that side's pieces while
+    // the other side is to move. Those go into `premoves` (shown applied, highlighted) instead of being
+    // returned; right-click clears them. The owner plays or drops them once it's that side's turn.
+    int premoveSide = -1;
+    std::vector<Premove> premoves;
+    std::vector<std::pair<int, ImU32>> marks;  // extra square highlights (square index, color), e.g. the coach's tags
     // Draws at the cursor, size x size pixels. Returns a legal move the user made, or NO_MOVE.
     // lastMove is highlighted; badge is drawn on lastMove's destination (Cls::None = no badge).
     chess::Move draw(const chess::Board& b, float size, chess::Move lastMove, Cls badge,
