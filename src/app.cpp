@@ -325,6 +325,7 @@ void App::Impl::open(Game g, int64_t id) {
     game = std::move(g);
     gameId = id;
     meta = id ? store.game(id) : std::nullopt;
+    board.flipped = userSide() == 1;  // the user's side is always at the bottom
     review.reset();
     reviewer.reset();
     computeSpent();

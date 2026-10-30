@@ -297,6 +297,7 @@ struct App::Impl {
     void openSettings();
     void loadText(std::string_view text);
     void open(Game g, int64_t id = 0);
+    int userSide() const;
     void openFileDialog();
     void computeSpent();
     void setReview(const std::vector<PosEval>& evals);

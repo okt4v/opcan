@@ -1280,6 +1280,23 @@ void App::Impl::drawLibraryModals() {
     }
 }
 
+// 0 white, 1 black, -1 unknown: the stored "You played", else a linked account's name in the headers.
+int App::Impl::userSide() const {
+    if (meta && meta->userColor >= 0) return meta->userColor;
+    if (!prof || !game) return -1;
+    auto lower = [](std::string v) {
+        for (auto& c : v) c = (char)std::tolower((unsigned char)c);
+        return v;
+    };
+    std::string w = lower(game->header("White")), b = lower(game->header("Black"));
+    for (auto& a : prof->accounts) {
+        std::string u = lower(a.username);
+        if (u == w) return 0;
+        if (u == b) return 1;
+    }
+    return -1;
+}
+
 void App::Impl::saveMeta(const GameRow& g) {
     store.updateGameMeta(g);
     libDirty = true;
@@ -1386,6 +1403,7 @@ void App::Impl::drawGameInfo(float h) {
         g.userColor = ns == 2 ? -1 : ns;
         if (g.userColor < 0) g.countsInStats = false;
         saveMeta(g);
+        if (g.userColor >= 0) board.flipped = g.userColor == 1;
     }
     ImGui::Dummy({0, 2});
     ImGui::BeginDisabled(g.userColor < 0 || prof->guest || g.vsBot);
