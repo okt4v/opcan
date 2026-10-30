@@ -91,7 +91,7 @@ float legend(ImDrawList* dl, ImVec2 p, const std::vector<std::tuple<ImU32, std::
 
 void emptyNote(ImDrawList* dl, ImVec2 p, float w, float h, const char* title, const char* sub) {
     ImGui::PushFont(F->bold, 14);
-    textCentered(dl, {p.x + w / 2, p.y + h / 2 - (sub ? 10 : 0)}, theme::rgb(0xb4b9c1), title);
+    textCentered(dl, {p.x + w / 2, p.y + h / 2 - (sub ? 10 : 0)}, theme::soft, title);
     ImGui::PopFont();
     if (sub) {
         ImGui::PushFont(F->ui, 13);
@@ -274,7 +274,7 @@ void App::Impl::drawStats() {
             bool hov = ImGui::IsItemHovered();
             ImVec2 a{sp.x + i * sw + 3, sp.y + 3}, b{sp.x + (i + 1) * sw - 3, sp.y + sh - 3};
             if (i == statsRange) dl->AddRectFilled(a, b, theme::line, 6);
-            else if (hov) dl->AddRectFilled(a, b, theme::rgb(0x2c313b), 6);
+            else if (hov) dl->AddRectFilled(a, b, theme::hover, 6);
             textCentered(dl, {(a.x + b.x) / 2, (a.y + b.y) / 2}, i == statsRange ? theme::text : theme::dim, kRanges[i]);
             ImGui::PopID();
         }
@@ -446,7 +446,7 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
         if (ImGui::IsItemHovered() && bk >= 0) {
             auto& r = s.ratings[bk][bi];
             ImVec2 c{pl.X((double)r.t), pl.Y(r.rating)};
-            dl->AddLine({c.x, pl.a.y}, {c.x, pl.b.y}, theme::rgb(0xffffff, 50));
+            dl->AddLine({c.x, pl.a.y}, {c.x, pl.b.y}, alpha(theme::hi, 50));
             ring(dl, c, theme::series[kTcSlot[bk]]);
             ImGui::BeginTooltip();
             ImGui::Text("%s  %d", kTcName[bk], r.rating);
@@ -494,7 +494,7 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
                 if (d < best) best = d, bi = i;
             }
             auto& a = s.accTrend[bi];
-            dl->AddLine({dots[bi].x, pl.a.y}, {dots[bi].x, pl.b.y}, theme::rgb(0xffffff, 50));
+            dl->AddLine({dots[bi].x, pl.a.y}, {dots[bi].x, pl.b.y}, alpha(theme::hi, 50));
             ring(dl, line[bi], theme::accent);
             ring(dl, dots[bi], theme::accent);
             ImGui::BeginTooltip();
@@ -579,7 +579,7 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
         for (size_t i = 0; i < n; i++) {
             auto& pr = s.periods[i];
             float cx = pl.a.x + band * (i + 0.5f);
-            if ((int)i == hi_i) dl->AddRectFilled({cx - band / 2, pl.a.y}, {cx + band / 2, pl.b.y}, theme::rgb(0xffffff, 10), 4);
+            if ((int)i == hi_i) dl->AddRectFilled({cx - band / 2, pl.a.y}, {cx + band / 2, pl.b.y}, alpha(theme::hi, 10), 4);
             if ((n - 1 - i) % every == 0) {
                 std::string l = strTime(pr.start + (s.weekly ? 0 : 86400), lf);
                 float tw = textW(f.mono, 11, l);
@@ -635,7 +635,7 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
             if (click) statsPattern = statsPattern == i ? -1 : i;
             bool open = statsPattern == i;
             ImVec2 cc{p.x + 4, yy + 12};
-            ImU32 chev = ps.count ? theme::dim : theme::rgb(0x8a919c, 60);
+            ImU32 chev = ps.count ? theme::dim : alpha(theme::dim, 60);
             if (open) {
                 ImVec2 t[3] = {{cc.x - 4, cc.y - 2}, {cc.x, cc.y + 2.5f}, {cc.x + 4, cc.y - 2}};
                 dl->AddPolyline(t, 3, chev, ImDrawFlags_None, 1.6f);

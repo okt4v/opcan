@@ -56,7 +56,9 @@ CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
 const char* kGameCols =
     "id,profile_id,site,site_id,url,white,black,white_elo,black_elo,result,played_at,time_class,eco,opening,"
-    "user_color,vs_bot,counts,favorite,tags,notes,review_depth,acc_white,acc_black,est_white,est_black";
+    "user_color,vs_bot,counts,favorite,tags,notes,review_depth,acc_white,acc_black,est_white,est_black,"
+    "brill_white,brill_black,great_white,great_black";
+constexpr int kGameColN = 29;  // columns in kGameCols; extra selected columns start here
 
 GameRow readGame(Stmt& q) {
     GameRow g;
@@ -73,6 +75,8 @@ GameRow readGame(Stmt& q) {
     g.reviewDepth = (int)q.i(c++);
     g.accWhite = q.f(c++), g.accBlack = q.f(c++);
     g.estWhite = (int)q.i(c++), g.estBlack = (int)q.i(c++);
+    g.brillWhite = (int)q.i(c++), g.brillBlack = (int)q.i(c++);
+    g.greatWhite = (int)q.i(c++), g.greatBlack = (int)q.i(c++);
     return g;
 }
 
@@ -169,12 +173,74 @@ struct Store::Impl {
         if (!f.tag.empty()) sql += " AND (','||tags||',') LIKE ? ESCAPE '\\'", arg("%," + likeEscape(f.tag) + ",%");
         if (f.favoritesOnly) sql += " AND favorite=1";
         if (!f.includeBots) sql += " AND vs_bot=0";
-        if (f.countedOnly) sql += " AND counts=1";
+        if (f.countedOnly) sql += " AND counts=1 AND vs_bot=0";
+        // the user's side, or either side for games the user didn't play
+        auto sideHas = [&](const char* w, const char* b) {
+            sql += std::string(" AND ((user_color=0 AND ") + w + ">0) OR (user_color=1 AND " + b +
+                   ">0) OR (user_color<0 AND " + w + "+" + b + ">0))";
+        };
+        if (f.brilliantOnly) sideHas("brill_white", "brill_black");
+        if (f.greatOnly) sideHas("great_white", "great_black");
         if (f.since) sql += " AND played_at>=?", argI(f.since);
         if (f.until) sql += " AND played_at<?", argI(f.until);
     }
     static void bindArgs(Stmt& q, const std::vector<std::pair<bool, std::string>>& args) {
         for (auto& [isInt, v] : args) isInt ? (void)q.b((int64_t)std::stoll(v)) : (void)q.b(v);
+    }
+
+    // v2: Brilliant/Great columns; re-scans every game: bot/coach games never count, a side with too
+    // few moves gets accuracy n/a (-1).
+    bool migrateV2() {
+        if (!exec("BEGIN")) return false;
+        if (!exec("ALTER TABLE games ADD COLUMN brill_white INTEGER NOT NULL DEFAULT 0;"
+                  "ALTER TABLE games ADD COLUMN brill_black INTEGER NOT NULL DEFAULT 0;"
+                  "ALTER TABLE games ADD COLUMN great_white INTEGER NOT NULL DEFAULT 0;"
+                  "ALTER TABLE games ADD COLUMN great_black INTEGER NOT NULL DEFAULT 0;"))
+            return exec("ROLLBACK"), false;
+        int bots = 0, naSides = 0, aborted = 0, total = 0;
+        {
+            Stmt q(db, "SELECT games.id,pgn,user_color,vs_bot,counts,review_depth,reviews.summary FROM games "
+                       "LEFT JOIN reviews ON reviews.game_id=games.id");
+            Stmt bot(db, "UPDATE games SET vs_bot=1,counts=0 WHERE id=?");
+            Stmt naW(db, "UPDATE games SET acc_white=-1,est_white=0 WHERE id=?");
+            Stmt naB(db, "UPDATE games SET acc_black=-1,est_black=0 WHERE id=?");
+            Stmt bg(db, "UPDATE games SET brill_white=?,brill_black=?,great_white=?,great_black=? WHERE id=?");
+            auto run = [](Stmt& u, auto... a) {
+                sqlite3_reset(u.s), u.n = 0;
+                u.bind(a...).run();
+            };
+            while (q.row()) {
+                total++;
+                int64_t id = q.i(0);
+                auto gs = parsePgn(q.t(1));
+                int uc = (int)q.i(2);
+                bool wasBot = q.i(3) != 0;
+                int plies = 0, moved[2] = {};
+                if (!gs.empty()) {
+                    plies = (int)gs[0].mainline().size() - 1;
+                    bool rootWhite = gs[0].board(0).sideToMove() == chess::Color::WHITE;
+                    moved[0] = rootWhite ? (plies + 1) / 2 : plies / 2;
+                    moved[1] = plies - moved[0];
+                    if (isBotGame(gs[0], uc) && !wasBot) run(bot, id), bots++;
+                }
+                if (plies < kMinPliesForStats) aborted++;
+                if (q.i(5) > 0) {
+                    for (int c = 0; c < 2; c++)
+                        if (moved[c] < kMinMovesForAccuracy) run(c ? naB : naW, id), naSides++;
+                    if (auto sm = parseSummary(q.t(6)))
+                        run(bg, sm->counts[0][(int)Cls::Brilliant], sm->counts[1][(int)Cls::Brilliant],
+                            sm->counts[0][(int)Cls::Great], sm->counts[1][(int)Cls::Great], id);
+                }
+            }
+        }
+        // whatever the rescan found: a bot game never counts
+        if (!exec("UPDATE games SET counts=0 WHERE vs_bot=1; PRAGMA user_version=2")) return exec("ROLLBACK"), false;
+        if (!exec("COMMIT")) return false;
+        if (total)
+            std::fprintf(stderr, "opcan: db v2 migration: %d games, %d newly flagged bot/coach, %d reviewed sides "
+                                 "set to accuracy n/a, %d aborted (< %d plies)\n",
+                         total, bots, naSides, aborted, kMinPliesForStats);
+        return true;
     }
 };
 
@@ -202,6 +268,7 @@ bool Store::open(const std::string& path) {
         if (!d->exec(kSchema) || !d->exec("PRAGMA user_version=1")) return d->exec("ROLLBACK"), false;
         if (!d->exec("COMMIT")) return false;
     }
+    if (ver < 2 && !d->migrateV2()) return false;
     Stmt q(d->db, "SELECT 1 FROM profiles WHERE guest=1");
     if (!q.row()) return d->exec("INSERT INTO profiles(name,avatar,guest) VALUES('Guest','preset:guest',1)");
     return true;
@@ -305,16 +372,17 @@ int64_t Store::upsertGame(GameRow& g, bool* inserted) {
     if (existed) {
         // user fields (favorite, tags, notes, user_color, counts, vs_bot) and the review are kept
         Stmt q(d->db, "UPDATE games SET url=?,pgn=?,white=?,black=?,white_elo=?,black_elo=?,result=?,played_at=?,"
-                      "time_class=?,eco=?,opening=? WHERE id=?");
+                      "time_class=?,eco=?,opening=?,vs_bot=max(vs_bot,?),counts=counts AND NOT max(vs_bot,?) "
+                      "WHERE id=?");
         q.bind(g.url, g.pgn, g.white, g.black, g.whiteElo, g.blackElo, g.result, g.playedAt, g.timeClass, g.eco,
-               g.opening, id).run();
+               g.opening, g.vsBot, g.vsBot, id).run();
     } else {
         Stmt q(d->db, "INSERT INTO games(profile_id,site,site_id,url,pgn,white,black,white_elo,black_elo,result,"
                       "played_at,time_class,eco,opening,user_color,vs_bot,counts,favorite,tags,notes) "
                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
         q.bind(g.profileId, g.site, g.siteId, g.url, g.pgn, g.white, g.black, g.whiteElo, g.blackElo, g.result,
-               g.playedAt, g.timeClass, g.eco, g.opening, g.userColor, g.vsBot, g.countsInStats, g.favorite, g.tags,
-               g.notes).run();
+               g.playedAt, g.timeClass, g.eco, g.opening, g.userColor, g.vsBot, g.countsInStats && !g.vsBot,
+               g.favorite, g.tags, g.notes).run();
         id = sqlite3_last_insert_rowid(d->db);
     }
     d->noteErr();
@@ -328,7 +396,7 @@ std::optional<GameRow> Store::game(int64_t id) {
     q.bind(id);
     if (!q.row()) return std::nullopt;
     GameRow g = readGame(q);
-    g.pgn = q.t(25);
+    g.pgn = q.t(kGameColN);
     return g;
 }
 
@@ -372,9 +440,9 @@ std::vector<StatsGame> Store::statsGames(int64_t profileId, GameFilter f) {
         while (q.row()) {
             StatsGame g;
             g.row = readGame(q);
-            g.row.pgn = q.t(25);
+            g.row.pgn = q.t(kGameColN);
             r.push_back(std::move(g));
-            raw.push_back({q.t(26), q.t(27)});
+            raw.push_back({q.t(kGameColN + 1), q.t(kGameColN + 2)});
         }
         d->noteErr();
     }
@@ -395,8 +463,10 @@ void Store::setOpening(int64_t gameId, const std::string& eco, const std::string
 
 void Store::updateGameMeta(const GameRow& g) {
     std::lock_guard l(d->m);
-    Stmt q(d->db, "UPDATE games SET favorite=?,tags=?,notes=?,user_color=?,counts=?,vs_bot=? WHERE id=?");
-    q.bind(g.favorite, g.tags, g.notes, g.userColor, g.countsInStats, g.vsBot, g.id).run();
+    // vs_bot only turns on; a bot game never counts (evaluated against the old vs_bot too)
+    Stmt q(d->db, "UPDATE games SET favorite=?,tags=?,notes=?,user_color=?,counts=? AND NOT max(vs_bot,?),"
+                  "vs_bot=max(vs_bot,?) WHERE id=?");
+    q.bind(g.favorite, g.tags, g.notes, g.userColor, g.countsInStats, g.vsBot, g.vsBot, g.id).run();
     d->noteErr();
 }
 
@@ -466,8 +536,10 @@ void Store::saveReview(int64_t gameId, int depth, const std::vector<PosEval>& ev
     d->exec("BEGIN");
     Stmt q(d->db, "INSERT OR REPLACE INTO reviews(game_id,depth,evals,summary) VALUES(?,?,?,?)");
     q.bind(gameId, depth, ev.dump(), sm.dump()).run();
-    Stmt u(d->db, "UPDATE games SET review_depth=?,acc_white=?,acc_black=?,est_white=?,est_black=? WHERE id=?");
-    u.bind(depth, r.accuracy[0], r.accuracy[1], r.estRating[0], r.estRating[1], gameId).run();
+    Stmt u(d->db, "UPDATE games SET review_depth=?,acc_white=?,acc_black=?,est_white=?,est_black=?,brill_white=?,"
+                  "brill_black=?,great_white=?,great_black=? WHERE id=?");
+    u.bind(depth, r.accuracy[0], r.accuracy[1], r.estRating[0], r.estRating[1], r.counts[0][(int)Cls::Brilliant],
+           r.counts[1][(int)Cls::Brilliant], r.counts[0][(int)Cls::Great], r.counts[1][(int)Cls::Great], gameId).run();
     if (!r.openingName.empty()) {
         Stmt o(d->db, "UPDATE games SET eco=?,opening=? WHERE id=?");
         o.bind(r.openingEco, r.openingName, gameId).run();

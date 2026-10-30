@@ -1,4 +1,5 @@
 #include "store.hpp"
+#include <sqlite3.h>
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -178,6 +179,49 @@ void checkStore() {
         auto rg = s.game(gid);
         CHECK(rg->reviewDepth == 18 && rg->accWhite == r.accuracy[0] && rg->estBlack == r.estRating[1]);
         CHECK(s.games(p.id, {})[0].reviewDepth == 18);
+        // 4 moves each: no accuracy for either side
+        CHECK(rg->accWhite == -1 && rg->accBlack == -1 && rg->estWhite == 0);
+        CHECK(rg->brillWhite == r.counts[0][(int)Cls::Brilliant] && rg->greatBlack == r.counts[1][(int)Cls::Great]);
+
+        // brilliant / great filters: the user's side, or either side when the user didn't play
+        for (int c = 0; c < 2; c++) r.counts[c][(int)Cls::Brilliant] = r.counts[c][(int)Cls::Great] = 0;
+        s.saveReview(gid, 18, evals, r);
+        ReviewResult rb = r;
+        rb.counts[0][(int)Cls::Brilliant] = 2;  // white = Carl, not the user
+        rb.counts[1][(int)Cls::Great] = 1;      // black = ALICE
+        s.saveReview(a.id, 18, evals, rb);
+        ReviewResult ri = r;
+        ri.counts[1][(int)Cls::Brilliant] = 1;
+        s.saveReview(im.id, 18, evals, ri);
+        CHECK(s.game(a.id)->brillWhite == 2 && s.game(a.id)->greatBlack == 1);
+        f = {};
+        f.brilliantOnly = true;
+        auto br = s.games(p.id, f);
+        CHECK(br.size() == 1 && br[0].id == im.id);
+        f = {};
+        f.greatOnly = true;
+        CHECK(s.countGames(p.id, f) == 1 && s.games(p.id, f)[0].id == a.id);
+
+        // a coach game is a bot game and can never count
+        auto coachPgn = parsePgn("[Event \"Play vs Coach\"]\n[White \"ALICE\"]\n[Black \"Coach-Magnus\"]\n\n1. e4 e5 *\n");
+        CHECK(coachPgn.size() == 1 && isBotGame(coachPgn[0], 0));
+        GameRow cg = mk(p.id, "coach1", "ALICE", "Coach-Magnus", "*", 0, 1100);
+        cg.vsBot = isBotGame(coachPgn[0], 0);
+        cg.countsInStats = true;  // as a buggy caller would
+        s.upsertGame(cg);
+        CHECK(s.game(cg.id)->vsBot && !s.game(cg.id)->countsInStats);
+        GameRow cm = *s.game(cg.id);
+        cm.vsBot = false, cm.countsInStats = true;
+        s.updateGameMeta(cm);
+        CHECK(s.game(cg.id)->vsBot && !s.game(cg.id)->countsInStats);
+        cg.vsBot = false;  // a re-sync can't unflag it either
+        s.upsertGame(cg);
+        CHECK(s.game(cg.id)->vsBot && !s.game(cg.id)->countsInStats);
+        CHECK(s.statsGames(p.id, {}).size() == 0);  // nothing marked as counted in this test
+        f = {};
+        f.includeBots = false;
+        CHECK(s.countGames(p.id, f) == 4);
+        s.deleteGame(cg.id);
 
         // settings
         CHECK(s.setting("theme", "dark") == "dark");
@@ -194,6 +238,58 @@ void checkStore() {
     {
         Store s;  // reopen: no second Guest
         CHECK(s.open(path.string()) && s.profiles().size() == 1);
+    }
+    rmDb(path);
+
+    // v1 -> v2 migration: rescans PGNs for bot/coach games, sets n/a accuracy, backfills brilliant counts
+    {
+        Store s;
+        CHECK(s.open(path.string()));
+        Profile p;
+        p.name = "Me";
+        s.saveProfile(p);
+        GameRow c = mk(p.id, "c", "okt4v", "Coach-Magnus", "1-0", 0, 100);
+        c.pgn = "[Event \"Play vs Coach\"]\n[White \"okt4v\"]\n[Black \"Coach-Magnus\"]\n\n1. e4 e5 2. Nf3 Nc6 1-0\n";
+        s.upsertGame(c);
+        GameRow o = mk(p.id, "o", "Opp", "okt4v", "1-0", 1, 200);  // opponent played 1. e4, then we quit
+        o.pgn = "1. e4 1-0";
+        s.upsertGame(o);
+        auto og = parsePgn(o.pgn);
+        std::vector<PosEval> ev(2);
+        ev[0].bestUci = "e2e4", ev[1].bestUci = "e7e5";
+        ReviewResult rr = buildReview(og[0], ev, Openings{});
+        CHECK(rr.accuracy[0] == -1 && rr.accuracy[1] == -1);
+        s.saveReview(o.id, 12, ev, rr);
+    }
+    {
+        // make it look like a v1 database written by the old code
+        sqlite3* db = nullptr;
+        CHECK(sqlite3_open(path.string().c_str(), &db) == SQLITE_OK);
+        const char* sql =
+            "UPDATE games SET vs_bot=0,counts=1;"
+            "UPDATE games SET acc_white=100,acc_black=0,est_white=3000 WHERE site_id='o';"
+            "UPDATE reviews SET summary=json_replace(summary,'$.counts[0][1]',1);"
+            "ALTER TABLE games DROP COLUMN brill_white; ALTER TABLE games DROP COLUMN brill_black;"
+            "ALTER TABLE games DROP COLUMN great_white; ALTER TABLE games DROP COLUMN great_black;"
+            "PRAGMA user_version=1;";
+        CHECK(sqlite3_exec(db, sql, nullptr, nullptr, nullptr) == SQLITE_OK);
+        sqlite3_close(db);
+    }
+    {
+        Store s;
+        CHECK(s.open(path.string()));
+        auto ps = s.profiles();
+        auto all = s.games(ps[0].id, {});
+        CHECK(all.size() == 2);
+        auto& o = all[0];
+        auto& c = all[1];
+        CHECK(c.siteId == "c" && c.vsBot && !c.countsInStats);
+        CHECK(o.siteId == "o" && !o.vsBot && o.countsInStats);
+        CHECK(o.accWhite == -1 && o.accBlack == -1 && o.estWhite == 0 && o.brillWhite == 1);
+    }
+    {
+        Store s;  // reopen: already v2, no second migration
+        CHECK(s.open(path.string()) && s.games(s.profiles()[0].id, {}).size() == 2);
     }
     rmDb(path);
     std::puts("store checks passed");

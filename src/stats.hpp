@@ -26,7 +26,9 @@ constexpr int kRatingBuckets = 6;
 int ratingBucket(int diff);
 
 struct Stats {
-    int games = 0, analyzed = 0;  // counted games in the filter, of which reviewed
+    // counted games in the filter (never bot games, never aborted ones: < kMinPliesForStats plies), of which
+    // reviewed with a user accuracy (the user made >= kMinMovesForAccuracy moves)
+    int games = 0, analyzed = 0;
     int wdl[3] = {}, wdlColor[2][3] = {};
     double accuracy = -1;       // mean user accuracy over analyzed games, -1 if none
     double blundersPerGame = -1;

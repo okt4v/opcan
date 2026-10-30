@@ -19,6 +19,13 @@ struct PosEval {
     Score second;
 };
 
+// Data-integrity limits shared by the review, the store and the stats.
+// A game with fewer plies is treated as aborted: it is left out of all stats (results and ratings too).
+constexpr int kMinPliesForStats = 4;
+// A side that made fewer moves has no accuracy (-1, shown as n/a) and no estimated rating (0), and is
+// left out of accuracy, classification, pattern and phase stats.
+constexpr int kMinMovesForAccuracy = 5;
+
 double winPercent(Score s);  // 0..100 for the side to move (lichess formula)
 double moveAccuracy(double wpBefore, double wpAfter);  // lichess per-move accuracy, mover POV
 
@@ -40,10 +47,10 @@ struct ReviewResult {
     std::vector<int> line;          // mainline node ids (root first)
     std::vector<PosEval> evals;     // per line entry
     std::vector<MoveReview> moves;  // per move, moves[i] is line[i+1]
-    double accuracy[2] = {0, 0};    // [white, black]
+    double accuracy[2] = {0, 0};    // [white, black]; -1 if that side made < kMinMovesForAccuracy moves
     int counts[2][(int)Cls::Count] = {};
-    int estRating[2] = {0, 0};
-    double phaseAccuracy[2][3] = {};  // -1 if the phase never happened
+    int estRating[2] = {0, 0};      // 0 when accuracy is -1
+    double phaseAccuracy[2][3] = {};  // -1 if the phase never happened (or accuracy is -1)
     std::string openingName, openingEco;
     const MoveReview* forNode(int node) const;  // nullptr if not a reviewed mainline move
 };

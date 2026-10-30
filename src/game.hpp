@@ -35,5 +35,9 @@ struct Game {
 
 // Parses every game in text. Broken games are skipped, illegal moves end that game's line.
 std::vector<Game> parsePgn(std::string_view text);
+// Games against computers (bots, coaches, engines, odds/variant games) never count toward stats.
+// Looks at [Event], player names (the opponent's when userColor is 0/1, else both), lichess
+// [WhiteTitle "BOT"], [WhiteIsComp "Yes"] and non-standard [Variant].
+bool isBotGame(const Game& g, int userColor = -1);
 // Single position game. nullopt if the FEN is invalid.
 std::optional<Game> gameFromFen(std::string_view fen);

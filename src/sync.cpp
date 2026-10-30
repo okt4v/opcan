@@ -178,11 +178,8 @@ bool fetchChessCom(const Account& acc, int64_t pid, int64_t since, int64_t until
             }
             auto pg = fillFromPgn(g, acc);
             if (!pg) continue;
-            // ponytail: crude bot detection; chess.com computer games rarely appear in archives
-            auto ev = lower(pg->header("Event"));
-            std::string opp = lower(g.userColor == 0 ? g.black : g.userColor == 1 ? g.white : g.white + g.black);
-            g.vsBot = opp.find("bot") != std::string::npos &&
-                      (ev.find("vs computer") != std::string::npos || ev.find("bot") != std::string::npos);
+            // "Play vs Coach" (Coach-Magnus), "Play vs Bot", "vs Computer"
+            g.vsBot = isBotGame(*pg, g.userColor);
             g.countsInStats = g.userColor >= 0 && !g.vsBot;
             out.push_back(std::move(g));
         }
@@ -233,8 +230,10 @@ bool fetchLichess(const Account& acc, int64_t pid, int64_t since, int64_t until,
         }
         if (x.contains("opening") && x["opening"].is_object())
             g.eco = str(x["opening"], "eco"), g.opening = str(x["opening"], "name");
-        if (g.siteId.empty() || !fillFromPgn(g, acc)) continue;
-        g.vsBot = g.userColor >= 0 ? bot[1 - g.userColor] : bot[0] || bot[1];
+        if (g.siteId.empty()) continue;
+        auto pg = fillFromPgn(g, acc);
+        if (!pg) continue;
+        g.vsBot = (g.userColor >= 0 ? bot[1 - g.userColor] : bot[0] || bot[1]) || isBotGame(*pg, g.userColor);
         g.countsInStats = g.userColor >= 0 && !g.vsBot;
         out.push_back(std::move(g));
     }

@@ -140,6 +140,13 @@ Stats computeStats(Store& store, int64_t profileId, const StatsFilter& f, const 
         const std::string& me = uc == 0 ? row.white : row.black;
         if (!wantUser.empty() && lower(me) != wantUser) continue;
         const std::string& opp = uc == 0 ? row.black : row.white;
+        auto parsed = parsePgn(row.pgn);
+        const Game* g = parsed.empty() ? nullptr : &parsed[0];
+        // aborted (or unreadable) games count for nothing, not even results or ratings
+        int plies = g ? (int)g->mainline().size() - 1 : 0;
+        if (plies < kMinPliesForStats) continue;
+        bool rootWhite = g->board(0).sideToMove() == Color::WHITE;
+        int userMoves = (rootWhite == (uc == 0)) ? (plies + 1) / 2 : plies / 2;
 
         s.games++;
         int oc = outcome(row);
@@ -150,8 +157,6 @@ Stats computeStats(Store& store, int64_t profileId, const StatsFilter& f, const 
             if (row.timeClass == kTimeClasses[k]) tc = k;
         if (tc >= 0 && myElo > 0) s.ratings[tc].push_back({row.playedAt, row.id, myElo});
         if (myElo > 0 && oppElo > 0 && oc >= 0) s.buckets[ratingBucket(oppElo - myElo)].wdl[oc]++;
-        auto parsed = parsePgn(row.pgn);
-        const Game* g = parsed.empty() ? nullptr : &parsed[0];
         // lichess "Time forfeit", chess.com "X won on time"
         if (g && oc == 2 && lower(g->header("Termination")).find("time") != std::string::npos) s.lostOnTime++;
 
@@ -163,8 +168,10 @@ Stats computeStats(Store& store, int64_t profileId, const StatsFilter& f, const 
                 if (o->name != row.opening || o->eco != row.eco) renames.push_back({row.id, o->eco, o->name});
             }
         }
-        bool reviewed = row.reviewDepth > 0 && sg.summary && !sg.evals.empty();
-        double gameAcc = uc == 0 ? row.accWhite : row.accBlack;
+        double gameAcc = row.acc(uc);
+        // a side with too few moves has no accuracy (also for reviews stored before that rule)
+        bool reviewed = row.reviewDepth > 0 && sg.summary && !sg.evals.empty() && gameAcc >= 0 &&
+                        userMoves >= kMinMovesForAccuracy;
         if (auto fam = openingFamily(opening); !fam.empty()) {
             auto& os = open[uc][fam];
             os.name = fam;
@@ -188,8 +195,6 @@ Stats computeStats(Store& store, int64_t profileId, const StatsFilter& f, const 
             for (int p = 0; p < 3; p++)
                 if (double pa = sg.summary->phaseAccuracy[uc][p]; pa >= 0) phaseSum[uc][p] += pa, s.phaseN[uc][p]++;
         }
-        if (!g) continue;
-
         // walk the mainline: phases, clocks, per-move accuracy and mistake patterns
         auto ml = g->mainline();
         int base = -1, inc = 0;

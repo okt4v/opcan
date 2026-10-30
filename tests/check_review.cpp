@@ -83,6 +83,67 @@ void checkReview() {
     }
     CHECK(rt[0].header("TimeControl") == "180");
 
+    // bot / coach detection
+    auto botv = parsePgn(R"([Event "Play vs Coach"]
+[White "okt4v"]
+[Black "Coach-Magnus"]
+[TimeControl "-"]
+
+1. e4 e5 *
+
+[Event "Live Chess"]
+[White "okt4v"]
+[Black "Hikaru"]
+
+1. e4 e5 *
+
+[Event "Play vs Bot"]
+[White "Martin"]
+[Black "okt4v"]
+
+1. e4 *
+
+[Event "Live Chess"]
+[White "x"]
+[Black "Robotnik"]
+[BlackIsComp "Yes"]
+
+1. e4 *
+
+[Event "Rated blitz game"]
+[White "Abbot"]
+[Black "y"]
+[WhiteTitle "BOT"]
+[Variant "Standard"]
+
+1. e4 *
+
+[Event "Casual game"]
+[White "lichess AI level 3"]
+[Black "me"]
+
+1. e4 *
+
+[Event "Rated game"]
+[White "Robot"]
+[Black "me"]
+[Variant "Chess960"]
+
+1. e4 *
+)");
+    CHECK(botv.size() == 7);
+    CHECK(isBotGame(botv[0], 0) && isBotGame(botv[0]) && !isBotGame(botv[1], 0) && !isBotGame(botv[1]));
+    CHECK(isBotGame(botv[2], 1) && isBotGame(botv[3], 0) && !isBotGame(botv[3], 1));
+    CHECK(isBotGame(botv[4], 1) && isBotGame(botv[5], 1) && isBotGame(botv[6], 1));
+    {
+        Game h = botv[1];
+        h.headers["Black"] = "Some_Bot";
+        CHECK(isBotGame(h, 0) && !isBotGame(h, 1));
+        h.headers["Black"] = "Robotics";
+        h.headers["Event"] = "Robot Cup";  // only whole words
+        CHECK(!isBotGame(h, 0));
+    }
+
     auto fg = gameFromFen("8/8/8/8/8/8/4k3/K7 w - - 0 1");
     CHECK(fg && fg->nodes.size() == 1);
     CHECK(!gameFromFen("8/8/8/8/8/8/8/K7 w - - 0 1"));
@@ -93,17 +154,23 @@ void checkReview() {
     // classification on hand-made evals
     Openings book;
     CHECK(book.load(OPCAN_SOURCE_DIR "/assets/openings/openings.tsv"));
-    auto synv = parsePgn("1. e4 e5 2. Nf3 Nc6 3. Bc4 Nd4 4. Kf1 Nxf3 *");
+    auto synv = parsePgn("1. e4 e5 2. Nf3 Nc6 3. Bc4 Nd4 4. Kf1 Nxf3 5. gxf3 Qg5 *");
     CHECK(synv.size() == 1 && synv[0].headers.empty());
     auto& syn = synv[0];
     std::vector<PosEval> evals = {ev(30, "e2e4"),  ev(-30, "e7e5"), ev(30, "g1f3"),  ev(-30, "b8c6"), ev(30, "f1c4"),
-                                  ev(-30, "c6d4"), ev(50, "f3e5"),  ev(400, "d4f3"), ev(-400, "g2f3")};
-    auto r = buildReview(syn, evals, book);
-    CHECK(r.moves.size() == 8);
+                                  ev(-30, "c6d4"), ev(50, "f3e5"),  ev(400, "d4f3"), ev(-400, "g2f3"),
+                                  ev(400, "d8g5"), ev(-400, "h2h3")};
+    // first 8 plies only: 4 moves per side is too few for an accuracy
+    auto r = buildReview(syn, std::vector<PosEval>(evals.begin(), evals.begin() + 9), book);
+    CHECK(r.moves.size() == 8 && r.accuracy[0] == -1 && r.accuracy[1] == -1 && r.estRating[0] == 0 && r.estRating[1] == 0);
+    CHECK(r.counts[0][(int)Cls::Blunder] == 1);  // classifications are still there
+    r = buildReview(syn, evals, book);
+    CHECK(r.moves.size() == 10);
     for (int i = 0; i < 6; i++) CHECK(r.moves[i].cls == Cls::Book);
     CHECK(r.moves[6].cls == Cls::Blunder);
     CHECK(r.moves[6].bestSan == "Nxe5" && r.moves[6].bestPvSan.size() == 1);
-    CHECK(r.moves[7].cls == Cls::Best);
+    CHECK(r.moves[7].cls == Cls::Best && r.moves[8].cls == Cls::Best);
+    CHECK(r.accuracy[0] >= 0 && r.estRating[0] > 0);
     CHECK(r.forNode(r.line[7]) == &r.moves[6] && !r.forNode(0));
     CHECK(r.counts[0][(int)Cls::Blunder] == 1 && r.counts[1][(int)Cls::Book] == 3);
     CHECK(!r.openingName.empty() && !r.openingEco.empty());

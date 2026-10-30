@@ -26,7 +26,6 @@ namespace {
 const ImU32 kPreset[12] = {theme::rgb(0x4f9e93), theme::rgb(0x4b84c4), theme::rgb(0x7a6fc0), theme::rgb(0xa8679a),
                            theme::rgb(0xc4645f), theme::rgb(0xcc8650), theme::rgb(0xbfa04e), theme::rgb(0x7fa055),
                            theme::rgb(0x4d8f6c), theme::rgb(0x4a93ad), theme::rgb(0x6b7891), theme::rgb(0x8f7360)};
-const ImU32 kWin = theme::win, kLoss = theme::loss, kDraw = theme::draw;
 
 std::string trim(std::string s) {
     s.erase(0, s.find_first_not_of(" \t\r\n"));
@@ -134,9 +133,9 @@ int segmented(const char* id, const char* const* labels, int n, int sel, float w
 namespace {
 
 // Small pill toggle button.
-bool toggle(const char* label, bool on, bool star = false) {
+bool toggle(const char* label, bool on, bool star = false, Cls badge = Cls::None) {
     ImVec2 ts = ImGui::CalcTextSize(label);
-    float w = ts.x + 24 + (star ? 18 : 0), h = ImGui::GetFrameHeight();
+    float w = ts.x + 24 + (star || badge != Cls::None ? 18 : 0), h = ImGui::GetFrameHeight();
     ImVec2 p = ImGui::GetCursorScreenPos();
     bool click = ImGui::InvisibleButton(label, {w, h});
     bool hov = ImGui::IsItemHovered();
@@ -145,7 +144,12 @@ bool toggle(const char* label, bool on, bool star = false) {
     if (on) dl->AddRect(p, {p.x + w, p.y + h}, alpha(theme::accent, 140), 6);
     float x = p.x + 12;
     if (star) {
-        drawStar(dl, {x + 6, p.y + h / 2}, 6.5f, on ? theme::rgb(0xe8c547) : theme::dim, on);
+        drawStar(dl, {x + 6, p.y + h / 2}, 6.5f, on ? theme::star : theme::dim, on);
+        x += 18;
+    }
+    if (badge != Cls::None) {
+        drawBadge(dl, {x + 6, p.y + h / 2}, 7, badge);
+        if (!on) dl->AddCircleFilled({x + 6, p.y + h / 2}, 7.5f, alpha(theme::panel2, 110));  // muted when off
         x += 18;
     }
     dl->AddText({x, p.y + (h - ts.y) / 2}, on ? theme::text : theme::dim, label);
@@ -362,6 +366,8 @@ std::string App::Impl::importAvatar(const std::string& src) {
 
 void App::Impl::selectProfile(const Profile& p) {
     prof = p;
+    loadPrefs();
+    applyPrefs();
     view = View::Library;
     libDirty = true;
     filter = GameFilter{};
@@ -391,6 +397,8 @@ void App::Impl::leaveProfile() {
     manage = false;
     view = View::Library;
     profiles = store.profiles();
+    loadPrefs();
+    applyPrefs();
 }
 
 void App::Impl::drawProfiles() {
@@ -454,7 +462,7 @@ void App::Impl::drawProfiles() {
                 dl->AddCircle({ax + s / 2, ay + s / 2}, 22, theme::rgb(0xffffff, 200), 32, 2);
                 drawPencil(dl, {ax + s / 2, ay + s / 2}, 10, theme::rgb(0xffffff, 230));
             }
-            if (disabled) dl->AddRectFilled({ax, ay}, {ax + s, ay + s}, theme::rgb(0x15171c, 170), 16);
+            if (disabled) dl->AddRectFilled({ax, ay}, {ax + s, ay + s}, alpha(theme::bg, 170), 16);
             if (!p->pin.empty()) {
                 ImVec2 bc{ax + s - 18, ay + s - 18};
                 dl->AddCircleFilled(bc, 14, theme::rgb(0x15171c, 220), 24);
@@ -484,9 +492,9 @@ void App::Impl::drawProfiles() {
     ImVec2 bp = ImGui::GetCursorScreenPos();
     if (ImGui::InvisibleButton("manage", {bw, 40})) manage = !manage;
     bool hov = ImGui::IsItemHovered();
-    if (manage) dl->AddRectFilled(bp, {bp.x + bw, bp.y + 40}, hov ? theme::rgb(0x6cc5b7) : theme::accent, 8);
+    if (manage) dl->AddRectFilled(bp, {bp.x + bw, bp.y + 40}, hov ? theme::accentHi : theme::accent, 8);
     else dl->AddRect(bp, {bp.x + bw, bp.y + 40}, hov ? theme::text : theme::line, 8, 1.5f);
-    textCentered(dl, {bp.x + bw / 2, bp.y + 20}, manage ? theme::rgb(0x0f1a18) : hov ? theme::text : theme::dim, lbl);
+    textCentered(dl, {bp.x + bw / 2, bp.y + 20}, manage ? theme::onAccent : hov ? theme::text : theme::dim, lbl);
     ImGui::PopFont();
     drawPinModal();
 }
@@ -527,7 +535,7 @@ void App::Impl::drawPinModal() {
     double since = ImGui::GetTime() - pinErrorAt;
     const char* sub = since < 2 ? "Wrong PIN, try again" : "Enter your PIN";
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (w - ImGui::CalcTextSize(sub).x) / 2);
-    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(since < 2 ? kLoss : theme::dim), "%s", sub);
+    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(since < 2 ? theme::loss : theme::dim), "%s", sub);
     ImGui::Dummy({0, 8});
     p = ImGui::GetCursorScreenPos();
     float shake = since < 0.4 ? std::sin(float(since) * 60) * 8 * float(1 - since / 0.4) : 0;
@@ -764,7 +772,7 @@ void App::Impl::drawEditor() {
             animUntil = ImGui::GetTime() + 0.1;
         } else if (r.res) {
             bool ok = r.res->exists, err = !r.res->error.empty();
-            ImU32 c = err ? theme::cls(Cls::Inaccuracy) : ok ? kWin : kLoss;
+            ImU32 c = err ? theme::cls(Cls::Inaccuracy) : ok ? theme::win : theme::loss;
             if (ok) drawCheck(dl, {sp.x + 8, sp.y + fh / 2}, 5, c);
             else drawCross(dl, {sp.x + 8, sp.y + fh / 2}, 4, c);
             dl->AddText({sp.x + 22, sp.y + (fh - ImGui::GetFontSize()) / 2}, c, err ? "Network error" : ok ? "Found" : "Not found");
@@ -813,19 +821,20 @@ void App::Impl::drawEditor() {
         if (ed.p.id) {
             ImGui::Dummy({0, 4});
             if (!ed.confirmDelete) {
-                ImGui::PushStyleColor(ImGuiCol_Text, kLoss);
+                ImGui::PushStyleColor(ImGuiCol_Text, theme::loss);
                 if (ImGui::Button("Delete profile…")) ed.confirmDelete = true;
                 ImGui::PopStyleColor();
             } else {
                 ImGui::AlignTextToFramePadding();
-                ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kLoss), "Delete this profile and all its games?");
+                ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(theme::loss), "Delete this profile and all its games?");
                 ImGui::SameLine(0, 12);
-                ImGui::PushStyleColor(ImGuiCol_Button, kLoss);
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::rgb(0xec7570));
+                ImGui::PushStyleColor(ImGuiCol_Button, theme::loss);
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::dangerHi);
                 if (ImGui::Button("Delete")) {
                     store.deleteProfile(ed.p.id);
                     profiles = store.profiles();
                     ed.open = false;
+                    if (prof && prof->id == ed.p.id) leaveProfile();
                 }
                 ImGui::PopStyleColor(2);
                 ImGui::SameLine(0, 8);
@@ -841,7 +850,7 @@ void App::Impl::drawEditor() {
     ImGui::Dummy({0, 8});
     if (!ed.err.empty()) {
         ImGui::AlignTextToFramePadding();
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kLoss), "%s", ed.err.c_str());
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(theme::loss), "%s", ed.err.c_str());
         ImGui::SameLine();
     }
     ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - 2 * 112 - 8);
@@ -951,7 +960,7 @@ void App::Impl::drawLibrary() {
             ImGui::PushFont(f.ui, 13);
             st = ellipsize(st, W * 0.4f);
             ImVec2 ts = ImGui::CalcTextSize(st.c_str());
-            dl->AddText({sx - ts.x, p.y + 16 - ts.y / 2}, syncing ? theme::dim : kLoss, st.c_str());
+            dl->AddText({sx - ts.x, p.y + 16 - ts.y / 2}, syncing ? theme::dim : theme::loss, st.c_str());
             ImGui::PopFont();
             if (syncing) spinner(dl, {sx - ts.x - 14, p.y + 16}, 6, theme::accent);
         }
@@ -1011,7 +1020,10 @@ void App::Impl::drawLibrary() {
     if (toggle("Favorites", filter.favoritesOnly, true)) filter.favoritesOnly = !filter.favoritesOnly, libDirty = true;
     place(ImGui::CalcTextSize("Bots").x + 24);
     if (toggle("Bots", showBots)) showBots = !showBots, libDirty = true;
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Include games against computers");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Include games against bots and coaches");
+    place(ImGui::CalcTextSize("Brilliant").x + 42);
+    if (toggle("Brilliant", filter.brilliantOnly, false, Cls::Brilliant)) filter.brilliantOnly = !filter.brilliantOnly, libDirty = true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Games where you played a brilliant move");
     ImGui::Dummy({0, 8});
 
     // list
@@ -1068,13 +1080,13 @@ void App::Impl::drawGameRow(const GameRow& g, float w) {
     }
     bool menuOpen = ImGui::IsPopupOpen("ctx");
     if (hov || menuOpen) dl->AddRectFilled(p, {p.x + w, p.y + h}, theme::panel, 8);
-    else dl->AddLine({p.x + 12, p.y + h - 0.5f}, {p.x + w - 12, p.y + h - 0.5f}, theme::rgb(0x30353f, 120));
+    else dl->AddLine({p.x + 12, p.y + h - 0.5f}, {p.x + w - 12, p.y + h - 0.5f}, alpha(theme::line, 120));
 
     // result pill
     int oc = outcome(g);
     float x = p.x + 12, cy = p.y + h / 2;
     if (oc >= 0) {
-        ImU32 c = oc == 0 ? kWin : oc == 1 ? kDraw : kLoss;
+        ImU32 c = oc == 0 ? theme::win : oc == 1 ? theme::draw : theme::loss;
         dl->AddRectFilled({x, cy - 15}, {x + 30, cy + 15}, alpha(c, 46), 7);
         ImGui::PushFont(f.bold, 15);
         textCentered(dl, {x + 15, cy}, c, oc == 0 ? "W" : oc == 1 ? "D" : "L");
@@ -1094,7 +1106,7 @@ void App::Impl::drawGameRow(const GameRow& g, float w) {
     ImGui::SetCursorScreenPos({sc.x - 14, cy - 14});
     bool starClick = ImGui::InvisibleButton("star", {28, 28});
     bool starHov = ImGui::IsItemHovered();
-    if (g.favorite) drawStar(dl, sc, 8, theme::rgb(0xe8c547), true);
+    if (g.favorite) drawStar(dl, sc, 8, theme::star, true);
     else if (hov || starHov) drawStar(dl, sc, 8, starHov ? theme::text : theme::dim, false);
     if (starClick) row.favorite = !row.favorite, saveMeta(row);
 
@@ -1107,17 +1119,27 @@ void App::Impl::drawGameRow(const GameRow& g, float w) {
     if (g.reviewDepth > 0) {
         char b[48];
         auto chip = [&](double acc, bool white, float xr) {
-            std::snprintf(b, sizeof b, "%.1f", acc);
+            if (acc < 0) std::snprintf(b, sizeof b, "–");  // too few moves: n/a
+            else std::snprintf(b, sizeof b, "%.1f", acc);
             ImVec2 ts = ImGui::CalcTextSize(b);
             float x0 = xr - ts.x - 26;
             dl->AddRectFilled({x0, cy - 12}, {xr, cy + 12}, theme::panel2, 6);
             dl->AddRectFilled({x0 + 8, cy - 4}, {x0 + 16, cy + 4}, white ? theme::evalWhite : theme::evalBlack, 2);
+            if (white) dl->AddRect({x0 + 8, cy - 4}, {x0 + 16, cy + 4}, theme::edge, 2);
             if (!white) dl->AddRect({x0 + 8, cy - 4}, {x0 + 16, cy + 4}, theme::dim, 2);
             dl->AddText({x0 + 20, cy - ts.y / 2}, theme::text, b);
             return x0;
         };
         if (g.userColor >= 0) textLimit = chip(g.userColor ? g.accBlack : g.accWhite, g.userColor == 0, accRight);
         else textLimit = chip(g.accWhite, true, chip(g.accBlack, false, accRight) - 6);
+        // brilliant / great badges (the user's side, or both when the user didn't play)
+        int nb = g.userColor >= 0 ? g.brilliant(g.userColor) : g.brillWhite + g.brillBlack;
+        int ng = g.userColor >= 0 ? g.great(g.userColor) : g.greatWhite + g.greatBlack;
+        for (auto [c, n] : {std::pair{Cls::Brilliant, nb}, std::pair{Cls::Great, ng}})
+            if (n > 0) {
+                textLimit -= 17;
+                drawBadge(dl, {textLimit + 7.5f, cy}, 6.5f, c);
+            }
     } else {
         bool analyzing = g.id == bgId || (g.id == gameId && reviewer && reviewer->running());
         const char* t = analyzing ? "analyzing" : "queued";
@@ -1154,7 +1176,17 @@ void App::Impl::drawGameRow(const GameRow& g, float w) {
     ImGui::PopFont();
     if (elo > 0) {
         ImGui::PushFont(f.mono, 12);
-        dl->AddText({nx, y1 + 2}, theme::dim, ("(" + std::to_string(elo) + ")").c_str());
+        std::string e = "(" + std::to_string(elo) + ")";
+        dl->AddText({nx, y1 + 2}, theme::dim, e.c_str());
+        nx += ImGui::CalcTextSize(e.c_str()).x + 6;
+        ImGui::PopFont();
+    }
+    if (g.vsBot && nx + 30 < textLimit) {  // never counts toward stats
+        ImGui::PushFont(f.ui, 11);
+        ImVec2 bs = ImGui::CalcTextSize("bot");
+        dl->AddRectFilled({nx, y1 + 1}, {nx + bs.x + 10, y1 + 17}, theme::panel2, 4);
+        dl->AddRect({nx, y1 + 1}, {nx + bs.x + 10, y1 + 17}, alpha(theme::dim, 90), 4);
+        dl->AddText({nx + 5, y1 + 9 - bs.y / 2}, theme::dim, "bot");
         ImGui::PopFont();
     }
     // second line
@@ -1168,7 +1200,6 @@ void App::Impl::drawGameRow(const GameRow& g, float w) {
     }
     std::string meta2 = g.timeClass.empty() ? "" : std::string(1, (char)std::toupper((unsigned char)g.timeClass[0])) + g.timeClass.substr(1);
     if (g.site == "import") meta2 += meta2.empty() ? "Imported" : "  ·  Imported";
-    if (g.vsBot) meta2 += "  ·  Bot";
     std::string op = g.opening.empty() ? g.eco : g.opening;
     if (!op.empty()) meta2 += (meta2.empty() ? "" : "  ·  ") + op;
     meta2 = ellipsize(meta2, std::max(40.f, textLimit - lx));
@@ -1189,12 +1220,14 @@ void App::Impl::drawRowMenu(GameRow& g) {
         std::snprintf(editTags, sizeof editTags, "%s", g.tags.c_str());
         std::snprintf(editNotes, sizeof editNotes, "%s", g.notes.c_str());
     }
-    if (ImGui::MenuItem("Count in stats", nullptr, g.countsInStats, !prof->guest && g.userColor >= 0))
+    if (ImGui::MenuItem("Count in stats", nullptr, g.countsInStats && !g.vsBot, !prof->guest && g.userColor >= 0 && !g.vsBot))
         g.countsInStats = !g.countsInStats, saveMeta(g);
+    if (g.vsBot && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Games against bots and coaches never count");
     if (!g.url.empty() && ImGui::MenuItem(g.site == "lichess" ? "Open on lichess" : g.site == "chess.com" ? "Open on chess.com" : "Open link"))
         openUrl(g.url);
     ImGui::Separator();
-    ImGui::PushStyleColor(ImGuiCol_Text, kLoss);
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::loss);
     if (ImGui::MenuItem("Delete…")) deleteId = g.id;
     ImGui::PopStyleColor();
 }
@@ -1230,8 +1263,8 @@ void App::Impl::drawLibraryModals() {
         ImGui::TextDisabled("Synced games come back only with \"Load older games\".");
         ImGui::Dummy({0, 8});
         bool done = false;
-        ImGui::PushStyleColor(ImGuiCol_Button, kLoss);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::rgb(0xec7570));
+        ImGui::PushStyleColor(ImGuiCol_Button, theme::loss);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::dangerHi);
         if (ImGui::Button("Delete", {112, 32})) {
             store.deleteGame(deleteId);
             if (deleteId == gameId) gameId = 0, meta.reset();
@@ -1292,6 +1325,7 @@ int64_t App::Impl::importGame(const Game& g) {
             break;
         }
     r.userColor = -1;
+    r.vsBot = isBotGame(g);  // same rule as synced games
     r.countsInStats = false;
     int64_t id = store.upsertGame(r);
     libDirty = true;
@@ -1323,7 +1357,7 @@ void App::Impl::drawGameInfo(float h) {
         dl->AddPolyline(t, 3, theme::dim, 1.6f);
     }
     ImGui::PushFont(f.bold, 14);
-    dl->AddText({p.x + 18, p.y + 12 - ImGui::GetFontSize() / 2}, hov ? theme::text : theme::rgb(0xc8ccd2), "Game info");
+    dl->AddText({p.x + 18, p.y + 12 - ImGui::GetFontSize() / 2}, hov ? theme::text : theme::soft, "Game info");
     ImGui::PopFont();
     if (!infoOpen && !g.tags.empty()) {
         ImGui::PushFont(f.ui, 12);
@@ -1336,13 +1370,13 @@ void App::Impl::drawGameInfo(float h) {
     if (ImGui::InvisibleButton("fav", {24, 24})) g.favorite = !g.favorite, saveMeta(g);
     bool sh = ImGui::IsItemHovered();
     if (sh) ImGui::SetTooltip(g.favorite ? "Remove from favorites" : "Add to favorites");
-    drawStar(dl, {sp.x + 12, sp.y + 12}, 7.5f, g.favorite ? theme::rgb(0xe8c547) : sh ? theme::text : theme::dim, g.favorite);
+    drawStar(dl, {sp.x + 12, sp.y + 12}, 7.5f, g.favorite ? theme::star : sh ? theme::text : theme::dim, g.favorite);
     if (!infoOpen) {
         ImGui::EndChild();
         return;
     }
     ImGui::PushStyleColor(ImGuiCol_FrameBg, theme::bg);
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, theme::rgb(0x111317));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, theme::deep);
     ImGui::Dummy({0, 4});
     ImGui::TextDisabled("You played");
     static const char* kSides[] = {"White", "Black", "Neither"};
@@ -1354,10 +1388,12 @@ void App::Impl::drawGameInfo(float h) {
         saveMeta(g);
     }
     ImGui::Dummy({0, 2});
-    ImGui::BeginDisabled(g.userColor < 0 || prof->guest);
-    bool counts = g.countsInStats;
+    ImGui::BeginDisabled(g.userColor < 0 || prof->guest || g.vsBot);
+    bool counts = g.countsInStats && !g.vsBot;
     if (ImGui::Checkbox("Count in stats", &counts)) g.countsInStats = counts, saveMeta(g);
     ImGui::EndDisabled();
+    if (g.vsBot && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Games against bots and coaches never count");
     ImGui::Dummy({0, 2});
 
     // tags as chips + an input

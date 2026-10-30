@@ -23,11 +23,19 @@ FetchContent_Declare(sqlite URL https://www.sqlite.org/2026/sqlite-amalgamation-
 FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz)
 FetchContent_Declare(nfd GIT_REPOSITORY https://github.com/btzy/nativefiledialog-extended GIT_TAG v1.4.1 GIT_SHALLOW ON)
 set(NFD_PORTAL ON CACHE BOOL "" FORCE)  # xdg portal on Linux instead of GTK
-FetchContent_MakeAvailable(imgui chesslib subprocess stb sqlite json nfd)
+FetchContent_Declare(miniaudio GIT_REPOSITORY https://github.com/mackron/miniaudio GIT_TAG 0.11.25 GIT_SHALLOW ON SOURCE_SUBDIR none)
+FetchContent_MakeAvailable(imgui chesslib subprocess stb sqlite json nfd miniaudio)
 
 add_library(sqlite3 STATIC ${sqlite_SOURCE_DIR}/sqlite3.c)
 target_include_directories(sqlite3 PUBLIC ${sqlite_SOURCE_DIR})
 target_compile_definitions(sqlite3 PRIVATE SQLITE_OMIT_LOAD_EXTENSION SQLITE_DQS=0)
+
+add_library(miniaudio STATIC src/miniaudio_impl.c)
+target_include_directories(miniaudio PUBLIC ${miniaudio_SOURCE_DIR})
+target_link_libraries(miniaudio PUBLIC ${CMAKE_DL_LIBS})
+if(UNIX AND NOT APPLE)
+  target_link_libraries(miniaudio PUBLIC m)
+endif()
 
 # ponytail: system glfw on Linux (nix), fetched elsewhere
 find_package(glfw3 3.4 QUIET)
@@ -54,8 +62,8 @@ add_library(opcan_core STATIC src/engine.cpp src/review.cpp src/game.cpp src/ope
 target_include_directories(opcan_core PUBLIC src ${chesslib_SOURCE_DIR}/include ${subprocess_SOURCE_DIR})
 target_link_libraries(opcan_core PUBLIC Threads::Threads sqlite3 nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
 
-add_executable(opcan src/main.cpp src/app.cpp src/library.cpp src/stats_ui.cpp src/board.cpp)
-target_link_libraries(opcan PRIVATE opcan_core imgui lunasvg::lunasvg nfd::nfd)
+add_executable(opcan src/main.cpp src/app.cpp src/library.cpp src/stats_ui.cpp src/settings_ui.cpp src/board.cpp src/theme.cpp src/audio.cpp)
+target_link_libraries(opcan PRIVATE opcan_core imgui lunasvg::lunasvg nfd::nfd miniaudio)
 target_include_directories(opcan PRIVATE ${stb_SOURCE_DIR})
 
 add_executable(opcan_check tests/check.cpp tests/check_core.cpp tests/check_review.cpp tests/check_store.cpp tests/check_stats.cpp)

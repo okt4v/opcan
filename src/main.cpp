@@ -3,8 +3,10 @@
 #include "theme.hpp"
 #include <GLFW/glfw3.h>
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
+#include <cfloat>
 #include <cstdio>
 #include <cstdlib>
 #include <lunasvg.h>
@@ -28,33 +30,6 @@ static void applyStyle() {
     s.FramePadding = {10, 6};
     s.ItemSpacing = {8, 6};
     s.WindowPadding = {14, 14};
-    auto c = [](ImU32 u) { return ImGui::ColorConvertU32ToFloat4(u); };
-    ImVec4* col = s.Colors;
-    col[ImGuiCol_WindowBg] = c(theme::bg);
-    col[ImGuiCol_ChildBg] = c(theme::panel);
-    col[ImGuiCol_PopupBg] = c(theme::panel);
-    col[ImGuiCol_Border] = c(theme::line);
-    col[ImGuiCol_Text] = c(theme::text);
-    col[ImGuiCol_TextDisabled] = c(theme::dim);
-    col[ImGuiCol_FrameBg] = c(theme::panel2);
-    col[ImGuiCol_FrameBgHovered] = c(theme::line);
-    col[ImGuiCol_FrameBgActive] = c(theme::line);
-    col[ImGuiCol_Button] = c(theme::panel2);
-    col[ImGuiCol_ButtonHovered] = c(theme::line);
-    col[ImGuiCol_ButtonActive] = c(theme::rgb(0x3a404c));
-    col[ImGuiCol_Header] = c(theme::panel2);
-    col[ImGuiCol_HeaderHovered] = c(theme::line);
-    col[ImGuiCol_HeaderActive] = c(theme::line);
-    col[ImGuiCol_CheckMark] = c(theme::accent);
-    col[ImGuiCol_SliderGrab] = c(theme::accent);
-    col[ImGuiCol_SliderGrabActive] = c(theme::accent);
-    col[ImGuiCol_PlotHistogram] = c(theme::accent);
-    col[ImGuiCol_ScrollbarBg] = c(theme::rgb(0, 0));
-    col[ImGuiCol_ScrollbarGrab] = c(theme::line);
-    col[ImGuiCol_Separator] = c(theme::line);
-    col[ImGuiCol_ModalWindowDimBg] = c(theme::rgb(0x000000, 140));
-    col[ImGuiCol_TableBorderLight] = c(theme::line);
-    col[ImGuiCol_TableRowBgAlt] = c(theme::rgb(0xffffff, 6));
 }
 
 int main() {
@@ -80,7 +55,9 @@ int main() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
-    io.IniFilename = nullptr;  // ponytail: no layout persistence until docking layouts land (phase 4)
+    io.IniFilename = nullptr;  // docking layouts are saved per profile in the database
+    io.ConfigInputTrickleEventQueue = false;  // the UI scale rewrites queued mouse events once per frame
+    io.ConfigDockingWithShift = false;
 
     // Wayland/macOS report logical window coords (framebuffer scale handles density);
     // Windows/X11 report pixels, so sizes need the content scale.
@@ -96,21 +73,16 @@ int main() {
     ImGui::GetStyle().ScaleAllSizes(scale);
     ImGui::GetStyle().FontScaleDpi = scale;
 
-    std::string fonts = exeDir() + "/assets/fonts/";
-    Fonts f;
-    f.ui = io.Fonts->AddFontFromFileTTF((fonts + "Inter-Regular.ttf").c_str(), 15);
-    f.bold = io.Fonts->AddFontFromFileTTF((fonts + "Inter-SemiBold.ttf").c_str(), 15);
-    f.mono = io.Fonts->AddFontFromFileTTF((fonts + "JetBrainsMono-Regular.ttf").c_str(), 14);
-    if (!f.ui || !f.bold || !f.mono) {
-        std::fprintf(stderr, "opcan: fonts missing in %s\n", fonts.c_str());
-        return 1;
-    }
-
     ImGui_ImplGlfw_InitForOpenGL(win, true);
     ImGui_ImplOpenGL3_Init(glsl);
 
-    auto app = std::make_unique<App>(f);
+    auto app = std::make_unique<App>();
     g_app = app.get();
+    app->beforeFrame();
+    if (!app->fonts().ui || !app->fonts().bold || !app->fonts().mono) {
+        std::fprintf(stderr, "opcan: fonts missing in %s/assets/fonts\n", exeDir().c_str());
+        return 1;
+    }
     glfwSetDropCallback(win, [](GLFWwindow*, int n, const char** paths) {
         std::vector<std::string> v(paths, paths + n);
         g_app->dropFiles(v);
@@ -125,8 +97,16 @@ int main() {
         // ponytail: idle-friendly loop; wakes at 30 Hz so engine output still streams in
         if (app->animating()) glfwPollEvents();
         else glfwWaitEventsTimeout(1.0 / 30);
+        app->beforeFrame();
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
+        // UI scale: lay out at a smaller logical size and render it at a higher framebuffer scale
+        if (float us = app->uiScale(); us != 1) {
+            io.DisplaySize = {io.DisplaySize.x / us, io.DisplaySize.y / us};
+            io.DisplayFramebufferScale = {io.DisplayFramebufferScale.x * us, io.DisplayFramebufferScale.y * us};
+            for (auto& e : GImGui->InputEventsQueue)
+                if (e.Type == ImGuiInputEventType_MousePos && e.MousePos.PosX != -FLT_MAX) e.MousePos.PosX /= us, e.MousePos.PosY /= us;
+        }
         ImGui::NewFrame();
         app->frame();
         if (app->wantsQuit()) glfwSetWindowShouldClose(win, 1);

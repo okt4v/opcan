@@ -1,6 +1,7 @@
 #pragma once
 // Internals shared by app.cpp (shell, analysis + review screens) and library.cpp (profiles, library, background work).
 #include "app.hpp"
+#include "audio.hpp"
 #include "board.hpp"
 #include "engine.hpp"
 #include "game.hpp"
@@ -28,6 +29,64 @@ struct Settings {
     int liveThreads = std::max(1, (int)std::thread::hardware_concurrency() / 2);
     bool engineLines = false, bestArrow = true, threatArrow = true, autoAnalyze = true;
 };
+
+// Rebindable actions; each has up to two key chords.
+enum class Act { Prev, Next, Start, End, BackToGame, NextMistake, PrevMistake, PlayBest, Flip, Lines, Threat,
+                 Paste, Open, Settings, Help, Quit, Count };
+constexpr int kActCount = (int)Act::Count;
+struct ActDef {
+    const char* id;
+    const char* label;
+    ImGuiKeyChord def[2];
+};
+inline const ActDef kActs[kActCount] = {
+    {"prev", "Previous move", {ImGuiKey_LeftArrow, 0}},
+    {"next", "Next move", {ImGuiKey_RightArrow, 0}},
+    {"start", "Go to start", {ImGuiKey_UpArrow, ImGuiKey_Home}},
+    {"end", "Go to end of line", {ImGuiKey_DownArrow, ImGuiKey_End}},
+    {"back", "Return to the game line", {ImGuiKey_R, 0}},
+    {"nextMistake", "Next mistake", {ImGuiKey_N, 0}},
+    {"prevMistake", "Previous mistake", {ImGuiKey_P, 0}},
+    {"best", "Play the best move", {ImGuiKey_Space, 0}},
+    {"flip", "Flip board", {ImGuiKey_F, 0}},
+    {"lines", "Engine lines", {ImGuiKey_E, 0}},
+    {"threat", "Threat arrow", {ImGuiKey_T, 0}},
+    {"paste", "Paste PGN / FEN", {ImGuiMod_Ctrl | ImGuiKey_V, 0}},
+    {"open", "Open a PGN file", {ImGuiMod_Ctrl | ImGuiKey_O, 0}},
+    {"settings", "Settings", {ImGuiMod_Ctrl | ImGuiKey_Comma, 0}},
+    {"help", "Keyboard shortcuts", {ImGuiMod_Shift | ImGuiKey_Slash, 0}},
+    {"quit", "Quit", {ImGuiMod_Ctrl | ImGuiKey_Q, 0}},
+};
+std::string chordName(ImGuiKeyChord c);
+
+// Appearance, board, sound, keys and layout: stored per profile (Guest and the picker use the global keys).
+struct Prefs {
+    theme::Look look;
+    std::string pieces = "cburnett", uiFont = "Inter", monoFont = "JetBrains Mono";
+    float scale = 1;
+    bool animate = true, evalAnim = true, legal = true, lastMove = true;
+    int animSpeed = 1, coords = 1;  // speed: 0 fast, 1 normal, 2 slow; coords: 0 off, 1 inside, 2 outside
+    bool sound = true, moveSounds = true, notifySound = true;
+    float volume = 0.7f;
+    std::string soundSet = "sfx";
+    ImGuiKeyChord keys[kActCount][2] = {};
+    bool docking = false;
+    Prefs() {
+        for (int i = 0; i < kActCount; i++) keys[i][0] = kActs[i].def[0], keys[i][1] = kActs[i].def[1];
+    }
+};
+
+struct FontChoice {
+    const char* name;
+    const char* regular;
+    const char* bold;
+};
+inline const FontChoice kUiFonts[] = {{"Inter", "Inter-Regular.ttf", "Inter-SemiBold.ttf"},
+                                      {"IBM Plex Sans", "IBMPlexSans-Regular.ttf", "IBMPlexSans-SemiBold.ttf"},
+                                      {"Atkinson Hyperlegible", "AtkinsonHyperlegible-Regular.ttf", "AtkinsonHyperlegible-Bold.ttf"},
+                                      {"JetBrains Mono", "JetBrainsMono-Regular.ttf", "JetBrainsMono-Bold.ttf"}};
+inline const FontChoice kMonoFonts[] = {{"JetBrains Mono", "JetBrainsMono-Regular.ttf", "JetBrainsMono-Bold.ttf"},
+                                        {"IBM Plex Mono", "IBMPlexMono-Regular.ttf", "IBMPlexMono-SemiBold.ttf"}};
 
 // Result of a function run on a detached thread; poll with take() from the UI thread.
 template <class T>
@@ -73,7 +132,7 @@ void textCentered(ImDrawList* dl, ImVec2 c, ImU32 col, const char* s);
 std::string ellipsize(const std::string& s, float maxW);
 int segmented(const char* id, const char* const* labels, int n, int sel, float w, bool enabled = true);  // returns selection
 
-enum class View { Library, Analyze, Stats, Summary, Review };
+enum class View { Library, Analyze, Stats, Summary, Review, Settings };
 enum class Icon { Library, Analyze, Stats, Settings, Back };
 void drawIcon(ImDrawList* dl, ImVec2 c, Icon i, ImU32 col);
 
@@ -99,8 +158,14 @@ struct App::Impl {
     Store store;
     std::string dataDir, storeErr;
     Settings set;
+    Prefs prefs;
     Openings book;
-    BoardView board;
+    BoardView board, preview;
+    Audio audio;
+    std::string fontsLoaded, piecesLoaded;  // fontsLoaded: "ui|mono" of the fonts in f
+    bool prefsDirty = false, layoutReset = false;
+    std::string layoutToLoad;  // ini applied before the next frame
+    int settingsTab = 0, capture = -1;  // capture: act * 2 + slot waiting for a key
 
     // current game
     std::optional<Game> game;
@@ -119,7 +184,7 @@ struct App::Impl {
     float evalShown = 50, evalTarget = 50;
     std::string evalText = "0.0";
     View view = View::Library, backView = View::Library;
-    bool showSettings = false, showHelp = false, quit = false, scrollToCur = false, infoOpen = false;
+    bool showHelp = false, quit = false, scrollToCur = false, infoOpen = false;
     std::string paste;
     char tagInput[64] = "", infoNotes[2048] = "";
     int64_t infoNotesFor = 0;
@@ -165,7 +230,7 @@ struct App::Impl {
     int unreviewedCount = 0;
     double unreviewedAt = -100;
 
-    explicit Impl(Fonts fo);
+    Impl();
     ~Impl();
 
     // app.cpp
@@ -173,6 +238,16 @@ struct App::Impl {
     void loadSettings();
     void saveSettings();
     void resolveEngine();
+    std::string pkey(const std::string& k) const;  // per-profile settings key
+    void loadPrefs();
+    void savePrefs();
+    void applyPrefs();
+    void beforeFrame();  // font rebuild and layout load, outside NewFrame/Render
+    bool act(Act a, bool repeat = false);
+    void moveSound(int node);
+    std::string pieceDir(const std::string& set) const;
+    std::string soundDir(const std::string& set) const;
+    void openSettings();
     void loadText(std::string_view text);
     void open(Game g, int64_t id = 0);
     void openFileDialog();
@@ -194,6 +269,8 @@ struct App::Impl {
     void drawSidebar(float w);
     void drawHome();
     void drawMain();
+    void drawBoardArea(ImVec2 avail);
+    void drawDocked();
     std::vector<Arrow> arrows();
     void drawStrip(const chess::Board& b, chess::Color c, float w, float h);
     void drawEvalBar(float w, float h);
@@ -212,7 +289,6 @@ struct App::Impl {
     void drawMoveList();
     void drawNav();
     void drawPicker();
-    void drawSettings();
     void drawHelp();
     void drawToast();
 
@@ -244,4 +320,15 @@ struct App::Impl {
     void startStats();
     void drawStats();
     void drawStatsCards(const Stats& s, float W);
+
+    // settings_ui.cpp
+    void drawSettings();
+    void settingsAppearance(float w);
+    void settingsBoard(float w);
+    void settingsSound(float w);
+    void settingsEngine(float w);
+    void settingsKeys(float w);
+    void settingsLayout(float w);
+    void settingsProfile(float w);
+    void drawPreview(float size);
 };

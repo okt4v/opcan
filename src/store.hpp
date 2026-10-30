@@ -42,7 +42,11 @@ struct GameRow {
     // review summary, filled by Store::saveReview
     int reviewDepth = 0;  // 0 = not reviewed
     double accWhite = 0, accBlack = 0;
-    int estWhite = 0, estBlack = 0;
+    int estWhite = 0, estBlack = 0;  // acc -1 / est 0: that side made too few moves (n/a)
+    int brillWhite = 0, brillBlack = 0, greatWhite = 0, greatBlack = 0;  // Brilliant / Great move counts
+    double acc(int side) const { return side ? accBlack : accWhite; }
+    int brilliant(int side) const { return side ? brillBlack : brillWhite; }
+    int great(int side) const { return side ? greatBlack : greatWhite; }
 };
 
 struct GameFilter {
@@ -55,6 +59,8 @@ struct GameFilter {
     bool favoritesOnly = false;
     bool includeBots = true;
     bool countedOnly = false;
+    bool brilliantOnly = false;  // the user's side (either side when userColor < 0) played a Brilliant move
+    bool greatOnly = false;      // ...a Great move
     int64_t since = 0, until = 0;  // played_at in [since, until), 0 = open
     int limit = 200, offset = 0;  // newest first
 };
@@ -94,16 +100,18 @@ public:
 
     // Insert, or for a known (profileId, site, siteId) refresh pgn/metadata but keep the user's
     // fields (favorite, tags, notes, userColor, countsInStats) and the review. Returns the id and
-    // sets *inserted.
+    // sets *inserted. vsBot is sticky (once a bot game, always) and a bot game never counts.
     int64_t upsertGame(GameRow& g, bool* inserted = nullptr);
     std::optional<GameRow> game(int64_t id);
     std::vector<GameRow> games(int64_t profileId, const GameFilter& f);  // pgn left empty for speed
     int countGames(int64_t profileId, const GameFilter& f);
-    // Games that count toward stats (countsInStats, not vs bots) matching f, oldest first, no limit,
+    // Games that count toward stats (countsInStats and never vs bots) matching f, oldest first, no limit,
     // with pgn and review. JSON is parsed outside the lock.
     std::vector<StatsGame> statsGames(int64_t profileId, GameFilter f);
     void setOpening(int64_t gameId, const std::string& eco, const std::string& name);
-    void updateGameMeta(const GameRow& g);  // favorite, tags, notes, userColor, countsInStats, vsBot
+    // favorite, tags, notes, userColor, countsInStats, vsBot. vsBot can only be turned on, and a bot
+    // game's countsInStats is always forced off.
+    void updateGameMeta(const GameRow& g);
     void deleteGame(int64_t id);
     std::vector<std::string> tags(int64_t profileId);
     std::vector<int64_t> unreviewed(int64_t profileId, int limit);  // newest first

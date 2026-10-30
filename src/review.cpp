@@ -263,7 +263,14 @@ ReviewResult buildReview(const Game& game, const std::vector<PosEval>& evals, co
         for (int c = 0; c < 2; c++)
             if (cnt[c]) r.accuracy[c] = (wsum[c] / wtot[c] + cnt[c] / hsum[c]) / 2;
     }
+    int moved[2] = {};
+    for (size_t i = 0; i < r.moves.size(); i++) moved[boards[i].sideToMove() == Color::WHITE ? 0 : 1]++;
     for (int c = 0; c < 2; c++) {
+        if (moved[c] < kMinMovesForAccuracy) {  // too few moves to judge: n/a
+            r.accuracy[c] = -1, r.estRating[c] = 0;
+            for (int p = 0; p < 3; p++) r.phaseAccuracy[c][p] = -1;
+            continue;
+        }
         r.estRating[c] = ratingFor(r.accuracy[c]);
         for (int p = 0; p < 3; p++) r.phaseAccuracy[c][p] = phaseCnt[c][p] ? phaseSum[c][p] / phaseCnt[c][p] : -1;
     }

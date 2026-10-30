@@ -1,4 +1,6 @@
 #include "game.hpp"
+#include <algorithm>
+#include <cctype>
 #include <sstream>
 
 using namespace chess;
@@ -6,6 +8,47 @@ using namespace chess;
 std::string Game::header(const std::string& key) const {
     auto it = headers.find(key);
     return it == headers.end() ? "" : it->second;
+}
+
+namespace {
+std::vector<std::string> words(const std::string& s) {
+    std::vector<std::string> r(1);
+    for (char c : s)
+        if (std::isalnum((unsigned char)c)) r.back() += (char)std::tolower((unsigned char)c);
+        else if (!r.back().empty()) r.emplace_back();
+    if (r.back().empty()) r.pop_back();
+    return r;
+}
+bool has(const std::vector<std::string>& ws, const char* w) { return std::find(ws.begin(), ws.end(), w) != ws.end(); }
+
+bool botName(const std::string& name) {
+    std::string n;
+    for (char c : name) n += (char)std::tolower((unsigned char)c);
+    if (n.rfind("coach-", 0) == 0 || n.rfind("lichess ai", 0) == 0) return true;
+    auto ws = words(n);
+    if (ws.empty()) return false;
+    // "Stockfish level 3", "Komodo", "Computer", "Martin-BOT" / "some_bot"
+    if (has(ws, "stockfish") || has(ws, "komodo") || n == "computer" || n == "coach") return true;
+    return ws.size() > 1 && ws.back() == "bot";
+}
+}  // namespace
+
+bool isBotGame(const Game& g, int userColor) {
+    auto ev = words(g.header("Event"));
+    for (const char* w : {"bot", "bots", "computer", "coach", "odds"})
+        if (has(ev, w)) return true;
+    auto v = words(g.header("Variant"));
+    if (!v.empty() && !(v.size() == 1 && v[0] == "standard")) return true;
+    for (int c = 0; c < 2; c++) {
+        if (userColor == c) continue;  // only the opponent
+        std::string side = c ? "Black" : "White";
+        if (botName(g.header(side))) return true;
+        std::string t = g.header(side + "Title"), comp = g.header(side + "IsComp");
+        for (auto& x : t) x = (char)std::toupper((unsigned char)x);
+        for (auto& x : comp) x = (char)std::tolower((unsigned char)x);
+        if (t == "BOT" || comp == "yes") return true;
+    }
+    return false;
 }
 
 std::vector<int> Game::mainline() const {

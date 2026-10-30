@@ -1,4 +1,5 @@
 #include "app_impl.hpp"
+#include <imgui_internal.h>
 #include <nfd.h>
 #include <cmath>
 #include <cstdlib>
@@ -91,15 +92,15 @@ const char* verdict(Cls c) {
 
 bool accentButton(const char* label, ImVec2 size) {
     ImGui::PushStyleColor(ImGuiCol_Button, theme::accent);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::rgb(0x6cc5b7));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme::rgb(0x4a9d90));
-    ImGui::PushStyleColor(ImGuiCol_Text, theme::rgb(0x0f1a18));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::accentHi);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme::accentLo);
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::onAccent);
     bool r = ImGui::Button(label, size);
     ImGui::PopStyleColor(4);
     return r;
 }
 
-App::Impl::Impl(Fonts fo) : f(fo) {
+App::Impl::Impl() {
     const char* db = std::getenv("OPCAN_DB");  // dev hook: alternative database (and data dir)
     fs::path dbPath = db ? fs::path(db) : fs::path(App::configDir()) / "opcan.db";
     dataDir = dbPath.parent_path().empty() ? "." : dbPath.parent_path().string();
@@ -107,7 +108,8 @@ App::Impl::Impl(Fonts fo) : f(fo) {
     fs::create_directories(fs::path(dataDir) / "avatars", ec);
     if (!store.open(dbPath.string())) storeErr = store.error().empty() ? "Could not open " + dbPath.string() : store.error();
     loadSettings();
-    board.load(exeDir() + "/assets/pieces/cburnett");
+    loadPrefs();
+    applyPrefs();
     if (!book.load(exeDir() + "/assets/openings/openings.tsv")) notify("Openings database missing");
     resolveEngine();
     if (storeErr.empty()) profiles = store.profiles();
@@ -120,6 +122,9 @@ App::Impl::Impl(Fonts fo) : f(fo) {
         }
     if (page && std::string(page) == "analyze") view = View::Analyze;
     if (page && std::string(page) == "stats" && prof && !prof->guest) view = View::Stats;
+    if (page && std::string(page) == "settings" && prof) view = View::Settings;
+    if (const char* t = std::getenv("OPCAN_SETTINGS_TAB")) settingsTab = std::atoi(t);  // dev hook
+    if (const char* g = std::getenv("OPCAN_GAME"); g && prof) openStored(std::atoll(g));  // dev hook
 }
 
 void App::Impl::notify(std::string s) {
@@ -166,10 +171,127 @@ void App::Impl::saveSettings() {
     put("autoAnalyze", set.autoAnalyze);
 }
 
+// ---------- per-profile preferences ----------
+
+namespace {
+// Calls f(key, field) for every scalar preference, so load and save stay in sync.
+template <class F>
+void visitPrefs(Prefs& p, F&& f) {
+    f("theme", p.look.mode), f("tint", p.look.tint), f("accent", p.look.accent), f("board", p.look.board);
+    f("boardLight", p.look.customLight), f("boardDark", p.look.customDark);
+    f("pieces", p.pieces), f("uiFont", p.uiFont), f("monoFont", p.monoFont), f("scale", p.scale);
+    f("animate", p.animate), f("animSpeed", p.animSpeed), f("evalAnim", p.evalAnim);
+    f("coords", p.coords), f("legal", p.legal), f("lastMove", p.lastMove);
+    f("sound", p.sound), f("moveSounds", p.moveSounds), f("notifySound", p.notifySound), f("volume", p.volume),
+        f("soundSet", p.soundSet);
+    f("docking", p.docking);
+}
+}  // namespace
+
+std::string App::Impl::pkey(const std::string& k) const {
+    return prof && !prof->guest ? "p" + std::to_string(prof->id) + "." + k : k;
+}
+
+void App::Impl::loadPrefs() {
+    Prefs p;
+    auto get = [&](const std::string& k) {
+        auto v = store.setting(pkey(k));
+        return v.empty() ? store.setting(k) : v;  // profile value, else the global one
+    };
+    visitPrefs(p, [&](const char* k, auto& v) {
+        auto s = get(k);
+        if (s.empty()) return;
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, std::string>) v = s;
+        else if constexpr (std::is_same_v<T, float>) v = (float)std::atof(s.c_str());
+        else v = (T)std::strtoul(s.c_str(), nullptr, 10);
+    });
+    for (int i = 0; i < kActCount; i++)
+        if (auto s = get(std::string("key.") + kActs[i].id); !s.empty())
+            std::sscanf(s.c_str(), "%d,%d", &p.keys[i][0], &p.keys[i][1]);
+    p.scale = std::clamp(p.scale, 0.8f, 1.5f);
+    p.animSpeed = std::clamp(p.animSpeed, 0, 2);
+    prefs = p;
+    layoutToLoad = store.setting(pkey("layout"));
+}
+
+void App::Impl::savePrefs() {
+    visitPrefs(prefs, [&](const char* k, auto& v) {
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, std::string>) store.setSetting(pkey(k), v);
+        else if constexpr (std::is_same_v<T, float>) store.setSetting(pkey(k), std::to_string(v));
+        else store.setSetting(pkey(k), std::to_string((unsigned)v));
+    });
+    for (int i = 0; i < kActCount; i++)
+        store.setSetting(pkey(std::string("key.") + kActs[i].id), std::to_string(prefs.keys[i][0]) + "," + std::to_string(prefs.keys[i][1]));
+    prefsDirty = false;
+}
+
+void App::Impl::applyPrefs() {
+    theme::apply(prefs.look);
+    if (auto dir = pieceDir(prefs.pieces); dir != piecesLoaded) {
+        if (!board.load(dir)) board.load(dir = pieceDir("cburnett"));
+        preview.load(dir);
+        piecesLoaded = dir;
+    }
+    const float speeds[] = {0.08f, 0.14f, 0.24f};
+    board.animTime = preview.animTime = prefs.animate ? speeds[prefs.animSpeed] : 0;
+    board.coords = preview.coords = prefs.coords;
+    board.showLegal = prefs.legal;
+    board.showLastMove = preview.showLastMove = prefs.lastMove;
+    preview.interactive = false;
+    auto snd = soundDir(prefs.soundSet);
+    audio.load(fs::is_directory(snd) ? snd : soundDir("sfx"));
+    audio.setVolume(prefs.sound ? prefs.volume : 0);
+    auto& io = ImGui::GetIO();
+    if (prefs.docking) io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    else io.ConfigFlags &= ~ImGuiConfigFlags_DockingEnable;
+}
+
+std::string App::Impl::pieceDir(const std::string& set) const {
+    auto user = fs::path(dataDir) / "pieces" / set;
+    return fs::exists(user / "wK.svg") ? user.string() : exeDir() + "/assets/pieces/" + set;
+}
+
+std::string App::Impl::soundDir(const std::string& set) const {
+    auto user = fs::path(dataDir) / "sounds" / set;
+    return fs::is_directory(user) ? user.string() : exeDir() + "/assets/sounds/" + set;
+}
+
+void App::Impl::beforeFrame() {
+    if (std::string want = prefs.uiFont + "|" + prefs.monoFont; want != fontsLoaded) {
+        auto& io = ImGui::GetIO();
+        std::string dir = exeDir() + "/assets/fonts/";
+        auto pick = [](const auto& list, const std::string& n) {
+            for (auto& c : list)
+                if (n == c.name) return &c;
+            return &list[0];
+        };
+        auto *u = pick(kUiFonts, prefs.uiFont), *m = pick(kMonoFonts, prefs.monoFont);
+        Fonts old = f;
+        f.ui = io.Fonts->AddFontFromFileTTF((dir + u->regular).c_str(), 15);
+        f.bold = io.Fonts->AddFontFromFileTTF((dir + u->bold).c_str(), 15);
+        f.mono = io.Fonts->AddFontFromFileTTF((dir + m->regular).c_str(), 14);
+        io.FontDefault = f.ui;
+        for (ImFont* x : {old.ui, old.bold, old.mono})
+            if (x) io.Fonts->RemoveFont(x);
+        fontsLoaded = want;
+    }
+    if (!layoutToLoad.empty()) {
+        ImGui::LoadIniSettingsFromMemory(layoutToLoad.c_str());
+        layoutToLoad.clear();
+    }
+}
+
+void App::Impl::openSettings() {
+    view = View::Settings;
+    ed.open = false;
+}
+
 void App::Impl::resolveEngine() {
     enginePath = set.enginePath.empty() ? findEngine() : set.enginePath;
     live.reset();
-    if (enginePath.empty()) return notify("No chess engine found. Set one in Settings (Ctrl+,)");
+    if (enginePath.empty()) return notify("No chess engine found. Set one in Settings");
     live = std::make_unique<LiveAnalyzer>();
     if (!live->start(enginePath, set.liveThreads, 256, 3)) {
         live.reset();
@@ -266,6 +388,7 @@ void App::Impl::setReview(const std::vector<PosEval>& evals) {
 void App::Impl::finishReview() {
     auto evals = reviewer->evals();
     setReview(evals);
+    if (prefs.notifySound) audio.play(Sfx::Notify);
     if (gameId) {
         store.saveReview(gameId, set.reviewDepth, evals, *review);
         libDirty = true;
@@ -276,10 +399,20 @@ void App::Impl::finishReview() {
 
 void App::Impl::go(int n) {
     if (n == cur || n < 0) return;
+    if (game->nodes[n].parent == cur) moveSound(n);
     cur = n;
     scrollToCur = true;
     animUntil = ImGui::GetTime() + 0.3;
 }
+void App::Impl::moveSound(int n) {
+    if (!prefs.moveSounds) return;
+    Board pb = game->board(game->nodes[n].parent), b = game->board(n);
+    Movelist ml;
+    movegen::legalmoves(ml, b);
+    Move m = game->nodes[n].move;
+    audio.play(ml.empty() ? Sfx::End : b.inCheck() ? Sfx::Check : pb.isCapture(m) && m.typeOf() != Move::CASTLING ? Sfx::Capture : Sfx::Move);
+}
+
 void App::Impl::next() {
     if (!game->nodes[cur].children.empty()) go(game->nodes[cur].children[0]);
 }
@@ -315,30 +448,58 @@ const MoveReview* App::Impl::curReview() const { return review ? review->forNode
 
 // ---------- frame ----------
 
+std::string chordName(ImGuiKeyChord c) {
+    if (!c) return "";
+    if (c == (ImGuiMod_Shift | ImGuiKey_Slash)) return "?";
+    std::string s;
+    if (c & ImGuiMod_Ctrl) s += "Ctrl+";
+    if (c & ImGuiMod_Alt) s += "Alt+";
+    if (c & ImGuiMod_Shift) s += "Shift+";
+    ImGuiKey k = (ImGuiKey)(c & ~ImGuiMod_Mask_);
+    switch (k) {
+        case ImGuiKey_LeftArrow: return s + "Left";
+        case ImGuiKey_RightArrow: return s + "Right";
+        case ImGuiKey_UpArrow: return s + "Up";
+        case ImGuiKey_DownArrow: return s + "Down";
+        case ImGuiKey_Comma: return s + ",";
+        case ImGuiKey_Period: return s + ".";
+        case ImGuiKey_Slash: return s + "/";
+        default: return s + ImGui::GetKeyName(k);
+    }
+}
+
+bool App::Impl::act(Act a, bool repeat) {
+    auto& io = ImGui::GetIO();
+    ImGuiKeyChord mods = io.KeyMods;
+    if (mods & ImGuiMod_Super) mods = (mods & ~ImGuiMod_Super) | ImGuiMod_Ctrl;  // Cmd on macOS
+    for (ImGuiKeyChord c : prefs.keys[(int)a])
+        if (c && (c & ImGuiMod_Mask_) == mods && ImGui::IsKeyPressed((ImGuiKey)(c & ~ImGuiMod_Mask_), repeat)) return true;
+    return false;
+}
+
 void App::Impl::keys() {
     auto& io = ImGui::GetIO();
-    if (io.WantTextInput) return;
-    bool ctrl = io.KeyCtrl || io.KeySuper;
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Q, false)) quit = true;
-    if (ImGui::IsKeyPressed(ImGuiKey_Slash, false) && io.KeyShift) showHelp = !showHelp;
+    if (io.WantTextInput || capture >= 0) return;
+    if (act(Act::Quit)) quit = true;
+    if (act(Act::Help)) showHelp = !showHelp;
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) showHelp = false;
-    if (!prof) return;
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_V, false))
+    if (!prof || ed.open) return;
+    if (act(Act::Paste))
         if (const char* t = ImGui::GetClipboardText()) loadText(t);
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_O, false)) openFileDialog();
-    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Comma, false)) showSettings = true;
-    if (!game || ctrl || (view != View::Summary && view != View::Review)) return;
-    if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) next();
-    if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) prev();
-    if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, false) || ImGui::IsKeyPressed(ImGuiKey_Home, false)) go(0);
-    if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, false) || ImGui::IsKeyPressed(ImGuiKey_End, false)) toEnd();
-    if (ImGui::IsKeyPressed(ImGuiKey_F, false)) board.flipped = !board.flipped;
-    if (ImGui::IsKeyPressed(ImGuiKey_R, false)) backToGame();
-    if (ImGui::IsKeyPressed(ImGuiKey_E, false)) set.engineLines = !set.engineLines, saveSettings();
-    if (ImGui::IsKeyPressed(ImGuiKey_T, false)) set.threatArrow = !set.threatArrow, saveSettings();
-    if (ImGui::IsKeyPressed(ImGuiKey_N, false)) jumpMistake(+1);
-    if (ImGui::IsKeyPressed(ImGuiKey_P, false)) jumpMistake(-1);
-    if (ImGui::IsKeyPressed(ImGuiKey_Space, false))
+    if (act(Act::Open)) openFileDialog();
+    if (act(Act::Settings)) openSettings();
+    if (!game || (view != View::Summary && view != View::Review)) return;
+    if (act(Act::Next, true)) next();
+    if (act(Act::Prev, true)) prev();
+    if (act(Act::Start)) go(0);
+    if (act(Act::End)) toEnd();
+    if (act(Act::Flip)) board.flipped = !board.flipped;
+    if (act(Act::BackToGame)) backToGame();
+    if (act(Act::Lines)) set.engineLines = !set.engineLines, saveSettings();
+    if (act(Act::Threat)) set.threatArrow = !set.threatArrow, saveSettings();
+    if (act(Act::NextMistake)) jumpMistake(+1);
+    if (act(Act::PrevMistake)) jumpMistake(-1);
+    if (act(Act::PlayBest))
         if (auto u = bestHere(); !u.empty()) playUci(u);
 }
 
@@ -350,6 +511,12 @@ void App::Impl::frame() {
     }
     if (prof) backgroundWork();
     statsStale |= libDirty;  // any library change (sync, review saved, edits) invalidates stats
+    if (prefsDirty && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) savePrefs();
+    if (view != View::Settings) capture = -1;
+    if (auto& io = ImGui::GetIO(); io.WantSaveIniSettings && prof) {
+        store.setSetting(pkey("layout"), ImGui::SaveIniSettingsToMemory());
+        io.WantSaveIniSettings = false;
+    }
     keys();
     updateEval();
 
@@ -373,7 +540,9 @@ void App::Impl::frame() {
                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         ImGui::PopStyleColor();
         ImGui::PopStyleVar();
-        if (gameView) drawMain();
+        if (ed.open) drawEditor();
+        else if (gameView) drawMain();
+        else if (view == View::Settings) drawSettings();
         else if (view == View::Analyze) drawHome();
         else if (view == View::Stats) drawStats();
         else drawLibrary();
@@ -381,7 +550,6 @@ void App::Impl::frame() {
         drawLibraryModals();
     }
     drawPicker();
-    drawSettings();
     drawHelp();
     drawToast();
     ImGui::End();
@@ -411,7 +579,7 @@ void App::Impl::updateEval() {
         evalText = scoreLabel(*s, wtm);
     }
     float dt = ImGui::GetIO().DeltaTime;
-    evalShown += (evalTarget - evalShown) * std::min(1.f, dt * 10);
+    evalShown = prefs.evalAnim ? evalShown + (evalTarget - evalShown) * std::min(1.f, dt * 10) : evalTarget;
 }
 
 // ---------- sidebar ----------
@@ -449,7 +617,7 @@ void App::Impl::drawSidebar(float w) {
         p = ImGui::GetCursorScreenPos();
         bool disabled = it.act == 2 && prof && prof->guest;
         bool active = (it.act == 0 && activeView == View::Library) || (it.act == 1 && activeView == View::Analyze) ||
-                      (it.act == 2 && activeView == View::Stats);
+                      (it.act == 2 && activeView == View::Stats) || (it.act == 3 && activeView == View::Settings);
         bool clicked = ImGui::InvisibleButton("nav", {iw, 36}) && !disabled;
         bool hov = ImGui::IsItemHovered();
         if (active) {
@@ -458,12 +626,13 @@ void App::Impl::drawSidebar(float w) {
         } else if (hov && !disabled) {
             dl->AddRectFilled(p, {p.x + iw, p.y + 36}, theme::panel2, 8);
         }
-        ImU32 col = disabled ? theme::rgb(0x8a919c, 110) : active || hov ? theme::text : theme::dim;
+        ImU32 col = disabled ? alpha(theme::dim, 110) : active || hov ? theme::text : theme::dim;
         drawIcon(dl, {slim ? p.x + iw / 2 : p.x + 22, p.y + 18}, it.icon, active ? theme::accent : col);
         if (!slim) dl->AddText({p.x + 42, p.y + 18 - ImGui::GetFontSize() / 2}, col, it.label);
         if (hov && (slim || disabled)) ImGui::SetTooltip("%s", disabled ? "The Guest profile has no stats" : it.label);
         if (clicked) {
-            if (it.act == 3) showSettings = true;
+            ed.open = false;
+            if (it.act == 3) openSettings();
             else {
                 view = it.act == 0 ? View::Library : it.act == 1 ? View::Analyze : View::Stats;
                 if (it.act == 0) libDirty = true;
@@ -552,8 +721,10 @@ void App::Impl::drawHome() {
     ImGui::Dummy({0, 16});
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + w);
     ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
-    ImGui::TextWrapped("Ctrl+V pastes anywhere  ·  Ctrl+O opens a file  ·  drop a .pgn on the window  ·  ? shows shortcuts");
-    if (enginePath.empty()) ImGui::TextWrapped("No engine found. Open Settings with Ctrl+,");
+    ImGui::TextWrapped("%s pastes anywhere  ·  %s opens a file  ·  drop a .pgn on the window  ·  %s shows shortcuts",
+                       chordName(prefs.keys[(int)Act::Paste][0]).c_str(), chordName(prefs.keys[(int)Act::Open][0]).c_str(),
+                       chordName(prefs.keys[(int)Act::Help][0]).c_str());
+    if (enginePath.empty()) ImGui::TextWrapped("No engine found. Open Settings with %s", chordName(prefs.keys[(int)Act::Settings][0]).c_str());
     ImGui::PopStyleColor();
     ImGui::PopTextWrapPos();
     ImGui::EndGroup();
@@ -561,37 +732,99 @@ void App::Impl::drawHome() {
 
 // ---------- main layout ----------
 
+namespace {
+constexpr float kGap = 14, kBarW = 26, kStripH = 40;
+// Board edge that fits avail next to the eval bar and between the player strips.
+float fitBoard(ImVec2 avail) {
+    float size = std::min(avail.y - 2 * kStripH, avail.x - kBarW - 2 * kGap);
+    return std::max(160.f, std::floor(size / 8) * 8);
+}
+}  // namespace
+
 void App::Impl::drawMain() {
+    if (prefs.docking && prof) return drawDocked();
     auto avail = ImGui::GetContentRegionAvail();
     auto origin = ImGui::GetCursorPos();
-    float gap = 14, barW = 26, stripH = 40;
     float panelW = std::clamp(avail.x * 0.32f, 340.f, 470.f);
-    float boardSize = std::min(avail.y - 2 * stripH, avail.x - panelW - barW - 3 * gap);
-    boardSize = std::max(160.f, std::floor(boardSize / 8) * 8);
-    float leftW = barW + gap + boardSize;
-    float x0 = origin.x + std::max(0.f, (avail.x - panelW - gap - leftW) / 2);
-    float y0 = origin.y + std::max(0.f, (avail.y - boardSize - 2 * stripH) / 2);
-
-    Board b = game->board(cur);
-    bool topIsBlack = !board.flipped;
-    ImGui::SetCursorPos({x0 + barW + gap, y0});
-    drawStrip(b, topIsBlack ? Color::BLACK : Color::WHITE, boardSize, stripH);
-    ImGui::SetCursorPos({x0, y0 + stripH});
-    drawEvalBar(barW, boardSize);
-    ImGui::SetCursorPos({x0 + barW + gap, y0 + stripH});
-    auto* mr = curReview();
-    Move mv = board.draw(b, boardSize, game->nodes[cur].move, mr ? mr->cls : Cls::None, arrows());
-    if (mv != Move::NO_MOVE) go(game->addMove(cur, mv));
-    ImGui::SetCursorPos({x0 + barW + gap, y0 + stripH + boardSize});
-    drawStrip(b, topIsBlack ? Color::WHITE : Color::BLACK, boardSize, stripH);
-
-    ImGui::SetCursorPos({x0 + leftW + gap, origin.y});
+    float boardSize = fitBoard({avail.x - panelW - kGap, avail.y});
+    float leftW = kBarW + kGap + boardSize;
+    float x0 = origin.x + std::max(0.f, (avail.x - panelW - kGap - leftW) / 2);
+    ImGui::SetCursorPos({x0, origin.y});
+    drawBoardArea({leftW + kGap, avail.y});
+    ImGui::SetCursorPos({x0 + leftW + kGap, origin.y});
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {16, 16});
     ImGui::BeginChild("panel", {panelW, avail.y}, ImGuiChildFlags_AlwaysUseWindowPadding,
                       ImGuiWindowFlags_NoScrollbar);
     ImGui::PopStyleVar();
     drawPanel();
     ImGui::EndChild();
+}
+
+// Eval bar, board and player strips, centered in avail from the cursor.
+void App::Impl::drawBoardArea(ImVec2 avail) {
+    auto origin = ImGui::GetCursorPos();
+    float boardSize = fitBoard(avail);
+    float x0 = origin.x + std::max(0.f, (avail.x - kBarW - 2 * kGap - boardSize) / 2);
+    float y0 = origin.y + std::max(0.f, (avail.y - boardSize - 2 * kStripH) / 2);
+    Board b = game->board(cur);
+    bool topIsBlack = !board.flipped;
+    ImGui::SetCursorPos({x0 + kBarW + kGap, y0});
+    drawStrip(b, topIsBlack ? Color::BLACK : Color::WHITE, boardSize, kStripH);
+    ImGui::SetCursorPos({x0, y0 + kStripH});
+    drawEvalBar(kBarW, boardSize);
+    ImGui::SetCursorPos({x0 + kBarW + kGap, y0 + kStripH});
+    auto* mr = curReview();
+    Move mv = board.draw(b, boardSize, game->nodes[cur].move, mr ? mr->cls : Cls::None, arrows());
+    if (mv != Move::NO_MOVE) go(game->addMove(cur, mv));
+    ImGui::SetCursorPos({x0 + kBarW + kGap, y0 + kStripH + boardSize});
+    drawStrip(b, topIsBlack ? Color::WHITE : Color::BLACK, boardSize, kStripH);
+}
+
+// Custom layout: the review screen as dockable windows, one dockspace and window set per profile.
+void App::Impl::drawDocked() {
+    std::string id = std::to_string(prof->id);
+    ImGuiID ds = ImGui::GetID(("dock" + id).c_str());
+    static const char* kNames[] = {"Board", "Review", "Engine", "Graph", "Game info"};
+    std::string win[5];
+    for (int i = 0; i < 5; i++) win[i] = std::string(kNames[i]) + "###" + kNames[i] + id;
+    if (layoutReset || !ImGui::DockBuilderGetNode(ds)) {
+        layoutReset = false;
+        ImGui::DockBuilderRemoveNode(ds);
+        ImGui::DockBuilderAddNode(ds, ImGuiDockNodeFlags_DockSpace);
+        ImGui::DockBuilderSetNodeSize(ds, ImGui::GetContentRegionAvail());
+        ImGuiID left, right, bottom;
+        ImGui::DockBuilderSplitNode(ds, ImGuiDir_Left, 0.64f, &left, &right);
+        ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.3f, &bottom, &right);
+        ImGui::DockBuilderDockWindow(win[0].c_str(), left);
+        ImGui::DockBuilderDockWindow(win[1].c_str(), right);
+        for (int i = 2; i < 5; i++) ImGui::DockBuilderDockWindow(win[i].c_str(), bottom);
+        ImGui::DockBuilderFinish(ds);
+    }
+    ImGui::DockSpace(ds, {0, 0}, ImGuiDockNodeFlags_NoWindowMenuButton);
+    for (int i = 0; i < 5; i++) {
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, i == 0 ? theme::bg : theme::panel);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {16, 14});
+        bool vis = ImGui::Begin(win[i].c_str(), nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar);
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+        if (vis) {
+            ImVec2 avail = ImGui::GetContentRegionAvail();
+            if (i == 0) drawBoardArea(avail);
+            else if (i == 1) drawPanel();
+            else if (i == 2) {
+                if (set.engineLines) drawEngineLines();
+                else if (ImGui::Button(("Show engine lines  (" + chordName(prefs.keys[(int)Act::Lines][0]) + ")").c_str()))
+                    set.engineLines = true, saveSettings();
+            } else if (i == 3) {
+                if (review) drawGraph(avail.x, std::max(40.f, avail.y));
+                else ImGui::TextDisabled("The eval graph appears once the game is reviewed.");
+            } else if (meta) {
+                infoOpen = true;
+                drawGameInfo(avail.y);
+            } else ImGui::TextDisabled("Only library games have game info.");
+        }
+        ImGui::End();
+    }
 }
 
 std::vector<Arrow> App::Impl::arrows() {
@@ -618,6 +851,7 @@ void App::Impl::drawStrip(const Board& b, Color c, float w, float h) {
     ImVec2 p = ImGui::GetCursorScreenPos();
     float av = h - 12, y = p.y + 6;
     dl->AddRectFilled({p.x, y}, {p.x + av, y + av}, white ? theme::evalWhite : theme::evalBlack, 6);
+    if (white) dl->AddRect({p.x, y}, {p.x + av, y + av}, theme::edge, 6);
     std::string name = game->header(white ? "White" : "Black");
     if (name.empty() || name == "?") name = white ? "White" : "Black";
     ImGui::PushFont(f.bold, 15);
@@ -647,6 +881,7 @@ void App::Impl::drawStrip(const Board& b, Color c, float w, float h) {
         bool active = b.sideToMove() == c;
         ImVec2 a{p.x + w - ts.x - 20, y}, z{p.x + w, y + av};
         dl->AddRectFilled(a, z, active ? (white ? theme::evalWhite : theme::panel2) : theme::panel, 6);
+        dl->AddRect(a, z, theme::edge, 6);
         dl->AddText({a.x + 10, y + av / 2 - ts.y / 2}, active && white ? theme::evalBlack : theme::text, t.c_str());
         ImGui::PopFont();
     }
@@ -732,13 +967,17 @@ void App::Impl::drawSummary() {
         ImVec2 p = ImGui::GetCursorScreenPos();
         auto* dl = ImGui::GetWindowDrawList();
         dl->AddRectFilled(p, {p.x + col, p.y + 54}, side ? theme::evalBlack : theme::evalWhite, 8);
+        if (!side) dl->AddRect(p, {p.x + col, p.y + 54}, theme::edge, 8);
         char buf[16];
-        std::snprintf(buf, sizeof buf, "%.1f", r.accuracy[side]);
+        if (r.accuracy[side] < 0) std::snprintf(buf, sizeof buf, "–");  // too few moves: n/a
+        else std::snprintf(buf, sizeof buf, "%.1f", r.accuracy[side]);
         ImGui::PushFont(f.bold, 28);
         ImVec2 ts = ImGui::CalcTextSize(buf);
         dl->AddText({p.x + (col - ts.x) / 2, p.y + (54 - ts.y) / 2}, side ? theme::evalWhite : theme::evalBlack, buf);
         ImGui::PopFont();
         ImGui::Dummy({col, 54});
+        if (r.accuracy[side] < 0 && ImGui::IsItemHovered())
+            ImGui::SetTooltip("Fewer than %d moves: no accuracy", kMinMovesForAccuracy);
         ImGui::EndGroup();
     }
     ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
@@ -763,7 +1002,7 @@ void App::Impl::drawSummary() {
             for (int side = 0; side < 2; side++) {
                 ImGui::TableSetColumnIndex(side ? 3 : 1);
                 int n = r.counts[side][(int)c];
-                ImGui::PushStyleColor(ImGuiCol_Text, n ? theme::cls(c) : theme::dim);
+                ImGui::PushStyleColor(ImGuiCol_Text, n ? theme::clsText(c) : theme::dim);
                 ImGui::PushFont(f.bold, 15);
                 ImGui::Text("%d", n);
                 ImGui::PopFont();
@@ -781,7 +1020,8 @@ void App::Impl::drawSummary() {
         for (int side = 0; side < 2; side++) {
             ImGui::TableSetColumnIndex(side ? 3 : 1);
             ImGui::PushFont(f.bold, 15);
-            ImGui::Text("%d", r.estRating[side]);
+            if (r.estRating[side] > 0) ImGui::Text("%d", r.estRating[side]);
+            else ImGui::TextDisabled("–");
             ImGui::PopFont();
         }
         for (int ph = 0; ph < 3; ph++) {
@@ -868,20 +1108,53 @@ void App::Impl::drawGraph(float w, float h) {
     }
     dl->Flags = flags;
     dl->AddLine({p.x, p.y + h / 2}, {p.x + w, p.y + h / 2}, theme::rgb(0x888888, 90));
+    // Brilliant / Great moves (TakeTakeTake style): a thin guide line in the class color + the badge on
+    // the curve; guide lines closer than 6px to the previous one are skipped
+    auto special = [](Cls c) { return c == Cls::Brilliant || c == Cls::Great; };
+    size_t nm = std::min(n, review->moves.size() + 1);
+    const float br = std::min(7.f, h / 2 - 1);
+    float lastGuide = -1e9f;
+    for (size_t i = 1; i < nm; i++)
+        if (Cls c = review->moves[i - 1].cls; special(c) && X(i) - lastGuide >= 6) {
+            dl->AddLine({X(i), p.y}, {X(i), p.y + h}, alpha(theme::cls(c), 150), 1);
+            lastGuide = X(i);
+        }
     if (lineIdx.count(cur)) {
         float cx = X(lineIdx[cur]);
         dl->AddLine({cx, p.y}, {cx, p.y + h}, theme::accent, 2);
     }
-    for (size_t i = 1; i < n; i++) {
+    for (size_t i = 1; i < nm; i++) {
         Cls c = review->moves[i - 1].cls;
-        if (isBad(c) && c != Cls::Inaccuracy || c == Cls::Brilliant || c == Cls::Great)
-            dl->AddCircleFilled({X(i), Y(i)}, 3.5f, theme::cls(c));
+        if (isBad(c) && c != Cls::Inaccuracy) dl->AddCircleFilled({X(i), Y(i)}, 3.5f, theme::cls(c));
     }
+    auto badgeAt = [&](size_t i) {
+        return ImVec2{std::clamp(X(i), p.x + br + 1, p.x + w - br - 1), std::clamp(Y(i), p.y + br + 1, p.y + h - br - 1)};
+    };
+    ImVec2 mouse = ImGui::GetIO().MousePos;
+    int hovBadge = -1;
+    for (Cls want : {Cls::Great, Cls::Brilliant})  // brilliants on top
+        for (size_t i = 1; i < nm; i++)
+            if (review->moves[i - 1].cls == want) {
+                ImVec2 c = badgeAt(i);
+                drawBadge(dl, c, br, want);
+                float dx = mouse.x - c.x, dy = mouse.y - c.y;
+                if (dx * dx + dy * dy <= (br + 2) * (br + 2)) hovBadge = (int)i;
+            }
     dl->PopClipRect();
+    dl->AddRect(p, {p.x + w, p.y + h}, theme::edge, 6);
     if (ImGui::IsItemHovered()) {
-        float mx = ImGui::GetIO().MousePos.x;
+        float mx = mouse.x;
         size_t i = (size_t)std::clamp((int)std::lround((mx - p.x) / w * (n - 1)), 0, (int)n - 1);
-        dl->AddLine({X(i), p.y}, {X(i), p.y + h}, theme::rgb(0xffffff, 60));
+        if (hovBadge > 0) {  // snap to the badge under the mouse
+            i = (size_t)hovBadge;
+            ImGui::SetTooltip("%s  %s", moveLabel(review->line[i]).c_str(), clsName(review->moves[i - 1].cls));
+            if (ImGui::IsItemClicked()) {
+                view = View::Review;
+                go(review->line[i]);
+            }
+            return;
+        }
+        dl->AddLine({X(i), p.y}, {X(i), p.y + h}, alpha(theme::hi, 60));
         if (i > 0) ImGui::SetTooltip("%s  %s", moveLabel(review->line[i]).c_str(),
                                      scoreLabel(review->evals[i].best, game->board(review->line[i]).sideToMove() == Color::WHITE).c_str());
         if (ImGui::IsItemClicked()) {
@@ -893,18 +1166,18 @@ void App::Impl::drawGraph(float w, float h) {
 
 void App::Impl::drawReview() {
     drawCoach();
-    if (review) {
+    if (review && !prefs.docking) {
         drawGraph(ImGui::GetContentRegionAvail().x, 56);
         ImGui::Dummy({0, 4});
     } else if (reviewer && reviewer->running()) {
         ImGui::ProgressBar(reviewer->progress(), {-1, 6}, "");
     }
-    if (set.engineLines) drawEngineLines();
-    float infoH = !meta ? 0 : infoOpen ? std::min(304.f, ImGui::GetContentRegionAvail().y * 0.55f) : 40;
+    if (set.engineLines && !prefs.docking) drawEngineLines();
+    float infoH = !meta || prefs.docking ? 0 : infoOpen ? std::min(304.f, ImGui::GetContentRegionAvail().y * 0.55f) : 40;
     ImGui::BeginChild("moves", {0, -46 - infoH}, ImGuiChildFlags_None);
     drawMoveList();
     ImGui::EndChild();
-    if (meta) drawGameInfo(infoH - 8);
+    if (meta && !prefs.docking) drawGameInfo(infoH - 8);
     drawNav();
 }
 
@@ -925,7 +1198,7 @@ void App::Impl::drawCoach() {
         ImGui::PushFont(f.bold, 16);
         ImGui::TextUnformatted(nd.san.c_str());
         ImGui::SameLine(0, 5);
-        ImGui::PushStyleColor(ImGuiCol_Text, theme::cls(mr->cls));
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::clsText(mr->cls));
         ImGui::TextUnformatted(verdict(mr->cls));
         ImGui::PopStyleColor();
         ImGui::PopFont();
@@ -938,6 +1211,7 @@ void App::Impl::drawCoach() {
         ImVec2 a{p.x + w - ts.x - 26, p.y + 12};
         bool wa = wpWhite[i] >= 50;
         dl->AddRectFilled(a, {a.x + ts.x + 12, a.y + ts.y + 6}, wa ? theme::evalWhite : theme::evalBlack, 5);
+        if (wa) dl->AddRect(a, {a.x + ts.x + 12, a.y + ts.y + 6}, theme::edge, 5);
         dl->AddText({a.x + 6, a.y + 3}, wa ? theme::evalBlack : theme::evalWhite, ev.c_str());
         ImGui::PopFont();
         ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
@@ -1021,7 +1295,7 @@ bool App::Impl::moveCell(int n, float width) {
     bool sel = n == cur;
     bool clicked = ImGui::InvisibleButton("m", {width, 24});
     auto* dl = ImGui::GetWindowDrawList();
-    if (sel) dl->AddRectFilled(p, {p.x + width, p.y + 24}, theme::rgb(0x5ab4a6, 60), 5);
+    if (sel) dl->AddRectFilled(p, {p.x + width, p.y + 24}, alpha(theme::accent, 60), 5);
     else if (ImGui::IsItemHovered()) dl->AddRectFilled(p, {p.x + width, p.y + 24}, theme::line, 5);
     float x = p.x + 6;
     if (mr && mr->cls != Cls::None && mr->cls != Cls::Best && mr->cls != Cls::Excellent && mr->cls != Cls::Good) {
@@ -1029,7 +1303,7 @@ bool App::Impl::moveCell(int n, float width) {
         x += 18;
     }
     ImGui::PushFont(sel ? f.bold : f.ui, 14);
-    dl->AddText({x, p.y + 4}, mr && isBad(mr->cls) ? theme::cls(mr->cls) : theme::text, nd.san.c_str());
+    dl->AddText({x, p.y + 4}, mr && isBad(mr->cls) ? theme::clsText(mr->cls) : theme::text, nd.san.c_str());
     ImGui::PopFont();
     if (auto it = spent.find(n); it != spent.end()) {
         std::string t = spentText(it->second);
@@ -1074,7 +1348,7 @@ void App::Impl::drawVariations(int mainNode) {
             ImVec2 p = ImGui::GetCursorScreenPos();
             if (ImGui::InvisibleButton("v", {ts.x + 6, ts.y + 4})) go(n);
             auto* dl = ImGui::GetWindowDrawList();
-            if (n == cur) dl->AddRectFilled(p, {p.x + ts.x + 6, p.y + ts.y + 4}, theme::rgb(0x5ab4a6, 60), 4);
+            if (n == cur) dl->AddRectFilled(p, {p.x + ts.x + 6, p.y + ts.y + 4}, alpha(theme::accent, 60), 4);
             else if (ImGui::IsItemHovered()) dl->AddRectFilled(p, {p.x + ts.x + 6, p.y + ts.y + 4}, theme::line, 4);
             dl->AddText({p.x + 3, p.y + 2}, n == cur ? theme::text : theme::dim, t.c_str());
             if (n == cur && scrollToCur) {
@@ -1170,7 +1444,7 @@ void App::Impl::drawNav() {
     ImGui::SameLine(0, 6);
     if (ImGui::Button("Flip", {bw, 34})) board.flipped = !board.flipped;
     ImGui::SameLine(0, 6);
-    ImGui::PushStyleColor(ImGuiCol_Button, set.engineLines ? theme::rgb(0x5ab4a6, 90) : theme::panel2);
+    ImGui::PushStyleColor(ImGuiCol_Button, set.engineLines ? alpha(theme::accent, 90) : theme::panel2);
     if (ImGui::Button("Lines", {bw, 34})) set.engineLines = !set.engineLines, saveSettings();
     ImGui::PopStyleColor();
     if (view == View::Review && review) {
@@ -1206,71 +1480,28 @@ void App::Impl::drawPicker() {
     ImGui::EndPopup();
 }
 
-void App::Impl::drawSettings() {
-    if (showSettings && !ImGui::IsPopupOpen("Settings")) ImGui::OpenPopup("Settings");
-    ImGui::SetNextWindowSize({520, 0}, ImGuiCond_Appearing);
-    if (!ImGui::BeginPopupModal("Settings", &showSettings, ImGuiWindowFlags_NoSavedSettings)) return;
-    static char path[1024];
-    if (ImGui::IsWindowAppearing()) std::snprintf(path, sizeof path, "%s", set.enginePath.c_str());
-    ImGui::PushFont(f.bold, 15);
-    ImGui::TextUnformatted("Engine");
-    ImGui::PopFont();
-    ImGui::SetNextItemWidth(-1);
-    ImGui::InputTextWithHint("##engine", "Automatic (bundled Stockfish)", path, sizeof path);
-    ImGui::TextDisabled("In use: %s", enginePath.empty() ? "none" : enginePath.c_str());
-    ImGui::SliderInt("Review depth", &set.reviewDepth, 8, 30);
-    ImGui::SliderInt("Live depth", &set.liveDepth, 10, 50);
-    int hw = std::max(1, (int)std::thread::hardware_concurrency());
-    ImGui::SliderInt("Review processes", &set.workers, 1, hw);
-    ImGui::SliderInt("Live threads", &set.liveThreads, 1, hw);
-    ImGui::Dummy({0, 6});
-    ImGui::PushFont(f.bold, 15);
-    ImGui::TextUnformatted("Board");
-    ImGui::PopFont();
-    ImGui::Checkbox("Best move arrow", &set.bestArrow);
-    ImGui::Checkbox("Threat arrow", &set.threatArrow);
-    ImGui::Checkbox("Engine lines", &set.engineLines);
-    ImGui::Dummy({0, 6});
-    ImGui::PushFont(f.bold, 15);
-    ImGui::TextUnformatted("Library");
-    ImGui::PopFont();
-    ImGui::Checkbox("Analyze games automatically", &set.autoAnalyze);
-    ImGui::TextDisabled("Reviews new library games in the background with a quarter of the cores.");
-    ImGui::Dummy({0, 6});
-    if (accentButton("Save", {120, 32})) {
-        set.enginePath = path;
-        saveSettings();
-        resolveEngine();  // also applies live threads
-        showSettings = false;
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel", {120, 32})) {
-        loadSettings();
-        showSettings = false;
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndPopup();
-}
-
 void App::Impl::drawHelp() {
     if (showHelp && !ImGui::IsPopupOpen("Shortcuts")) ImGui::OpenPopup("Shortcuts");
     if (!ImGui::BeginPopupModal("Shortcuts", &showHelp, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) return;
-    const char* rows[][2] = {{"Left / Right", "previous / next move"}, {"Up / Home", "start"}, {"Down / End", "end of line"},
-                             {"R", "return to the game line"}, {"N / P", "next / previous mistake"}, {"Space", "play the best move"},
-                             {"F", "flip board"}, {"E", "engine lines"}, {"T", "threat arrow"}, {"Ctrl+V", "paste PGN / FEN"}, {"Ctrl+O", "open a PGN file"},
-                             {"Ctrl+,", "settings"}, {"Ctrl+Q", "quit"}, {"?", "this help"}};
     if (ImGui::BeginTable("keys", 2, ImGuiTableFlags_SizingFixedFit)) {
-        for (auto& r : rows) {
+        for (int i = 0; i < kActCount; i++) {
+            std::string k = chordName(prefs.keys[i][0]);
+            if (prefs.keys[i][1]) k += (k.empty() ? "" : " / ") + chordName(prefs.keys[i][1]);
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
             ImGui::PushFont(f.mono, 13);
-            ImGui::TextUnformatted(r[0]);
+            ImGui::TextUnformatted(k.empty() ? "-" : k.c_str());
             ImGui::PopFont();
             ImGui::TableNextColumn();
-            ImGui::TextDisabled("%s", r[1]);
+            ImGui::TextDisabled("%s", kActs[i].label);
         }
         ImGui::EndTable();
+    }
+    ImGui::Dummy({0, 4});
+    if (ImGui::Button("Change shortcuts…")) {
+        showHelp = false;
+        settingsTab = 4;
+        openSettings();
     }
     ImGui::EndPopup();
 }
@@ -1285,7 +1516,10 @@ void App::Impl::drawToast() {
     dl->AddRect(a, {a.x + ts.x + 32, a.y + ts.y + 20}, theme::line, 8);
     dl->AddText({a.x + 16, a.y + 10}, theme::text, toast.c_str());
 }
-App::App(Fonts f) : d(std::make_unique<Impl>(f)) {}
+App::App() : d(std::make_unique<Impl>()) {}
+void App::beforeFrame() { d->beforeFrame(); }
+float App::uiScale() const { return d->prefs.scale; }
+const Fonts& App::fonts() const { return d->f; }
 App::~App() = default;
 void App::frame() { d->frame(); }
 bool App::wantsQuit() const { return d->quit; }

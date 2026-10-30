@@ -18,7 +18,6 @@
 using namespace chess;
 
 namespace {
-constexpr float kAnimTime = 0.11f;
 
 ImU32 withAlpha(ImU32 c, float a) {
     return (c & ~IM_COL32_A_MASK) | ((ImU32)(((c >> IM_COL32_A_SHIFT) & 255) * a) << IM_COL32_A_SHIFT);
@@ -120,6 +119,34 @@ void drawBadge(ImDrawList* dl, ImVec2 c, float r, Cls cls) {
     }
 }
 
+namespace {
+void upload(GLuint t, lunasvg::Bitmap& bm) {
+    bm.convertToRGBA();
+    glBindTexture(GL_TEXTURE_2D, t);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, bm.stride() / 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, bm.width(), bm.height(), 0, GL_RGBA, GL_UNSIGNED_BYTE, bm.data());
+}
+
+// Runs f with the GL texture/unpack state saved and restored around it.
+template <class F>
+void withGlState(F f) {
+    GLint oldTex = 0, oldAlign = 0, oldRow = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &oldTex);
+    glGetIntegerv(GL_UNPACK_ALIGNMENT, &oldAlign);
+    glGetIntegerv(GL_UNPACK_ROW_LENGTH, &oldRow);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    f();
+    glBindTexture(GL_TEXTURE_2D, (GLuint)oldTex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, oldAlign);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, oldRow);
+}
+
+}  // namespace
+
 struct BoardView::Impl {
     std::unique_ptr<lunasvg::Document> svg[12];
     GLuint tex[12] = {};
@@ -147,34 +174,16 @@ struct BoardView::Impl {
         for (auto& [k, t] : extra) glDeleteTextures(1, &t);
     }
 
-    static void upload(GLuint t, lunasvg::Bitmap& bm) {
-        bm.convertToRGBA();
-        glBindTexture(GL_TEXTURE_2D, t);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, bm.stride() / 4);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, bm.width(), bm.height(), 0, GL_RGBA, GL_UNSIGNED_BYTE, bm.data());
-    }
-
     void raster(int px) {
         if (px == texPx || px <= 0) return;
-        GLint oldTex = 0, oldAlign = 0, oldRow = 0;
-        glGetIntegerv(GL_TEXTURE_BINDING_2D, &oldTex);
-        glGetIntegerv(GL_UNPACK_ALIGNMENT, &oldAlign);
-        glGetIntegerv(GL_UNPACK_ROW_LENGTH, &oldRow);
-        if (!texPx) glGenTextures(12, tex);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        for (int i = 0; i < 12; i++) {
-            if (!svg[i]) continue;
-            lunasvg::Bitmap bm = svg[i]->renderToBitmap(px, px);
-            if (bm.isNull()) continue;
-            upload(tex[i], bm);
-        }
-        glBindTexture(GL_TEXTURE_2D, (GLuint)oldTex);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, oldAlign);
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, oldRow);
+        withGlState([&] {
+            if (!texPx) glGenTextures(12, tex);
+            for (int i = 0; i < 12; i++) {
+                if (!svg[i]) continue;
+                lunasvg::Bitmap bm = svg[i]->renderToBitmap(px, px);
+                if (!bm.isNull()) upload(tex[i], bm);
+            }
+        });
         texPx = px;
     }
 };
@@ -188,7 +197,26 @@ bool BoardView::load(const std::string& dir) {
         ok = ok && impl_->svg[i];
     }
     impl_->texPx = impl_->texPx ? -1 : 0;  // force re-raster into existing textures
+    for (auto& [k, t] : impl_->extra) glDeleteTextures(1, &t);
+    impl_->extra.clear();
     return ok;
+}
+
+bool BoardView::loaded() const { return impl_ && impl_->svg[0]; }
+
+ImTextureRef svgTexture(const std::string& file, int px) {
+    static std::map<std::string, GLuint> cache;
+    std::string key = file + "@" + std::to_string(px);
+    if (auto it = cache.find(key); it != cache.end()) return ImTextureRef((ImTextureID)(intptr_t)it->second);
+    GLuint& t = cache[key];
+    auto doc = lunasvg::Document::loadFromFile(file);
+    lunasvg::Bitmap bm = doc ? doc->renderToBitmap(px, px) : lunasvg::Bitmap();
+    if (bm.isNull()) return ImTextureRef();
+    withGlState([&] {
+        glGenTextures(1, &t);
+        upload(t, bm);
+    });
+    return ImTextureRef((ImTextureID)(intptr_t)t);
 }
 
 ImTextureRef BoardView::pieceTexture(Piece p, int px) {
@@ -199,17 +227,11 @@ ImTextureRef BoardView::pieceTexture(Piece p, int px) {
     if (auto it = impl_->extra.find(key); it != impl_->extra.end()) return ImTextureRef((ImTextureID)(intptr_t)it->second);
     lunasvg::Bitmap bm = impl_->svg[i]->renderToBitmap(px, px);
     if (bm.isNull()) return ImTextureRef();
-    GLint oldTex = 0, oldAlign = 0, oldRow = 0;
-    glGetIntegerv(GL_TEXTURE_BINDING_2D, &oldTex);
-    glGetIntegerv(GL_UNPACK_ALIGNMENT, &oldAlign);
-    glGetIntegerv(GL_UNPACK_ROW_LENGTH, &oldRow);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     GLuint t = 0;
-    glGenTextures(1, &t);
-    Impl::upload(t, bm);
-    glBindTexture(GL_TEXTURE_2D, (GLuint)oldTex);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, oldAlign);
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, oldRow);
+    withGlState([&] {
+        glGenTextures(1, &t);
+        upload(t, bm);
+    });
     impl_->extra[key] = t;
     return ImTextureRef((ImTextureID)(intptr_t)t);
 }
@@ -224,9 +246,10 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
     ImVec2 cur = ImFloor(ImGui::GetCursorScreenPos());
     ImGui::InvisibleButton("##board", ImVec2(size, size), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
     const bool hovered = ImGui::IsItemHovered();
-    const float q = std::floor(size / 8);
+    const float lab = coords == 2 ? std::max(12.f, std::round(size / 34)) : 0;  // outside coordinates margin
+    const float q = std::floor((size - lab) / 8);
     if (q < 2) return result;
-    const ImVec2 o = cur + ImFloor(ImVec2(size - 8 * q, size - 8 * q) * 0.5f);
+    const ImVec2 o = cur + ImVec2(lab, 0) + ImFloor(ImVec2(size - lab - 8 * q, size - lab - 8 * q) * 0.5f);
     s.raster((int)std::lround(q * io.DisplayFramebufferScale.x));
 
     auto sqPos = [&](int sq) {
@@ -249,7 +272,7 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
     const std::uint64_t h = b.hash();
     if (!s.havePrev || h != s.prevHash) {
         s.animN = 0;
-        if (s.havePrev && lastMove.move() != Move::NO_MOVE && lastMove.move() != s.noAnim) {
+        if (s.havePrev && animTime > 0 && lastMove.move() != Move::NO_MOVE && lastMove.move() != s.noAnim) {
             Movelist ml;
             movegen::legalmoves(ml, s.prev);
             if (std::find(ml.begin(), ml.end(), lastMove) != ml.end()) {
@@ -276,7 +299,7 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
     }
     float animT = 1;
     if (s.animN) {
-        float t = (float)((ImGui::GetTime() - s.animStart) / kAnimTime);
+        float t = (float)((ImGui::GetTime() - s.animStart) / std::max(0.01f, animTime));
         if (t >= 1) s.animN = 0;
         else animT = 1 - (1 - t) * (1 - t) * (1 - t);
     }
@@ -379,11 +402,11 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
         bool light = ((sq >> 3) + (sq & 7)) & 1;
         dl->AddRectFilled(p, p + ImVec2(q, q), light ? theme::sqLight : theme::sqDark);
     }
-    if (lastMove.move() != Move::NO_MOVE) {
+    if (showLastMove && lastMove.move() != Move::NO_MOVE) {
         for (int sq : {lastMove.from().index(), shownTo(lastMove)}) dl->AddRectFilled(sqPos(sq), sqPos(sq) + ImVec2(q, q), theme::lastMove);
     }
     if (s.selected >= 0) dl->AddRectFilled(sqPos(s.selected), sqPos(s.selected) + ImVec2(q, q), theme::selected);
-    {
+    if (coords == 1) {
         ImFont* f = ImGui::GetFont();
         float fs = std::max(9.0f, size / 40), pad = q * 0.06f;
         for (int i = 0; i < 8; i++) {
@@ -394,6 +417,16 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
             ImVec2 ts = f->CalcTextSizeA(fs, FLT_MAX, 0, fc);
             dl->AddText(f, fs, pf + ImVec2(q - ts.x - pad, q - ts.y - pad * 0.5f), opp(fileSq), fc);
             dl->AddText(f, fs, pr + ImVec2(pad, pad * 0.5f), opp(rankSq), rc);
+        }
+    } else if (coords == 2) {
+        ImFont* f = ImGui::GetFont();
+        float fs = std::max(10.0f, lab * 0.8f);
+        for (int i = 0; i < 8; i++) {
+            char fc[2] = {(char)('a' + i), 0}, rc[2] = {(char)('1' + i), 0};
+            ImVec2 pf = sqPos((flipped ? 56 : 0) + i), pr = sqPos(i * 8);
+            ImVec2 fs2 = f->CalcTextSizeA(fs, FLT_MAX, 0, fc), rs = f->CalcTextSizeA(fs, FLT_MAX, 0, rc);
+            dl->AddText(f, fs, ImFloor(ImVec2(pf.x + (q - fs2.x) / 2, o.y + 8 * q + (lab - fs2.y) / 2)), theme::dim, fc);
+            dl->AddText(f, fs, ImFloor(ImVec2(o.x - lab + (lab - rs.x) / 2 - 1, pr.y + (q - rs.y) / 2)), theme::dim, rc);
         }
     }
     if (b.inCheck()) {
@@ -407,6 +440,7 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
     // Legal-move hints.
     if (interactive && s.selected >= 0 && !s.promo) {
         for (const Move& m : legal) {
+            if (!showLegal) break;
             if (m.from().index() != s.selected) continue;
             int to = shownTo(m);
             ImVec2 c = sqPos(to) + ImVec2(q, q) * 0.5f;

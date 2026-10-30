@@ -22,7 +22,8 @@ struct SiteUser {
 SiteUser lookupUser(const std::string& site, const std::string& username);
 
 // Games of `acc` that ended in [since, until) (unix s), as GameRows for profileId with
-// userColor/vsBot/timeClass/eco/opening filled and countsInStats = !vsBot && standard chess.
+// userColor/vsBot (isBotGame + lichess aiLevel/BOT)/timeClass/eco/opening filled and
+// countsInStats = userColor >= 0 && !vsBot.
 // Variants (non-standard rules) are skipped.
 std::vector<GameRow> fetchGames(const Account& acc, int64_t profileId, int64_t since, int64_t until,
                                 std::string* err, const std::atomic<bool>* cancel = nullptr);
