@@ -13,6 +13,10 @@ std::optional<std::string> httpGet(const std::string& url, const std::vector<std
                                    std::string* err = nullptr);
 bool httpDownload(const std::string& url, const std::string& path, std::string* err = nullptr);
 
+// Fetches lichess's "standard" sound set (Move, Capture, GenericNotify, Confirmation -> Success) from the lila
+// repo into dir (replacing it). Not openly licensed, so it is never bundled. Returns "" or an error.
+std::string downloadLichessSounds(const std::string& dir);
+
 struct SiteUser {
     bool exists = false;
     std::string username;   // canonical capitalization from the site

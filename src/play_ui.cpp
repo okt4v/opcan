@@ -119,11 +119,11 @@ void App::Impl::retryMove(Move m) {
     retry.board = before;
     retry.board.makeMove(m);
     retry.shown = m;
-    if (prefs.moveSounds) audio.play(retry.board.inCheck() ? Sfx::Check : before.isCapture(m) && m.typeOf() != Move::CASTLING ? Sfx::Capture : Sfx::Move);
+    if (prefs.moveSounds) audio.play(retry.board.inCheck() ? Sfx::Check : m.typeOf() == Move::CASTLING ? Sfx::Castle : before.isCapture(m) ? Sfx::Capture : Sfx::Move);
     const PosEval& best = review->evals[lineIdx[parent]];
     auto done = [&](bool ok) {
         retry.phase = ok ? RetryState::Correct : RetryState::Wrong;
-        if (ok) retrySolved.insert(retry.node), audio.play(Sfx::Notify);
+        if (ok) retrySolved.insert(retry.node), audio.play(Sfx::Success);
         else retry.revertAt = ImGui::GetTime() + 0.7;
     };
     std::string u = uci::moveToUci(m);
@@ -361,7 +361,9 @@ void App::Impl::playMove(Move m) {
     s.end = gameEnd(s.board);
     if (s.end) board.premoves.clear();
     if (prefs.moveSounds || s.end)
-        audio.play(s.end ? Sfx::End : s.board.inCheck() ? Sfx::Check : before.isCapture(m) && m.typeOf() != Move::CASTLING ? Sfx::Capture : Sfx::Move);
+        audio.play(s.end ? Sfx::End
+                   : s.board.inCheck() ? Sfx::Check
+                   : m.typeOf() == Move::CASTLING ? Sfx::Castle : before.isCapture(m) ? Sfx::Capture : Sfx::Move);
 }
 
 void App::Impl::updatePlay() {

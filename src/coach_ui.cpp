@@ -14,24 +14,6 @@ namespace {
 const char* kName = "Pip";
 constexpr float kPi = 3.14159265f;
 
-const char* kCardSystem =
-    "You are Pip, a friendly chess coach inside a game review app. A strong chess engine analysed the last move and "
-    "the FACTS below are correct. Explain in 1 to 3 short, friendly sentences (under 60 words) what the move did and "
-    "why it got its classification. Use only moves and squares that appear in the FACTS, written exactly as given. "
-    "Never invent moves or variations and never calculate on your own. Don't repeat evaluation numbers. "
-    "Plain text: no lists, no markdown, no headings.";
-
-const char* kChatSystem =
-    "You are Pip, a friendly chess coach inside a game review app. Every question comes with FACTS from a strong chess "
-    "engine about the position on the board. The FACTS are correct. You are weak at calculating chess, so never "
-    "calculate yourself: use only the moves and evaluations in the FACTS and never invent moves. Answer in 1 to 4 "
-    "short sentences of plain language, no markdown.\n"
-    "You can show things on the board with tags. Take the moves for tags only from the UCI given in the FACTS:\n"
-    "[arrow MOVE] draws an arrow for one UCI move; [arrow MOVE red] for a threat\n"
-    "[square SQUARE] highlights a square, e.g. a weak square or a hanging piece\n"
-    "[line MOVE MOVE MOVE] shows a sequence of UCI moves from a line in the FACTS\n"
-    "Put a tag right after the move or square it illustrates, at most 3 tags per answer.";
-
 std::string scoreText(Score s, bool whiteToMove) {
     if (s.mated) return whiteToMove ? "0-1" : "1-0";
     int sign = whiteToMove ? 1 : -1;
@@ -83,11 +65,25 @@ struct CoachState {
     std::string model;  // curated id, or a path to a custom .gguf
     std::string modelsDir;
 
-    // coach card
-    std::string cardKey;
-    std::shared_ptr<CoachJob> cardJob;
-    Facts cardFacts;
-    std::unordered_map<std::string, std::string> cache;  // key -> explanation ("!" = use the template)
+    // coach card: explanations per (game, ply), generated on request, automatically, or for the whole game
+    enum Explain { OnRequest, Auto, Pregen };
+    int explainMode = OnRequest;
+    bool pregenAll = false;  // pre-generate: also the moves that aren't key moves
+    struct Gen {
+        std::string key;
+        int node = 0;
+        Facts facts;
+        std::shared_ptr<CoachJob> job;
+        bool background = false;
+    };
+    std::vector<Gen> gens;  // running or queued
+    std::unordered_map<std::string, std::string> cache;  // key -> explanation
+    int autoNode = -1;      // auto mode: the move we're waiting on (debounce)
+    double autoSince = 0;
+    // pre-generation for the open game
+    std::string pgFor;      // game key the list was built for
+    std::vector<int> pgNodes;
+    bool pgPaused = false;
 
     // chat
     struct Msg {
@@ -99,6 +95,11 @@ struct CoachState {
         bool waitLive = false;  // waiting for fresh engine lines before asking
         double askedAt = 0;
         std::vector<ChatMsg> prompt;
+        std::string question;  // the user's question (assistant messages)
+        Facts facts;           // what the answer is checked against
+        bool checked = false;  // facts are set
+        size_t shownFor = std::string::npos;  // cache of the checked text
+        std::string shown;
     };
     bool chatOpen = false, focusInput = false, scrollDown = false;
     std::vector<Msg> msgs;
@@ -127,7 +128,13 @@ void App::Impl::coachInit() {
     cs->modelsDir = md ? md : (fs::path(dataDir) / "models").string();
     cs->on = store.setting("coachOn", "1") == "1";
     cs->gpu = store.setting("coachGpu", "1") == "1";
-    cs->model = store.setting("coachModel", kCoachModels[0].id);
+    cs->model = store.setting("coachModel");
+    if (cs->model.empty()) {  // first run: pick the model this machine runs well
+        cs->model = kCoachModels[recommendedCoachModel()].id;
+        store.setSetting("coachModel", cs->model);
+    }
+    cs->explainMode = std::clamp(std::atoi(store.setting("coachExplain", "0").c_str()), 0, 2);
+    cs->pregenAll = store.setting("coachPregenAll", "0") == "1";
     cs->blinkAt = 2;
     if (const char* q = std::getenv("OPCAN_COACH_CHAT")) cs->autoAsk = q, cs->chatOpen = true;  // dev hook: ask on start
 }
@@ -136,6 +143,8 @@ void App::Impl::coachSave() {
     store.setSetting("coachOn", cs->on ? "1" : "0");
     store.setSetting("coachGpu", cs->gpu ? "1" : "0");
     store.setSetting("coachModel", cs->model);
+    store.setSetting("coachExplain", std::to_string(cs->explainMode));
+    store.setSetting("coachPregenAll", cs->pregenAll ? "1" : "0");
 }
 
 std::string App::Impl::coachModelPath() const {
@@ -153,6 +162,57 @@ bool App::Impl::coachWantsLive() const {
     for (auto& m : cs->msgs)
         if (m.waitLive) return true;
     return false;
+}
+
+// Cache key of the explanation for a reviewed mainline move.
+std::string App::Impl::explainKey(int node) {
+    return gameId ? std::to_string(gameId) + ":" + std::to_string(game->ply(node)) : "mem:" + game->nodes[node].fen + game->nodes[node].san;
+}
+
+// The stored explanation, or "".
+// "coach2:" keys: explanations checked sentence by sentence (older unchecked ones are ignored)
+std::string App::Impl::cachedExplain(const std::string& key) {
+    auto& c = *cs;
+    if (auto it = c.cache.find(key); it != c.cache.end()) return it->second;
+    if (gameId && key.rfind("mem:", 0) != 0)
+        if (auto v = store.setting("coach2:" + key); !v.empty()) return c.cache.emplace(key, v).first->second;
+    return "";
+}
+
+static CoachState::Gen* genFor(CoachState& c, const std::string& key) {
+    for (auto& g : c.gens)
+        if (g.key == key) return &g;
+    return nullptr;
+}
+
+// Queues an explanation of the move at node (a reviewed mainline move).
+void App::Impl::startExplain(int node, bool background) {
+    auto& c = *cs;
+    std::string key = explainKey(node);
+    if (genFor(c, key)) return;
+    CoachState::Gen g;
+    g.key = key, g.node = node, g.background = background;
+    FactInput in = coachFacts(node);
+    in.numbers = false;
+    g.facts = buildFacts(in);
+    g.job = std::make_shared<CoachJob>();
+    g.job->msgs = cardPrompt(g.facts, game->nodes[node].san);
+    g.job->maxTokens = 140;
+    g.job->urgent = !background;
+    c.coach.ask(g.job);
+    c.gens.push_back(std::move(g));
+}
+
+void App::Impl::explainCurrent(bool regenerate) {
+    if (!game || !coachReady() || !curReview()) return;
+    std::string key = explainKey(cur);
+    if (regenerate) {
+        cs->cache.erase(key);
+        if (gameId) store.setSetting("coach2:" + key, "");
+        if (auto* g = genFor(*cs, key)) g->job->cancel = true;
+        std::erase_if(cs->gens, [&](auto& g) { return g.key == key; });
+    } else if (!cachedExplain(key).empty()) return;
+    startExplain(cur, false);
 }
 
 void App::Impl::coachFrame() {
@@ -177,7 +237,64 @@ void App::Impl::coachFrame() {
         c.nextPlayAt = ImGui::GetTime() + 0.75;
     }
     if (!game) c.msgs.clear(), c.playQueue.clear(), c.chatOpen = false;
-    if (c.cardJob && (!game || view != View::Review)) c.cardJob->cancel = true, c.cardJob.reset(), c.cardKey.clear();
+
+    // finished explanations: check them sentence by sentence, then cache (in the database for library games)
+    for (auto& g : c.gens) {
+        auto v = g.job->view();
+        if (!v.done) continue;
+        if (v.error.empty()) {
+            CheckedAnswer ck = checkAnswer(stripThinking(v.text), g.facts);
+            c.cache[g.key] = ck.text;
+            if (gameId && !ck.fallback && g.key.rfind("mem:", 0) != 0) store.setSetting("coach2:" + g.key, ck.text);  // fallbacks retry next session
+        }
+        g.job.reset();
+    }
+    std::erase_if(c.gens, [](auto& g) { return !g.job; });
+    bool onCard = game && view == View::Review && curReview();
+    std::string curKey = onCard ? explainKey(cur) : "";
+    // moved on: an automatic request for another move is dropped (on request / pre-generated ones keep going)
+    for (auto& g : c.gens)
+        if (!g.background && g.key != curKey && c.explainMode == CoachState::Auto) g.job->cancel = true;
+    std::erase_if(c.gens, [&](auto& g) { return g.job->cancel.load(); });  // the worker skips cancelled jobs
+    if (!game || !coachReady()) {
+        for (auto& g : c.gens) g.job->cancel = true;
+        c.gens.clear();
+    }
+
+    // automatic: the move being viewed, once the user stays on it for a moment
+    if (onCard && coachReady() && c.explainMode != CoachState::OnRequest) {
+        if (c.autoNode != cur) c.autoNode = cur, c.autoSince = ImGui::GetTime();
+        else if (ImGui::GetTime() - c.autoSince >= 0.4 && cachedExplain(curKey).empty() && !genFor(c, curKey))
+            startExplain(cur, false);
+        if (ImGui::GetTime() - c.autoSince < 0.4) animUntil = std::max(animUntil, c.autoSince + 0.45);
+    } else c.autoNode = -1;
+
+    // pre-generate the whole game, one move at a time, key moves first; waits for reviews and chats
+    if (c.explainMode == CoachState::Pregen && game && review && coachReady()) {
+        std::string gk = (gameId ? std::to_string(gameId) : game->nodes.back().fen) + (c.pregenAll ? "+" : "");
+        if (c.pgFor != gk) {
+            c.pgFor = gk;
+            c.pgNodes.clear();
+            for (int pass = 0; pass < (c.pregenAll ? 2 : 1); pass++)
+                for (auto& m : review->moves) {
+                    bool key = m.cls == Cls::Brilliant || m.cls == Cls::Great || m.cls == Cls::Inaccuracy || m.cls == Cls::Mistake ||
+                               m.cls == Cls::Miss || m.cls == Cls::Blunder;
+                    if (key == (pass == 0)) c.pgNodes.push_back(m.node);
+                }
+        }
+        bool chatting = false;
+        for (auto& m : c.msgs)
+            if (m.waitLive || (m.job && !m.job->view().done)) chatting = true;
+        bool busy = chatting || (reviewer && reviewer->running()) || c.pgPaused;
+        bool bgRunning = false;
+        for (auto& g : c.gens) bgRunning |= g.background;
+        if (!busy && !bgRunning && c.gens.empty())
+            for (int n : c.pgNodes)
+                if (cachedExplain(explainKey(n)).empty()) {
+                    startExplain(n, true);
+                    break;
+                }
+    } else if (c.explainMode != CoachState::Pregen) c.pgFor.clear(), c.pgNodes.clear();
 
     if (!c.autoAsk.empty() && game && coachReady() && view == View::Review) {
         std::snprintf(c.input, sizeof c.input, "%s", c.autoAsk.c_str());
@@ -195,6 +312,22 @@ void App::Impl::coachFrame() {
         if (snap.fen == m.fen) in.liveLines = snap.lines;
         in.uci = true;
         Facts f = buildFacts(in);
+        // double-check: the facts must describe the position the question was asked on
+        auto same = [](const std::string& x, const std::string& y) {  // placement, side, castling, en passant
+            auto cut = [](const std::string& s) {
+                size_t p = 0;
+                for (int k = 0; k < 4 && p != std::string::npos; k++) p = s.find(' ', p + 1);
+                return s.substr(0, p);
+            };
+            return cut(x) == cut(y);
+        };
+        if (!same(f.fen, m.fen)) {
+            FactInput bare;
+            bare.fenBefore = m.fen, bare.uci = true, bare.userColor = in.userColor;
+            if (snap.fen == m.fen) bare.liveLines = snap.lines;
+            f = buildFacts(bare);
+        }
+        m.facts = f, m.checked = true;
         std::string tags;  // real tags for this position, so copying an example is never wrong
         if (snap.fen == m.fen && !snap.lines.empty() && !snap.lines[0].pv.empty()) {
             auto& pv = snap.lines[0].pv;
@@ -206,7 +339,7 @@ void App::Impl::coachFrame() {
             }
             tags += ".\n";
         }
-        m.prompt.back().content = "FACTS (current position):\n" + f.text + tags + "\nQuestion: " + m.prompt.back().content;
+        m.prompt.back().content = chatTurn(f, tags, m.prompt.back().content);
         m.job = c.coach.ask(m.prompt, 320);
         m.prompt.clear();
     }
@@ -236,6 +369,7 @@ FactInput App::Impl::coachFacts(int node) {
     }
     if (in.opening.empty())
         if (auto* o = book.of(*game)) in.opening = o->name;
+    in.userColor = userSide();
     return in;
 }
 
@@ -337,7 +471,7 @@ void App::Impl::drawCoachCard() {
     // header and text
     std::string title, verdict, text, ev;
     Cls cls = Cls::None;
-    bool talking = false, typing = false, dimText = true;
+    bool talking = false, typing = false, dimText = true, offerExplain = false, explained = false;
     bool wa = true;
     if (mr) {
         cls = mr->cls;
@@ -348,39 +482,15 @@ void App::Impl::drawCoachCard() {
         wa = wpWhite[i] >= 50;
         text = explain(*mr, i);
         if (coachReady()) {
-            std::string key = gameId ? std::to_string(gameId) + ":" + std::to_string(game->ply(cur))
-                                     : "mem:" + game->nodes[cur].fen + game->nodes[cur].san;
-            std::string dbKey = "coach:" + key;
-            auto it = c.cache.find(key);
-            if (it == c.cache.end() && gameId)
-                if (auto v = store.setting(dbKey); !v.empty()) it = c.cache.emplace(key, v).first;
-            if (it != c.cache.end()) {
-                if (it->second != "!") text = it->second, dimText = false;
-            } else {
-                if (c.cardKey != key) {
-                    if (c.cardJob) c.cardJob->cancel = true;
-                    c.cardKey = key;
-                    FactInput in = coachFacts(cur);
-                    in.numbers = false;
-                    c.cardFacts = buildFacts(in);
-                    std::string q = "FACTS:\n" + c.cardFacts.text + "\nExplain " + title + " to the player in 1 to 3 short sentences.";
-                    c.cardJob = c.coach.ask({{"system", kCardSystem}, {"user", q}}, 140);
-                }
-                auto v = c.cardJob->view();
-                std::string out = parseTags(stripThinking(v.text), c.cardFacts.fen).plain;
-                if (v.done) {
-                    bool ok = v.error.empty() && out.size() > 8 && movesGrounded(out, c.cardFacts);
-                    if (v.error != "cancelled") {
-                        c.cache[key] = ok ? out : "!";
-                        if (gameId && ok) store.setSetting(dbKey, out);  // failures retry next session
-                    }
-                    if (ok) text = out, dimText = false;
-                    c.cardJob.reset();
-                    c.cardKey.clear();
-                } else if (!out.empty()) {
-                    text = out, talking = true, dimText = false;
-                } else typing = true;
-            }
+            std::string key = explainKey(cur);
+            if (std::string done = cachedExplain(key); !done.empty()) text = done, dimText = false, explained = true;
+            else if (auto* g = genFor(c, key)) {
+                auto v = g->job->view();
+                // only checked, finished sentences are shown while it streams
+                std::string out = parseTags(checkAnswer(stripThinking(v.text), g->facts, "", false).text, g->facts.fen).plain;
+                if (!out.empty()) text = out, talking = true, dimText = false;
+                else typing = true;
+            } else if (c.explainMode == CoachState::OnRequest) offerExplain = true;
         }
     } else if (cur == 0) {
         title = "Starting position";
@@ -392,7 +502,6 @@ void App::Impl::drawCoachCard() {
         title = game->nodes[cur].san;
         text = reviewer && reviewer->running() ? "Analyzing..." : "Not reviewed";
     }
-    if (!mr && c.cardJob) c.cardJob->cancel = true, c.cardJob.reset(), c.cardKey.clear();  // moved on
 
     // layout: Pip on the left, a speech bubble on the right
     float pip = 72, padX = 10, bx = p.x + pip + 22, bw = w - (bx - p.x);
@@ -504,8 +613,32 @@ void App::Impl::drawCoachCard() {
         if (st == Coach::State::Loading) ImGui::TextUnformatted("Waking up…");
         else if (st == Coach::State::Error) ImGui::Text("Couldn't load the model: %s", c.coach.error().c_str());
         else if (reviewer && reviewer->running()) ImGui::TextUnformatted("Waits for the review to finish");
-        else ImGui::TextUnformatted("Local AI · may be imperfect");
+        else if (offerExplain) {
+            ImGui::PopStyleColor();
+            ImGui::PushStyleColor(ImGuiCol_Button, theme::panel);
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::accent);
+            if (ImGui::SmallButton("Explain this move")) explainCurrent();
+            ImGui::PopStyleColor(2);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Ask %s to explain it (%s)", kName, chordName(prefs.keys[(int)Act::ExplainMove][0]).c_str());
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
+        } else if (c.explainMode == CoachState::Pregen && !c.pgNodes.empty()) {
+            int done = 0;
+            for (int n : c.pgNodes) done += !cachedExplain(explainKey(n)).empty();
+            if (done < (int)c.pgNodes.size()) {
+                ImGui::Text("%s: %d/%d explained", kName, done, (int)c.pgNodes.size());
+                ImGui::SameLine(0, 6);
+                ImGui::PopStyleColor();
+                if (ImGui::SmallButton(c.pgPaused ? "Resume" : "Pause")) c.pgPaused = !c.pgPaused;
+                ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
+            } else ImGui::TextUnformatted("Local AI · may be imperfect");
+        } else ImGui::TextUnformatted("Local AI · may be imperfect");
         ImGui::PopStyleColor();
+    }
+    if (mr && coachReady() && ImGui::IsMouseHoveringRect(p, {p.x + w, p.y + h}) && ImGui::IsMouseReleased(ImGuiMouseButton_Right))
+        ImGui::OpenPopup("coachcard");
+    if (ImGui::BeginPopup("coachcard")) {
+        if (ImGui::MenuItem(explained ? "Regenerate explanation" : "Explain this move")) explainCurrent(explained);
+        ImGui::EndPopup();
     }
     std::string ask = "Ask " + std::string(kName);
     float aw = ImGui::CalcTextSize(ask.c_str()).x + 20;
@@ -521,6 +654,27 @@ void App::Impl::drawCoachCard() {
 }
 
 // ---------- chat ----------
+
+// An answer as shown: only the sentences that pass the checks against its facts (the rest is dropped).
+static std::string shownText(CoachState::Msg& m) {
+    if (!m.job) return m.text;
+    auto v = m.job->view();
+    if (!m.checked) return stripThinking(v.text);
+    size_t sig = v.text.size() * 2 + v.done;
+    if (m.shownFor != sig) {
+        std::string raw = stripThinking(v.text);
+        m.shown = raw.empty() && v.done ? "" : checkAnswer(raw, m.facts, m.question, v.done).text;
+        m.shownFor = sig;
+    }
+    return m.shown;
+}
+
+// "14... Bg4", or "the starting position"
+static std::string aboutLabel(const Game& g, int node) {
+    if (node <= 0) return "the starting position";
+    Board b = g.board(g.nodes[node].parent);
+    return std::to_string(b.fullMoveNumber()) + (b.sideToMove() == Color::WHITE ? ". " : "... ") + g.nodes[node].san;
+}
 
 void App::Impl::toggleCoachChat() {
     cs->chatOpen = !cs->chatOpen;
@@ -633,11 +787,11 @@ void App::Impl::sendCoachQuestion() {
     if (q.empty() || !game) return;
     c.input[0] = 0;
     // conversation so far (last few turns, without their fact sheets) + the new question
-    std::vector<ChatMsg> prompt{{"system", kChatSystem}};
+    std::vector<ChatMsg> prompt{{"system", chatSystemPrompt()}};
     size_t from = c.msgs.size() > 6 ? c.msgs.size() - 6 : 0;
     for (size_t i = from; i < c.msgs.size(); i++) {
         auto& m = c.msgs[i];
-        std::string t = m.user ? m.text : m.job ? stripThinking(m.job->view().text) : m.text;
+        std::string t = m.user ? m.text : shownText(m);
         if (!t.empty()) prompt.push_back({m.user ? "user" : "assistant", t});
     }
     prompt.push_back({"user", q});
@@ -646,6 +800,7 @@ void App::Impl::sendCoachQuestion() {
     c.msgs.push_back(u);
     CoachState::Msg a;
     a.node = cur, a.fen = game->nodes[cur].fen, a.waitLive = true, a.askedAt = ImGui::GetTime(), a.prompt = std::move(prompt);
+    a.question = q;
     c.msgs.push_back(std::move(a));
     c.scrollDown = true;
 }
@@ -691,7 +846,7 @@ void App::Impl::drawCoachChat(bool docked) {
     ImGui::PopFont();
     ImGui::PushFont(f.ui, 12);
     ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
-    ImGui::TextUnformatted(coachReady() ? "Your coach. Engine facts, plain words." : "Needs the AI coach model (Settings).");
+    ImGui::TextUnformatted(coachReady() ? ("About " + aboutLabel(*game, cur)).c_str() : "Needs the AI coach model (Settings).");
     ImGui::PopStyleColor();
     ImGui::PopFont();
     ImGui::EndGroup();
@@ -764,7 +919,7 @@ void App::Impl::drawCoachChat(bool docked) {
         std::string err;
         if (m.job) {
             auto v = m.job->view();
-            text = stripThinking(v.text);
+            text = shownText(m);
             done = v.done;
             err = v.error;
             if (done && text.empty()) text = err == "cancelled" ? "(stopped)" : "Sorry, I couldn't answer that" + (err.empty() ? "." : ": " + err);
@@ -789,9 +944,9 @@ void App::Impl::drawCoachChat(bool docked) {
             ImGui::Dummy({40, th});
         } else richText(pr, i, tw, true, err.empty() || !m.job->view().text.empty() ? theme::text : theme::dim);
         ImGui::SetCursorScreenPos({a.x, a.y + th + 16});
-        if (m.node != cur && !pr.annots.empty()) {
+        if (m.node != cur) {
             ImGui::PushFont(f.ui, 11.5f);
-            ImGui::TextDisabled("about move %s", m.node ? game->nodes[m.node].san.c_str() : "start");
+            ImGui::TextDisabled("about %s", aboutLabel(*game, m.node).c_str());
             ImGui::PopFont();
         }
         ImGui::Dummy({0, 0});
@@ -838,8 +993,7 @@ void App::Impl::coachAnnotations(std::vector<Arrow>& out, std::vector<std::pair<
     };
     auto parsed = [&](int i) {
         auto& m = c.msgs[i];
-        std::string t = m.job ? stripThinking(m.job->view().text) : m.text;
-        return parseTags(autoTags(t, m.fen), m.fen);
+        return parseTags(autoTags(shownText(m), m.fen), m.fen);
     };
     auto at = [&](int i) { return i >= 0 && i < (int)c.msgs.size() && c.msgs[i].node == cur; };
     if (at(c.hoverMsg)) {
@@ -938,6 +1092,28 @@ void App::Impl::settingsCoach(float) {
     ImGui::EndGroup();
     cardEnd();
 
+    card("explain", "When to explain moves", "Explanations are saved, so each move is explained once. Right-click the coach card to regenerate one.");
+    {
+        const char* opts[] = {"On request", "Automatically for the move I'm viewing", "Pre-generate the whole game"};
+        const char* subs[] = {"Press \"Explain this move\" (or its shortcut). Nothing runs in the background.",
+                              "Starts when you stay on a reviewed move for a moment.",
+                              "After a review, explains the key moves in the background (pauses while you chat or a review runs)."};
+        for (int k = 0; k < 3; k++) {
+            if (ImGui::RadioButton(opts[k], c.explainMode == k)) c.explainMode = k, coachSave();
+            ImGui::PushFont(f.ui, 12);
+            ImGui::Indent(28);
+            ImGui::TextDisabled("%s", subs[k]);
+            ImGui::Unindent(28);
+            ImGui::PopFont();
+        }
+        if (c.explainMode == CoachState::Pregen) {
+            ImGui::Indent(28);
+            if (ImGui::Checkbox("Also the other moves (after the key moves)", &c.pregenAll)) coachSave();
+            ImGui::Unindent(28);
+        }
+    }
+    cardEnd();
+
     card("models", "Model", "Smaller models answer faster; larger ones explain better. All are Apache 2.0 licensed.");
     std::error_code ec;
     for (int i = 0; i < kCoachModelCount; i++) {
@@ -957,7 +1133,7 @@ void App::Impl::settingsCoach(float) {
         ImGui::PopFont();
         ImGui::SameLine(0, 8);
         ImGui::PushFont(f.ui, 12);
-        ImGui::TextDisabled("%s%s", sizeText(m.size).c_str(), i == 0 ? "  ·  recommended" : "");
+        ImGui::TextDisabled("%s%s", sizeText(m.size).c_str(), i == recommendedCoachModel() ? "  ·  recommended here" : "");
         ImGui::PopFont();
         ImGui::PushFont(f.ui, 13);
         ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);

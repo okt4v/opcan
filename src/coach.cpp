@@ -8,6 +8,8 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <functional>
+#include <map>
 #include <fstream>
 #include <random>
 #include <regex>
@@ -30,6 +32,26 @@ int physicalCores() {
             }
 #endif
     return std::max(1, hw / 2);
+}
+
+// The 4B gets the facts right much more often (tests/coach_eval.cpp: chat answers clean 88% vs 75% for the 2B,
+// explanations 95% vs 85%) but only runs quickly on a GPU (~13 tokens/s on a Radeon 660M iGPU over Vulkan, the 2B
+// ~27); on the CPU alone it is too slow for a chat, so the 2B. A GPU needs room for the 2.7 GB model and context.
+int recommendedCoachModel() {
+    static int pick = [] {
+        llama_backend_init();
+        int best = 0;  // 2B
+        for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+            auto* dv = ggml_backend_dev_get(i);
+            auto ty = ggml_backend_dev_type(dv);
+            if (ty != GGML_BACKEND_DEVICE_TYPE_GPU && ty != GGML_BACKEND_DEVICE_TYPE_IGPU) continue;
+            size_t free = 0, total = 0;
+            ggml_backend_dev_memory(dv, &free, &total);
+            if (total >= (size_t)6 << 30 && (free == 0 || free >= (size_t)4 << 30)) best = 1;  // 4B
+        }
+        return best;
+    }();
+    return pick;
 }
 
 // ---------- download ----------
@@ -225,6 +247,201 @@ std::string clsWord(Cls c) {
 
 }  // namespace
 
+namespace {
+
+// 0 white better, 1 black better, -1 about equal; win: >= 3 pawns or a forced mate.
+int betterSide(Score s, Color stm, bool* win = nullptr) {
+    int w = stm == Color::WHITE ? 0 : 1;
+    if (win) *win = false;
+    if (s.mated) {
+        if (win) *win = true;
+        return 1 - w;
+    }
+    if (s.mate) {
+        if (win) *win = true;
+        return s.mate > 0 ? w : 1 - w;
+    }
+    int cp = stm == Color::WHITE ? s.cp : -s.cp;
+    if (win) *win = std::abs(cp) >= 300;
+    return std::abs(cp) < 40 ? -1 : cp > 0 ? 0 : 1;
+}
+
+// "White: Bxf7+ / Black: Kxf7 / White: Ng5+" (each move with its side); records the moves in f.
+std::string sideLine(const std::string& fen, const std::vector<std::string>& pv, size_t maxPlies, Facts& f,
+                     const std::function<std::string(int)>& who, std::string* uciOut = nullptr) {
+    Board b(fen);
+    std::string out;
+    for (size_t i = 0; i < pv.size() && i < maxPlies; i++) {
+        Move m = legalUci(b, pv[i]);
+        if (m == Move::NO_MOVE) break;
+        int side = b.sideToMove() == Color::WHITE ? 0 : 1;
+        std::string s = uci::moveToSan(b, m);
+        f.sans.insert(stripCheck(s));
+        f.moves.insert({stripCheck(s), side});
+        if (uciOut) *uciOut += (uciOut->empty() ? "" : " ") + pv[i];
+        out += (out.empty() ? "" : " / ") + who(side) + ": " + s;
+        b.makeMove(m);
+    }
+    return out;
+}
+
+std::string cap(std::string s) {
+    if (!s.empty()) s[0] = (char)std::toupper((unsigned char)s[0]);
+    return s;
+}
+
+std::string colorPiece(Piece p) {
+    return std::string(p.color() == Color::WHITE ? "white " : "black ") + pieceName(p.type());
+}
+
+// ---------- board facts (computed, never left to the model) ----------
+
+// Squares the piece on sq attacks (with the board's occupancy).
+Bitboard attacksFrom(const Board& b, Square sq) {
+    Piece p = b.at(sq);
+    if (p == Piece::NONE) return Bitboard(0);
+    switch ((int)p.type()) {
+        case 0: return attacks::pawn(p.color(), sq);
+        case 1: return attacks::knight(sq);
+        case 2: return attacks::bishop(sq, b.occ());
+        case 3: return attacks::rook(sq, b.occ());
+        case 4: return attacks::queen(sq, b.occ());
+        default: return attacks::king(sq);
+    }
+}
+
+std::vector<int> squaresOf(Bitboard bb) {
+    std::vector<int> v;
+    while (bb) v.push_back(bb.pop());
+    return v;
+}
+
+// The lowest-value piece of color c attacking sq, -1 if none.
+int lowestAttacker(const Board& b, Color c, Square sq) {
+    int best = -1, bv = 100;
+    for (int s : squaresOf(attacks::attackers(b, c, sq))) {
+        int v = b.at(Square(s)).type() == PieceType::KING ? 50 : pieceValue(b.at(Square(s)).type());
+        if (v < bv) bv = v, best = s;
+    }
+    return best;
+}
+
+std::string pieceAt(const Board& b, int sq) { return colorPiece(b.at(Square(sq))) + " on " + sqName(sq); }
+
+// Square of the enemy slider pinning the piece on sq to its king, -1 if not pinned.
+int pinnerOf(const Board& b, int sq) {
+    Piece p = b.at(Square(sq));
+    if (p == Piece::NONE || p.type() == PieceType::KING) return -1;
+    Color c = p.color();
+    Bitboard kb = b.pieces(PieceType::KING, c);
+    if (!kb) return -1;
+    int k = kb.lsb();
+    int df = (sq & 7) - (k & 7), dr = (sq >> 3) - (k >> 3);
+    if (!(df == 0 || dr == 0 || std::abs(df) == std::abs(dr))) return -1;
+    int sf = (df > 0) - (df < 0), sr = (dr > 0) - (dr < 0);
+    bool diag = sf && sr;
+    // between the king and the piece: empty
+    for (int f = (k & 7) + sf, r = (k >> 3) + sr; f != (sq & 7) || r != (sq >> 3); f += sf, r += sr)
+        if (b.at(Square(r * 8 + f)) != Piece::NONE) return -1;
+    // beyond the piece: the first piece must be an enemy slider on this line
+    for (int f = (sq & 7) + sf, r = (sq >> 3) + sr; f >= 0 && f < 8 && r >= 0 && r < 8; f += sf, r += sr) {
+        Piece q = b.at(Square(r * 8 + f));
+        if (q == Piece::NONE) continue;
+        if (q.color() == c) return -1;
+        bool ok = q.type() == PieceType::QUEEN || (diag ? q.type() == PieceType::BISHOP : q.type() == PieceType::ROOK);
+        return ok ? r * 8 + f : -1;
+    }
+    return -1;
+}
+
+// One line per focus piece: what it attacks (with defenders), what defends and attacks it, pins.
+std::vector<std::string> pieceLines(const Board& b, const std::vector<int>& focus) {
+    std::vector<std::string> out;
+    for (int sq : focus) {
+        Piece p = b.at(Square(sq));
+        if (p == Piece::NONE) continue;
+        Color c = p.color();
+        std::string s = pieceAt(b, sq) + ":";
+        std::string att;
+        for (int t : squaresOf(attacksFrom(b, Square(sq)) & b.us(~c))) {
+            Piece q = b.at(Square(t));
+            att += (att.empty() ? " attacks " : ", ") + pieceAt(b, t);
+            if (q.type() == PieceType::KING) att += " (check)";
+            else {
+                int d = lowestAttacker(b, ~c, Square(t));
+                att += d < 0 ? " (undefended)" : " (defended by the " + colorPiece(b.at(Square(d))) + ")";
+            }
+        }
+        s += att.empty() ? " attacks no enemy piece" : att;
+        if (p.type() != PieceType::KING) {
+            int d = lowestAttacker(b, c, Square(sq));
+            s += d < 0 ? "; it is undefended" : "; defended by the " + colorPiece(b.at(Square(d))) + " on " + sqName(d);
+            std::string by;
+            for (int a : squaresOf(attacks::attackers(b, ~c, Square(sq)))) {
+                by += (by.empty() ? "; attacked by the " : ", the ") + pieceAt(b, a);
+                Piece ap = b.at(Square(a));
+                if (ap.type() != PieceType::KING && pieceValue(ap.type()) < pieceValue(p.type())) by += " (a lower-value piece)";
+            }
+            s += by;
+            if (int pin = pinnerOf(b, sq); pin >= 0) s += "; pinned to its king by the " + pieceAt(b, pin);
+        }
+        out.push_back(s + ".");
+    }
+    return out;
+}
+
+// "white king on g1: castled, 3 pawns in front, 2 black pieces attack the squares around it."
+std::string kingLine(const Board& b, Color c) {
+    Bitboard kb = b.pieces(PieceType::KING, c);
+    if (!kb) return "";
+    int k = kb.lsb();
+    int f = k & 7, r = k >> 3, dir = c == Color::WHITE ? 1 : -1;
+    int shield = 0;
+    for (int df = -1; df <= 1; df++)
+        for (int dr = 1; dr <= 2; dr++) {
+            int ff = f + df, rr = r + dr * dir;
+            if (ff < 0 || ff > 7 || rr < 0 || rr > 7) continue;
+            Piece q = b.at(Square(rr * 8 + ff));
+            if (q != Piece::NONE && q.type() == PieceType::PAWN && q.color() == c) shield++;
+        }
+    std::set<int> attackers;
+    for (int z : squaresOf(attacks::king(Square(k)) | Bitboard::fromSquare(Square(k))))
+        for (int a : squaresOf(attacks::attackers(b, ~c, Square(z))))
+            if (b.at(Square(a)).type() != PieceType::KING) attackers.insert(a);
+    bool home = r == (c == Color::WHITE ? 0 : 7);
+    std::string s = pieceAt(b, k) + ": ";
+    s += home && (f >= 6 || f <= 2) ? "castled position, " : home && f == 4 ? "still in the center, " : "";
+    s += std::to_string(shield) + (shield == 1 ? " pawn" : " pawns") + " shielding it, ";
+    s += std::to_string(attackers.size()) + (c == Color::WHITE ? " black" : " white") + (attackers.size() == 1 ? " piece attacks" : " pieces attack") +
+         " the squares around it";
+    if (b.inCheck() && b.sideToMove() == c) s += ", in check";
+    return s + ".";
+}
+
+// Checking moves for side c (after a null move when c is not to move). Adds them to f.moves.
+std::string checksFor(const Board& b0, Color c, Facts& f) {
+    Board b = b0;
+    if (b.sideToMove() != c) {
+        if (b.inCheck()) return "";
+        b.makeNullMove();
+    }
+    Movelist ml;
+    movegen::legalmoves(ml, b);
+    std::string s;
+    int n = 0;
+    for (const Move& m : ml) {
+        std::string san = uci::moveToSan(b, m);
+        if (san.back() != '+' && san.back() != '#') continue;
+        if (n++ >= 5) break;
+        s += (s.empty() ? "" : ", ") + san;
+        f.sans.insert(stripCheck(san));
+        f.moves.insert({stripCheck(san), c == Color::WHITE ? 0 : 1});
+    }
+    return s;
+}
+
+}  // namespace
+
 std::vector<std::string> hangingPieces(const Board& b, Color side) {
     std::vector<std::string> out;
     for (int sq = 0; sq < 64; sq++) {
@@ -237,7 +454,271 @@ std::vector<std::string> hangingPieces(const Board& b, Color side) {
     return out;
 }
 
+static Facts buildLegacyFacts(const FactInput& in);
+
 Facts buildFacts(const FactInput& in) {
+    Facts f;
+    Board before(in.fenBefore), after = before;
+    Move played = in.moveUci.empty() ? Move::NO_MOVE : legalUci(before, in.moveUci);
+    std::string playedSan;
+    if (played != Move::NO_MOVE) {
+        playedSan = uci::moveToSan(before, played);
+        after.makeMove(played);
+        f.fenBefore = in.fenBefore;
+        f.mover = before.sideToMove() == Color::WHITE ? 0 : 1;
+        f.playedSan = playedSan;
+        f.sans.insert(stripCheck(playedSan));
+        f.moves.insert({stripCheck(playedSan), f.mover});
+    }
+    f.fen = after.getFen();
+    f.userColor = in.userColor;
+    int user = in.userColor;
+    Color mover = before.sideToMove();
+    int stmAfter = after.sideToMove() == Color::WHITE ? 0 : 1;
+
+    // names: "White" / "Black", or "you" / "your opponent" when we know the user's side
+    auto who = [&](int side) -> std::string {
+        if (user < 0) return side ? "Black" : "White";
+        return side == user ? "you" : "your opponent";
+    };
+    auto whose = [&](int side) -> std::string {
+        if (user < 0) return side ? "Black's" : "White's";
+        return side == user ? "your" : "your opponent's";
+    };
+    auto tagged = [&](int side) -> std::string {  // "Black (you)"
+        std::string c = side ? "Black" : "White";
+        return user < 0 ? c : c + (side == user ? " (you)" : " (your opponent)");
+    };
+    auto is = [&](int side) { return who(side) == "you" ? "are" : "is"; };
+    auto has = [&](int side) { return who(side) == "you" ? "have" : "has"; };
+    auto evalWords = [&](Score sc, Color stm) -> std::string {  // "White (you) is winning"
+        bool win = false;
+        int b = betterSide(sc, stm, &win);
+        if (sc.mated) return "checkmate";
+        if (sc.mate) return tagged(b) + " has a forced mate in " + std::to_string(std::abs(sc.mate));
+        if (b < 0) return "about equal";
+        int cp = std::abs(sc.cp);
+        return tagged(b) + " is " + (win ? "winning" : cp < 120 ? "slightly better" : "better");
+    };
+    auto withNum = [&](const Board& b, const std::string& san) {
+        return std::to_string(b.fullMoveNumber()) + (b.sideToMove() == Color::WHITE ? ". " : "... ") + san;
+    };
+
+    if (in.evalAfter) f.better = betterSide(*in.evalAfter, after.sideToMove(), &f.winning);
+    if (in.evalBefore && played != Move::NO_MOVE) f.betterBefore = betterSide(*in.evalBefore, mover);
+    bool bad = in.cls == Cls::Inaccuracy || in.cls == Cls::Mistake || in.cls == Cls::Blunder || in.cls == Cls::Miss;
+
+    std::string bestSan, threatSan, threatLine, threatUci, bestLine;
+    if (played != Move::NO_MOVE && !in.bestPv.empty() && in.bestPv[0] != in.moveUci) {
+        bestSan = sanOf(before, in.bestPv[0]);
+        if (!bestSan.empty()) bestLine = sideLine(in.fenBefore, in.bestPv, 6, f, [&](int s) { return std::string(s ? "Black" : "White"); });
+    }
+    if (played != Move::NO_MOVE && !in.replyPv.empty()) {
+        threatSan = sanOf(after, in.replyPv[0]);
+        if (!threatSan.empty())
+            threatLine = sideLine(f.fen, in.replyPv, 4, f, [&](int s) { return std::string(s ? "Black" : "White"); }, &threatUci);
+    }
+    f.bestSan = bestSan, f.threatSan = threatSan;
+
+    // the summary: one sentence the model paraphrases, and the fallback
+    {
+        std::string s;
+        int opp = 1 - f.mover;
+        auto evalSentence = [&]() -> std::string {
+            if (!in.evalAfter) return "";
+            Score sc = *in.evalAfter;
+            if (sc.mated) return "";
+            if (f.better < 0) return "The position is about equal.";
+            if (sc.mate) return cap(who(f.better)) + " " + has(f.better) + " a forced mate.";
+            return "Now " + who(f.better) + " " + is(f.better) + " " + (f.winning ? "winning." : "better.");
+        };
+        Movelist ml;
+        movegen::legalmoves(ml, after);
+        bool mate = ml.empty() && after.inCheck();
+        if (played == Move::NO_MOVE) {
+            s = cap(who(stmAfter)) + " to move.";
+            if (auto e = evalSentence(); !e.empty()) s += " " + e;
+            if (!in.liveLines.empty() && !in.liveLines[0].pv.empty())
+                if (auto b = sanOf(after, in.liveLines[0].pv[0]); !b.empty()) s += " The engine's top move is " + whose(stmAfter) + " " + b + ".";
+        } else if (mate) {
+            s = cap(whose(f.mover)) + " " + playedSan + " is checkmate.";
+        } else {
+            std::string me = cap(whose(f.mover)) + " " + playedSan;
+            switch (in.cls) {
+                case Cls::Blunder: case Cls::Mistake: case Cls::Inaccuracy: {
+                    s = me + " is " + (in.cls == Cls::Inaccuracy ? "an inaccuracy" : in.cls == Cls::Mistake ? "a mistake" : "a blunder");
+                    if (!threatSan.empty() && in.cls != Cls::Inaccuracy)
+                        s += ": it allows " + whose(opp) + " " + threatSan + (threatSan.back() == '#' ? ", which is checkmate" : "");
+                    s += ".";
+                    if (!bestSan.empty()) s += " " + cap(who(f.mover)) + " should have played " + bestSan + " instead.";
+                    break;
+                }
+                case Cls::Miss:
+                    s = me + " misses a chance.";
+                    if (!bestSan.empty()) s += " " + cap(who(f.mover)) + " could have played " + bestSan + ".";
+                    break;
+                case Cls::Brilliant: s = me + " is a brilliant move."; break;
+                case Cls::Great: s = me + " is a great move."; break;
+                case Cls::Best: s = me + " is the engine's top move."; break;
+                case Cls::Excellent: s = me + " is an excellent move."; break;
+                case Cls::Good: s = me + " is a good move."; break;
+                case Cls::Book: s = me + " is a book move" + (in.opening.empty() ? "." : " in the " + in.opening + "."); break;
+                default: s = cap(who(f.mover)) + " played " + playedSan + "."; break;
+            }
+            if (in.cls != Cls::Book)
+                if (auto e = evalSentence(); !e.empty()) s += " " + e;
+        }
+        f.summary = s;
+    }
+
+    if (in.legacyText) {
+        Facts l = buildLegacyFacts(in);
+        f.text = l.text;
+        f.sans.insert(l.sans.begin(), l.sans.end());
+        for (auto& lv : in.liveLines)  // the legacy sheet lists these too
+            sideLine(f.fen, lv.pv, 6, f, [](int) { return std::string(); });
+        return f;
+    }
+
+    std::string t;
+    auto line = [&](const std::string& s) { t += "- " + s + "\n"; };
+    if (user >= 0)
+        line(std::string("Sides: you play ") + (user ? "Black" : "White") + ", your opponent plays " + (user ? "White" : "Black") +
+             ". Say \"you\" for " + (user ? "Black" : "White") + " and \"your opponent\" for " + (user ? "White" : "Black") + ".");
+
+    if (played != Move::NO_MOVE) {
+        std::string s = tagged(f.mover) + " just played " + withNum(before, playedSan);
+        if (in.cls != Cls::None) s += ". Classification: " + clsWord(in.cls);
+        line(s + (in.uci ? " (UCI " + in.moveUci + ")." : "."));
+        Piece cap = before.at(played.to());
+        if (played.typeOf() == Move::ENPASSANT) cap = Piece(PieceType::PAWN, ~mover);
+        if (cap != Piece::NONE && played.typeOf() != Move::CASTLING)
+            line(playedSan + " captured the " + colorPiece(cap) + " on " + sqName(played.to().index()) + ".");
+        if (in.evalBefore || in.evalAfter) {
+            std::string e;
+            if (in.evalBefore) e = "Evaluation before " + playedSan + ": " + evalWords(*in.evalBefore, mover) + ". ";
+            if (in.evalAfter) e += "After " + playedSan + ": " + evalWords(*in.evalAfter, ~mover) + ".";
+            if (in.numbers && in.evalAfter && !in.evalAfter->mate && !in.evalAfter->mated) {
+                char nb[16];
+                std::snprintf(nb, sizeof nb, " (%+.1f)", (mover == Color::WHITE ? -in.evalAfter->cp : in.evalAfter->cp) / 100.0);
+                e += nb;
+            }
+            line(e);
+        }
+        if (!in.bestPv.empty() && in.bestPv[0] == in.moveUci)
+            line(playedSan + " was the engine's top move for " + tagged(f.mover) + ": nothing was better.");
+        else if (!bestSan.empty())
+            line("Better for " + tagged(f.mover) + " was " + withNum(before, bestSan) + " instead of " + playedSan + ". Engine line: " + bestLine);
+        if (!threatSan.empty()) {
+            int opp = 1 - f.mover;
+            std::string u = in.uci ? " (UCI " + threatUci + ")" : "";
+            if (threatSan.back() == '#') line("Now " + tagged(opp) + " can checkmate at once with " + withNum(after, threatSan) + "." + u);
+            else if (bad) line("Now " + tagged(opp) + " threatens " + withNum(after, threatSan) + ". Engine line: " + threatLine + u);
+            else line("Best reply for " + tagged(opp) + ": " + withNum(after, threatSan) + ". Engine line: " + threatLine + u);
+        }
+    } else {
+        line(tagged(stmAfter) + " to move.");
+        if (in.evalAfter) line("Evaluation: " + evalWords(*in.evalAfter, after.sideToMove()) + ".");
+    }
+
+    // state of the current position
+    Movelist ml;
+    movegen::legalmoves(ml, after);
+    if (ml.empty()) line(after.inCheck() ? "Checkmate: " + tagged(1 - stmAfter) + " wins." : "Stalemate: draw.");
+    else if (after.inCheck()) line(tagged(stmAfter) + " is in check.");
+
+    // pieces on the squares the moves above touch (as the board is now)
+    {
+        std::vector<int> sqs;
+        auto addMove = [&](const Board& b, const std::string& u) {
+            Move m = legalUci(b, u);
+            if (m == Move::NO_MOVE) return;
+            sqs.push_back(m.from().index());
+            sqs.push_back(m.to().index());
+        };
+        if (played != Move::NO_MOVE) sqs.push_back(played.to().index());
+        if (!in.replyPv.empty()) addMove(after, in.replyPv[0]);
+        if (!in.bestPv.empty() && played != Move::NO_MOVE) addMove(before, in.bestPv[0]);
+        if (!in.liveLines.empty() && !in.liveLines[0].pv.empty()) addMove(after, in.liveLines[0].pv[0]);
+        std::string s;
+        std::set<int> seen;
+        for (int sq : sqs) {
+            if (!seen.insert(sq).second) continue;
+            Piece p = after.at(Square(sq));
+            if (p == Piece::NONE) continue;
+            s += (s.empty() ? "" : ", ") + colorPiece(p) + " on " + sqName(sq);
+            if (played != Move::NO_MOVE && sq == played.to().index()) s += " (it just moved there from " + sqName(played.from().index()) + ")";
+        }
+        if (!in.pieceFacts) {
+            if (!s.empty()) line("Pieces on the key squares now: " + s + ".");
+        } else {
+            // the pieces that matter, as the board is now: moved, threatening, threatened, hanging, attacked by less
+            std::vector<int> focus;
+            for (int sq : sqs)
+                if (after.at(Square(sq)) != Piece::NONE && std::find(focus.begin(), focus.end(), sq) == focus.end()) focus.push_back(sq);
+            for (int sq = 0; sq < 64; sq++) {
+                Piece p = after.at(Square(sq));
+                if (p == Piece::NONE || p.type() == PieceType::KING) continue;
+                bool attacked = !attacks::attackers(after, ~p.color(), Square(sq)).empty();
+                bool defended = !attacks::attackers(after, p.color(), Square(sq)).empty();
+                int low = lowestAttacker(after, ~p.color(), Square(sq));
+                bool byLess = low >= 0 && after.at(Square(low)).type() != PieceType::KING &&
+                              pieceValue(after.at(Square(low)).type()) < pieceValue(p.type());
+                if ((attacked && !defended) || byLess || pinnerOf(after, sq) >= 0)
+                    if (std::find(focus.begin(), focus.end(), sq) == focus.end()) focus.push_back(sq);
+            }
+            if (focus.size() > 6) focus.resize(6);
+            if (!focus.empty()) {
+                line("Board facts now (computed, exact):");
+                for (auto& pl : pieceLines(after, focus)) t += "  " + pl + "\n";
+            }
+            for (Color c : {after.sideToMove(), ~after.sideToMove()})
+                if (auto ch = checksFor(after, c, f); !ch.empty())
+                    t += std::string("  Checks ") + (c == after.sideToMove() ? "available" : "threatened") + " for " + tagged(c == Color::WHITE ? 0 : 1) +
+                         ": " + ch + ".\n";
+            for (Color c : {Color::WHITE, Color::BLACK})
+                if (auto k = kingLine(after, c); !k.empty()) t += "  " + k + "\n";
+        }
+    }
+
+    int mat[2] = {};
+    for (int sq = 0; sq < 64; sq++) {
+        Piece p = after.at(Square(sq));
+        if (p != Piece::NONE) mat[(int)p.color()] += pieceValue(p.type());
+    }
+    int d = mat[0] - mat[1];
+    line(d ? "Material: " + tagged(d > 0 ? 0 : 1) + " is up " + std::to_string(std::abs(d)) + (std::abs(d) == 1 ? " point." : " points.")
+           : std::string("Material: even."));
+    for (Color c : {Color::WHITE, Color::BLACK}) {
+        auto h = hangingPieces(after, c);
+        if (h.empty()) continue;
+        std::string s = std::string(c == Color::WHITE ? "white " : "black ") + "pieces attacked and undefended: ";
+        for (size_t i = 0; i < h.size(); i++) s += (i ? ", " : "") + std::string(c == Color::WHITE ? "white " : "black ") + h[i];
+        line(cap(s) + ".");
+    }
+
+    if (!in.liveLines.empty()) {
+        line("Engine's top lines now (" + tagged(stmAfter) + " to move):");
+        int k = 0;
+        for (auto& l : in.liveLines) {
+            if (l.pv.empty() || k >= 3) continue;
+            std::string u;
+            std::string txt = sideLine(f.fen, l.pv, 6, f, [&](int s) { return std::string(s ? "Black" : "White"); }, &u);
+            if (txt.empty()) continue;
+            std::string e = evalWords(l.score, after.sideToMove());
+            t += "  " + std::to_string(++k) + ") " + e + ": " + txt + (in.uci ? " (UCI " + u + ")" : "") + "\n";
+        }
+    }
+
+    Phase ph = phaseAfter(after, std::max(0, in.ply - 1), in.cls == Cls::Book, Opening);
+    line(std::string("Game phase: ") + (ph == Opening ? "opening" : ph == Middlegame ? "middlegame" : "endgame") +
+         (in.opening.empty() ? "." : ". Opening: " + in.opening + "."));
+    line("Summary: " + f.summary);
+    f.text = t;
+    return f;
+}
+
+static Facts buildLegacyFacts(const FactInput& in) {
     Facts f;
     std::string t;
     auto line = [&](const std::string& s) { t += "- " + s + "\n"; };
@@ -340,35 +821,490 @@ Facts buildFacts(const FactInput& in) {
     return f;
 }
 
-bool movesGrounded(const std::string& text, const Facts& facts) {
-    static const std::regex moveRe(R"(^(O-O(-O)?|0-0(-0)?|[KQRBN][a-h]?[1-8]?x?[a-h][1-8]|[a-h]x[a-h][1-8](=?[QRBN])?|[a-h][1-8]=?[QRBN])[+#]?$)");
-    std::set<std::string> legal = facts.sans;
-    for (const std::string& fen : {facts.fen}) {
-        Board b(fen);
-        Movelist ml;
-        movegen::legalmoves(ml, b);
-        for (const Move& m : ml) legal.insert(stripCheck(uci::moveToSan(b, m)));
+// ---------- answer check ----------
+
+const char* issueName(AnswerIssue::Kind k) {
+    static const char* n[] = {"side", "invented", "piece", "eval", "tag", "role"};
+    return k < AnswerIssue::Count ? n[k] : "?";
+}
+
+namespace {
+
+std::string lowerStr(std::string s) {
+    for (auto& c : s) c = (char)std::tolower((unsigned char)c);
+    return s;
+}
+
+// Nf3+ -> Nf3, 0-0 -> O-O, e8Q -> e8=Q
+std::string normSan(std::string s) {
+    s = stripCheck(s);
+    if (s == "0-0") s = "O-O";
+    if (s == "0-0-0") s = "O-O-O";
+    if (s.size() >= 3 && std::islower((unsigned char)s[0]) && std::strchr("QRBN", s.back()) && s[s.size() - 2] != '=')
+        s.insert(s.size() - 1, "=");
+    return s;
+}
+
+const std::regex& sanRegex() {
+    static const std::regex re(R"(^(O-O(-O)?|0-0(-0)?|[KQRBN][a-h]?[1-8]?x?[a-h][1-8]|[a-h]x[a-h][1-8](=?[QRBN])?|[a-h][1-8](=?[QRBN])?)[+#]?[!?]*$)");
+    return re;
+}
+
+bool isPieceWord(const std::string& w) {
+    static const std::set<std::string> p = {"pawn", "pawns", "knight", "knights", "bishop", "bishops", "rook", "rooks", "queen",
+                                            "queens", "king", "kings", "piece", "pieces", "army", "square", "squares", "file", "rank",
+                                            "diagonal", "side", "camp", "position", "structure", "pawn's", "knight's", "bishop's",
+                                            "rook's", "queen's", "king's"};
+    return p.count(w) > 0;
+}
+
+// Legal for side in fen (the side not to move plays after a null move).
+bool legalFor(const std::string& fen, int side, const std::string& san) {
+    if (fen.empty()) return false;
+    Board b(fen);
+    if ((b.sideToMove() == Color::WHITE ? 0 : 1) != side) {
+        if (b.inCheck()) return false;
+        b.makeNullMove();
     }
-    std::string tok;
-    auto check = [&]() {
-        while (!tok.empty() && (tok.back() == '-' || tok.back() == '.')) tok.pop_back();
-        bool ok = true;
-        if (!tok.empty() && std::regex_match(tok, moveRe)) {
-            std::string s = stripCheck(tok);
-            if (s == "0-0") s = "O-O";
-            if (s == "0-0-0") s = "O-O-O";
-            if (s.size() == 4 && s[2] != '=' && (s[3] == 'Q' || s[3] == 'R' || s[3] == 'B' || s[3] == 'N') && s[0] >= 'a' && s[0] <= 'h')
-                s = s.substr(0, 3) + "=" + s.substr(3);
-            ok = legal.count(s) > 0;
+    return legalAny(b, san) != Move::NO_MOVE;
+}
+
+struct Sentence {
+    size_t a, e;  // span in the text, trailing spaces included
+};
+
+// Sentences end at . ! ? or a newline followed by a space or the end, but not after a move number ("4." "4...").
+std::vector<Sentence> splitSentences(const std::string& t, bool final, size_t* held) {
+    std::vector<Sentence> out;
+    size_t start = 0, n = t.size();
+    for (size_t i = 0; i < n; i++) {
+        char c = t[i];
+        if (c == '[') {  // never split inside a tag
+            size_t cl = t.find(']', i);
+            if (cl == std::string::npos) break;
+            i = cl;
+            continue;
         }
-        tok.clear();
-        return ok;
-    };
-    for (char c : text) {
-        if (std::isalnum((unsigned char)c) || c == '+' || c == '#' || c == '=' || c == '-') tok += c;
-        else if (!check()) return false;
+        bool end = false;
+        if (c == '\n') end = true;
+        else if (c == '.' || c == '!' || c == '?') {
+            size_t j = i;
+            while (j + 1 < n && (t[j + 1] == '.' || t[j + 1] == '!' || t[j + 1] == '?' || t[j + 1] == '"' || t[j + 1] == ')')) j++;
+            if (j + 1 < n && !std::isspace((unsigned char)t[j + 1])) {
+                i = j;
+                continue;
+            }
+            // a move number: the word before the dots is all digits
+            size_t w = i;
+            while (w > start && std::isdigit((unsigned char)t[w - 1])) w--;
+            bool num = w < i && (w == start || std::isspace((unsigned char)t[w - 1]) || t[w - 1] == '(');
+            if (c == '.' && num && j + 1 < n) {
+                i = j;
+                continue;
+            }
+            i = j;
+            end = j + 1 < n || final;
+            if (!end) break;
+        }
+        if (end) {
+            size_t e = i + 1;
+            while (e < n && std::isspace((unsigned char)t[e])) e++;
+            out.push_back({start, e});
+            start = e;
+            i = e - 1;
+        }
     }
-    return check();
+    if (held) *held = start;
+    if (final && start < n) {
+        size_t s = start;
+        while (s < n && std::isspace((unsigned char)t[s])) s++;
+        if (s < n) out.push_back({start, n});
+        if (held) *held = n;
+    }
+    return out;
+}
+
+struct Checker {
+    const Facts& f;
+    std::set<std::pair<std::string, int>> extra;  // moves named in the question, legal for that side
+
+    int other(int s) const { return s < 0 ? -1 : 1 - s; }
+
+    bool known(const std::string& san, int side) const {
+        if (side < 0) {
+            for (int s : {0, 1})
+                if (f.moves.count({san, s}) || extra.count({san, s})) return true;
+            return false;
+        }
+        return f.moves.count({san, side}) || extra.count({san, side});
+    }
+    bool legalSomewhere(const std::string& san) const {
+        for (int s : {0, 1})
+            if (legalFor(f.fen, s, san) || legalFor(f.fenBefore, s, san)) return true;
+        return false;
+    }
+
+    // side words: 0/1 white/black, 2 = possessive flag added (+2)
+    int sideWord(const std::vector<std::string>& w, size_t i, size_t* consumed) const {
+        const std::string& x = w[i];
+        *consumed = 1;
+        auto next = [&](size_t k) { return i + k < w.size() ? w[i + k] : std::string(); };
+        if (x == "white" || x == "black") return isPieceWord(next(1)) ? -1 : (x == "black");
+        if (x == "white's" || x == "black's") return (x == "black's") + 2;
+        if (f.userColor < 0) return -1;
+        int u = f.userColor, o = 1 - u;
+        if (x == "your" && (next(1) == "opponent" || next(1) == "opponent's")) {
+            *consumed = 2;
+            return next(1) == "opponent" ? o : o + 2;
+        }
+        if (x == "opponent" || x == "they" || x == "opponent's") {
+            if (x == "they") return -1;
+            return x == "opponent" ? o : o + 2;
+        }
+        if (x == "you" || x == "you're" || x == "you've" || x == "you'll") return u;
+        if (x == "your") return isPieceWord(next(1)) && next(1) != "position" ? -1 : u + 2;
+        return -1;
+    }
+
+    void check(const std::string& sent, std::vector<AnswerIssue>& iss, int& moveCount) {
+        // words (tags kept whole)
+        struct W {
+            std::string raw, core, low;  // core: punctuation and move numbers stripped
+            int num = -1;                // a move number before/in the token: 0 "4." 1 "4..."
+            bool tag = false;
+        };
+        std::vector<W> ws;
+        size_t n = sent.size();
+        for (size_t i = 0; i < n;) {
+            if (std::isspace((unsigned char)sent[i])) {
+                i++;
+                continue;
+            }
+            W w;
+            if (sent[i] == '[') {
+                size_t c = sent.find(']', i);
+                size_t e = c == std::string::npos ? n : c + 1;
+                w.raw = sent.substr(i, e - i), w.tag = true;
+                ws.push_back(w);
+                i = e;
+                continue;
+            }
+            size_t j = i;
+            while (j < n && !std::isspace((unsigned char)sent[j]) && sent[j] != '[') j++;
+            w.raw = sent.substr(i, j - i);
+            size_t a = 0, e = w.raw.size();
+            while (a < e && std::strchr("(\"'", w.raw[a])) a++;
+            size_t d = a;
+            while (d < e && std::isdigit((unsigned char)w.raw[d])) d++;
+            size_t dots = d;
+            while (dots < e && w.raw[dots] == '.') dots++;
+            if (dots > d) w.num = dots - d >= 2 ? 1 : 0, a = dots;
+            else if (d == a && dots == a && a + 2 < e && w.raw.compare(a, 3, "...") == 0) w.num = 1, a += 3;
+            if (d > a && dots == d) {}  // plain number
+            while (e > a && std::strchr(",.;:!?)\"'", w.raw[e - 1])) {
+                if ((w.raw[e - 1] == '!' || w.raw[e - 1] == '?') && e - 1 > a && std::isalnum((unsigned char)w.raw[e - 2])) break;
+                e--;
+            }
+            w.core = w.raw.substr(a, e - a);
+            if (!w.core.empty() && w.core.back() == '\'' ) w.core.pop_back();
+            w.low = lowerStr(w.core);
+            ws.push_back(w);
+            i = j;
+        }
+        std::vector<std::string> lows;
+        for (auto& w : ws) lows.push_back(w.low);
+
+        static const std::set<std::string> squareBefore = {"on", "at", "to", "from", "the", "of", "towards", "toward", "onto", "into",
+                                                           "square", "squares", "via", "around", "near", "and", "or", "against", "over"};
+        auto isMoveTok = [&](size_t i) {
+            const W& w = ws[i];
+            if (w.tag || w.core.empty() || !std::regex_match(w.core, sanRegex())) return false;
+            bool pawnPush = std::islower((unsigned char)w.core[0]) && w.core.find('x') == std::string::npos;
+            if (!pawnPush) return true;
+            if (w.num >= 0 || (i > 0 && ws[i - 1].num >= 0 && ws[i - 1].core.empty())) return true;
+            // "on d5", "the d5 pawn", "c3 or d4": a square, even when d5 is also a move somewhere in the facts
+            if (i + 1 < ws.size() && isPieceWord(ws[i + 1].low)) return false;
+            if (i > 0 && squareBefore.count(ws[i - 1].low)) return false;
+            std::string s = normSan(w.core);
+            return known(s, -1) || legalSomewhere(s);
+        };
+
+        int subject = -1, pending = -1, runSide = -1, numSide = -1;
+        bool inRun = false, afterMove = false, wantBest = false, wantPlayed = false;
+        // a move cut into pieces ("Nc", "gxf", "Bbxfexf"): the model spelled around a move
+        static const std::regex garbled(R"(^([KQRBN]x?[a-h]|[KQRBN][a-h1-8]x[a-h]?|[a-h]x[a-h]?|[KQRBN]?[a-h]+x[a-h]+(x[a-h]+)*|[KQRBN][a-h][a-h])$)");
+        for (size_t i = 0; i < ws.size(); i++) {
+            W& w = ws[i];
+            if (w.tag) {
+                checkTag(w.raw, pending >= 0 ? pending : afterMove ? -2 : subject, iss, moveCount);
+                continue;
+            }
+            if (w.core.empty() && w.num >= 0) {  // "4." "4..."
+                numSide = w.num;
+                continue;
+            }
+            size_t used = 1;
+            int sw = sideWord(lows, i, &used);
+            if (sw >= 0) {
+                if (sw >= 2) pending = sw - 2;
+                else subject = sw, pending = -1;
+                inRun = afterMove = false;
+                i += used - 1;
+                continue;
+            }
+            if (i >= 2 && lows[i] == "played" && lows[i - 1] == "have" && (lows[i - 2] == "should" || lows[i - 2] == "could")) wantBest = true;
+            else if (lows[i] == "played" && !(i > 0 && (lows[i - 1] == "have" || lows[i - 1] == "had" || lows[i - 1] == "be"))) {
+                wantPlayed = true;  // "X played Bg4": Bg4 is the move that was played
+                continue;
+            }
+            if (isMoveTok(i)) {
+                if (wantPlayed && !f.playedSan.empty() && normSan(w.core) != normSan(f.playedSan) && !inRun)
+                    iss.push_back({AnswerIssue::Role, w.core});
+                wantPlayed = false;
+                if (wantBest && !f.fenBefore.empty()) {  // "should have played X": X must be the better move
+                    if (f.bestSan.empty() || normSan(w.core) != normSan(f.bestSan)) iss.push_back({AnswerIssue::Role, w.core});
+                    wantBest = false;
+                }
+                int side = w.num >= 0 ? w.num : numSide >= 0 ? numSide : inRun ? runSide : pending >= 0 ? pending : subject;
+                if (!inRun && w.num < 0 && numSide < 0 && i + 2 < ws.size() && lows[i + 1] == "for") {  // "g6 for Black"
+                    size_t u2;
+                    int fs = sideWord(lows, i + 2, &u2);
+                    if (fs >= 0 && fs < 2) side = fs;
+                }
+                if (pending >= 0 && !inRun) pending = -1;
+                std::string s = normSan(w.core);
+                moveCount++;
+                if (!known(s, -1)) iss.push_back({AnswerIssue::Invented, w.core});
+                else if (side >= 0 && !known(s, side)) iss.push_back({AnswerIssue::Side, std::string(side ? "Black " : "White ") + w.core});
+                inRun = true, afterMove = true;
+                runSide = other(side);
+                numSide = -1;
+                continue;
+            }
+            if (!w.core.empty() && w.core != "Be" && w.core != "Re" && w.core != "Bad" && w.core != "Bag" && w.core != "Bed" &&
+                w.core != "Beg" && std::regex_match(w.core, garbled))
+                iss.push_back({AnswerIssue::Invented, w.core});
+            if (isPieceWord(w.low) || isSquare(w.low)) pending = -1;  // "your c3 pawn": the possessive was about a piece
+            inRun = afterMove = false;
+            numSide = -1;
+            wantPlayed = false;
+        }
+        checkPieces(lowerStr(sent), iss);
+        checkEval(lowerStr(sent), iss);
+    }
+
+    // [arrow X] / [line X Y]: the moves must be facts moves; given to a side, of that side (-2: illustrates the move just named)
+    void checkTag(const std::string& raw, int side, std::vector<AnswerIssue>& iss, int& moveCount) {
+        Parsed p = parseTags(raw, f.fen);
+        if (p.annots.empty() || p.annots[0].kind == Annot::Square) return;
+        Board b(f.fen);
+        const Annot& a = p.annots[0];
+        int stm = b.sideToMove() == Color::WHITE ? 0 : 1;
+        // which side the first move belongs to: legal for the side to move, else the other side
+        int first = legalUci(b, a.uci[0]) != Move::NO_MOVE ? stm : 1 - stm;
+        Board cur = b;
+        if (first != stm) cur.makeNullMove();
+        int s = first;
+        for (auto& u : a.uci) {
+            Move m = legalUci(cur, u);
+            if (m == Move::NO_MOVE) break;
+            std::string san = normSan(uci::moveToSan(cur, m));
+            moveCount++;
+            if (!known(san, s)) {
+                iss.push_back({AnswerIssue::Tag, raw});
+                return;
+            }
+            cur.makeMove(m);
+            s = 1 - s;
+        }
+        if (side >= 0 && side != first) iss.push_back({AnswerIssue::Tag, raw});
+    }
+
+    void checkPieces(const std::string& low, std::vector<AnswerIssue>& iss) {
+        static const std::regex re1(R"(\b(?:(white|black|your|opponent's)\s+)?(king|queen|rook|bishop|knight|pawn)\s+(?:on|at)\s+([a-h][1-8])\b)");
+        static const std::regex re2(R"(\b(?:(white|black|your|opponent's)\s+)?([a-h][1-8])[- ](king|queen|rook|bishop|knight|pawn)\b)");
+        auto test = [&](const std::string& col, const std::string& piece, const std::string& sq, const std::string& text) {
+            static const std::map<std::string, PieceType> types = {{"pawn", PieceType::PAWN},     {"knight", PieceType::KNIGHT},
+                                                                   {"bishop", PieceType::BISHOP}, {"rook", PieceType::ROOK},
+                                                                   {"queen", PieceType::QUEEN},   {"king", PieceType::KING}};
+            int c = col == "white" ? 0 : col == "black" ? 1 : -1;
+            if (f.userColor >= 0 && col == "your") c = f.userColor;
+            if (f.userColor >= 0 && col == "opponent's") c = 1 - f.userColor;
+            PieceType t = types.at(piece);
+            Square s(sq);
+            for (const std::string& fen : {f.fen, f.fenBefore}) {
+                if (fen.empty()) continue;
+                Piece p = Board(fen).at(s);
+                if (p != Piece::NONE && p.type() == t && (c < 0 || (int)(p.color() == Color::BLACK) == c)) return;
+            }
+            iss.push_back({AnswerIssue::Piece, text});
+        };
+        for (auto it = std::sregex_iterator(low.begin(), low.end(), re1); it != std::sregex_iterator(); ++it)
+            test((*it)[1], (*it)[2], (*it)[3], it->str());
+        for (auto it = std::sregex_iterator(low.begin(), low.end(), re2); it != std::sregex_iterator(); ++it)
+            test((*it)[1], (*it)[3], (*it)[2], it->str());
+
+        // claims about the board: "X on c4 attacks ... f7", "the knight on e5 is hanging / undefended / pinned"
+        auto boards = [&] {
+            std::vector<Board> v{Board(f.fen)};
+            if (!f.fenBefore.empty()) v.push_back(Board(f.fenBefore));
+            return v;
+        }();
+        static const std::regex att(
+            R"(\b(?:king|queen|rook|bishop|knight|pawn)\s+on\s+([a-h][1-8])\s+(?:now\s+|also\s+)?(?:attacks|is attacking|hits|eyes)\s+(?:the\s+)?(?:(?:white|black|your|opponent's)\s+)?(?:(?:king|queen|rook|bishop|knight|pawn)\s+on\s+|(?:king|queen|rook|bishop|knight|pawn)\s+)?([a-h][1-8])\b)");
+        for (auto it = std::sregex_iterator(low.begin(), low.end(), att); it != std::sregex_iterator(); ++it) {
+            Square a((*it)[1].str()), t((*it)[2].str());
+            bool ok = false;
+            for (auto& b : boards) ok |= (attacksFrom(b, a) & Bitboard::fromSquare(t)) != Bitboard(0);
+            if (!ok) iss.push_back({AnswerIssue::Piece, it->str()});
+        }
+        // "Nc3 attacks the queen on a5": the piece that moved to c3 attacks a5
+        static const std::regex sanAtt(
+            R"(\b[kqrbn][a-h]?[1-8]?x?([a-h][1-8])[+#]?\s+(?:now\s+|also\s+)?(?:attacks|is attacking|hits)\s+(?:the\s+)?(?:(?:white|black|your|opponent's)\s+)?(?:king|queen|rook|bishop|knight|pawn)\s+on\s+([a-h][1-8])\b)");
+        for (auto it = std::sregex_iterator(low.begin(), low.end(), sanAtt); it != std::sregex_iterator(); ++it) {
+            Square a((*it)[1].str()), t((*it)[2].str());
+            bool any = false, ok = false;
+            for (auto& b : boards)
+                if (b.at(a) != Piece::NONE) any = true, ok |= (attacksFrom(b, a) & Bitboard::fromSquare(t)) != Bitboard(0);
+            if (any && !ok) iss.push_back({AnswerIssue::Piece, it->str()});
+        }
+        static const std::regex st(
+            R"(\b(?:(?:king|queen|rook|bishop|knight|pawn)\s+on\s+([a-h][1-8])|([a-h][1-8])[- ](?:king|queen|rook|bishop|knight|pawn))\s+(?:is|was|are)\s+(?:now\s+|still\s+)?(hanging|undefended|unprotected|pinned|defended|protected)\b)");
+        for (auto it = std::sregex_iterator(low.begin(), low.end(), st); it != std::sregex_iterator(); ++it) {
+            Square sq((*it)[1].matched ? (*it)[1].str() : (*it)[2].str());
+            std::string what = (*it)[3];
+            bool ok = false;
+            for (auto& b : boards) {
+                Piece p = b.at(sq);
+                if (p == Piece::NONE) continue;
+                bool def = !attacks::attackers(b, p.color(), sq).empty(), att2 = !attacks::attackers(b, ~p.color(), sq).empty();
+                if (what == "hanging") ok |= att2 && !def;
+                else if (what == "undefended" || what == "unprotected") ok |= !def;
+                else if (what == "pinned") ok |= pinnerOf(b, sq.index()) >= 0;
+                else ok |= def;
+            }
+            if (!ok) iss.push_back({AnswerIssue::Piece, it->str()});
+        }
+    }
+
+    void checkEval(const std::string& low, std::vector<AnswerIssue>& iss) {
+        static const std::regex re(
+            R"(\b(white|black|you|your opponent|opponent)\b(?:'s position)?\s+(is|are|was|were|stands|stood|remains|has|have|had|keeps|holds|gets|got)\s+(?:(?:now|still|clearly|completely|much|slightly|a bit|totally|already|definitely|far|significantly)\s+)*(winning|better|ahead|in control|losing|worse|behind|lost|the advantage|an advantage|a winning|a big advantage|a clear advantage|the upper hand|a decisive)\b)");
+        for (auto it = std::sregex_iterator(low.begin(), low.end(), re); it != std::sregex_iterator(); ++it) {
+            std::string who = (*it)[1], verb = (*it)[2], what = (*it)[3];
+            int side = who == "white" ? 0 : who == "black" ? 1 : -1;
+            if (side < 0) {
+                if (f.userColor < 0) continue;
+                side = who == "you" ? f.userColor : 1 - f.userColor;
+            }
+            bool neg = what == "losing" || what == "worse" || what == "behind" || what == "lost";
+            bool strong = what == "winning" || what == "losing" || what == "lost" || what == "a winning" || what == "a decisive";
+            int claim = neg ? 1 - side : side;
+            bool past = verb == "was" || verb == "were" || verb == "stood" || verb == "had";
+            int ref = past ? f.betterBefore : f.better;
+            if (ref == -2) continue;
+            if ((ref >= 0 && claim != ref) || (ref == -1 && strong)) iss.push_back({AnswerIssue::Eval, it->str()});
+        }
+        static const std::regex eq(R"(\b(is|are|remains|looks)\s+(?:now\s+|still\s+)?(?:about |roughly |completely )?(equal|balanced|level)\b)");
+        if (f.winning && f.better >= 0 && std::regex_search(low, eq)) iss.push_back({AnswerIssue::Eval, "equal"});
+    }
+};
+
+}  // namespace
+
+CheckedAnswer checkAnswer(const std::string& text0, const Facts& f, const std::string& question, bool final) {
+    CheckedAnswer r;
+    Checker ck{f, {}};
+    // moves the user named are fair game when legal for that side
+    {
+        std::string w;
+        auto flush = [&] {
+            while (!w.empty() && std::strchr(",.;:!?)\"'", w.back())) w.pop_back();
+            size_t a = w.find_first_not_of("(\"'.0123456789");
+            if (a != std::string::npos) w.erase(0, a);
+            if (!w.empty() && std::regex_match(w, sanRegex()))
+                for (int s : {0, 1})
+                    if (legalFor(f.fen, s, normSan(w)) || legalFor(f.fenBefore, s, normSan(w))) ck.extra.insert({normSan(w), s});
+            w.clear();
+        };
+        for (char c : question) {
+            if (std::isspace((unsigned char)c)) flush();
+            else w += c;
+        }
+        flush();
+    }
+    // the model sometimes copies "(UCI e2e4 ...)" from the facts
+    static const std::regex uciParen(R"(\s*\(UCI[^)]*\)?)");
+    std::string text = std::regex_replace(text0, uciParen, "");
+    size_t held = 0;
+    auto sents = splitSentences(text, final, &held);
+    std::string kept;
+    for (auto& s : sents) {
+        std::string sent = text.substr(s.a, s.e - s.a);
+        if (sent.find_first_not_of(" \t\r\n") == std::string::npos) continue;
+        r.sentences++;
+        std::vector<AnswerIssue> iss;
+        ck.check(sent, iss, r.moves);
+        if (iss.empty()) kept += sent;
+        else r.dropped++, r.issues.insert(r.issues.end(), iss.begin(), iss.end());
+    }
+    while (!kept.empty() && std::isspace((unsigned char)kept.back())) kept.pop_back();
+    if (final && kept.empty()) r.text = f.summary, r.fallback = true;
+    else r.text = kept;
+    return r;
+}
+
+// ---------- prompts ----------
+
+namespace {
+
+const char* kCardSys =
+    "You are Pip, a friendly chess coach in a game review app. A strong chess engine wrote the FACTS and they are correct. "
+    "Explain the last move to the player in 1 to 3 short sentences (under 60 words): say what it did and why it got its "
+    "classification. Start from the Summary in the FACTS and add one reason taken from the FACTS.\n"
+    "Rules:\n"
+    "- Every move in the FACTS is written next to the side that plays it (\"White: MOVE\"). Keep each move with its side: "
+    "never say one side plays the other side's move.\n"
+    "- Name the side with each move (\"White's MOVE\", \"Black should have played MOVE\"). Only the move under \"Better for\" "
+    "is what should have been played; if the FACTS say it was the top move, nothing was better.\n"
+    "- If the FACTS say \"you\", talk to the player as \"you\" and call the other side \"your opponent\".\n"
+    "- Use only moves, pieces and squares from the FACTS, written exactly as given. Never invent moves.\n"
+    "- No numbers, no lists, no markdown.";
+
+const char* kChatSys =
+    "You are Pip, a friendly chess coach in a game review app. Every question comes with FACTS from a strong chess engine "
+    "about the position on the board. The FACTS are correct; you are weak at calculating chess, so never calculate yourself. "
+    "Answer in 1 to 4 short sentences of plain language, no markdown.\n"
+    "Rules:\n"
+    "- Every move in the FACTS is written next to the side that plays it (\"White: MOVE / Black: MOVE\"). Keep each move with "
+    "its side: never say one side plays the other side's move. Name the side with each move.\n"
+    "- Only the move under \"Better for\" is what should have been played instead; if the FACTS say the move was the top "
+    "move, say nothing was better.\n"
+    "- If the FACTS say \"you\", call the player \"you\" and the other side \"your opponent\".\n"
+    "- Use only moves, pieces and squares from the FACTS. Never invent moves.\n"
+    "You can show things on the board with tags, taking the moves only from the UCI given in the FACTS:\n"
+    "[arrow MOVE] draws an arrow for one UCI move; [arrow MOVE red] for a threat\n"
+    "[square SQUARE] highlights a square, e.g. a weak square or a hanging piece\n"
+    "[line MOVE MOVE MOVE] shows a sequence of UCI moves from a line in the FACTS\n"
+    "Put a tag right after the move or square it illustrates, at most 3 tags per answer.";
+
+}  // namespace
+
+std::vector<ChatMsg> cardPrompt(const Facts& f, const std::string& moveSan) {
+    std::string who;  // "Black's Bg4 (your opponent's move)"
+    if (f.mover >= 0) {
+        who = std::string(f.mover ? "Black's " : "White's ") + moveSan;
+        if (f.userColor >= 0) who += f.mover == f.userColor ? " (your move)" : " (your opponent's move)";
+    } else who = moveSan;
+    return {{"system", kCardSys},
+            {"user", "FACTS:\n" + f.text + "\nExplain the move just played, " + who +
+                         ", to the player in 1 to 3 short sentences, keeping every move with its side."}};
+}
+
+const char* chatSystemPrompt() { return kChatSys; }
+
+std::string chatTurn(const Facts& f, const std::string& tagHint, const std::string& question) {
+    return "FACTS (current position):\n" + f.text + tagHint + "\nQuestion: " + question;
 }
 
 // ---------- tags ----------
@@ -725,12 +1661,21 @@ struct Coach::Impl {
 
         auto sp = llama_sampler_chain_default_params();
         llama_sampler* smpl = llama_sampler_chain_init(sp);
+        if (!j.grammar.empty()) {
+            llama_sampler* g = llama_sampler_init_grammar(vocab, j.grammar.c_str(), "root");
+            if (!g) {
+                running = nullptr;
+                llama_sampler_free(smpl);
+                return finish("bad grammar");
+            }
+            llama_sampler_chain_add(smpl, g);
+        }
         llama_sampler_chain_add(smpl, llama_sampler_init_penalties(llama_vocab_n_tokens(vocab), 64, 1.1f, 0.0f, 0.0f));
         llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
         llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.9f, 1));
         llama_sampler_chain_add(smpl, llama_sampler_init_min_p(0.05f, 1));
-        llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.4f));
-        llama_sampler_chain_add(smpl, llama_sampler_init_dist((uint32_t)std::random_device{}()));
+        llama_sampler_chain_add(smpl, llama_sampler_init_temp(j.temp));
+        llama_sampler_chain_add(smpl, llama_sampler_init_dist(j.seed ? j.seed : (uint32_t)std::random_device{}()));
 
         std::string raw;
         size_t shown = 0;
@@ -817,14 +1762,22 @@ std::string Coach::device() const {
     return d->dev;
 }
 
-std::shared_ptr<CoachJob> Coach::ask(std::vector<ChatMsg> msgs, int maxTokens) {
+std::shared_ptr<CoachJob> Coach::ask(std::vector<ChatMsg> msgs, int maxTokens, bool urgent) {
     auto j = std::make_shared<CoachJob>();
     j->msgs = std::move(msgs);
     j->maxTokens = maxTokens;
-    std::lock_guard l(d->m);
-    d->q.push_back(j);
-    d->cv.notify_all();
+    j->urgent = urgent;
+    ask(j);
     return j;
+}
+
+void Coach::ask(std::shared_ptr<CoachJob> j) {
+    std::lock_guard l(d->m);
+    auto at = d->q.end();
+    if (j->urgent)
+        at = std::find_if(d->q.begin(), d->q.end(), [](auto& o) { return !o->urgent; });
+    d->q.insert(at, std::move(j));
+    d->cv.notify_all();
 }
 
 void Coach::hold(bool h) {

@@ -259,6 +259,13 @@ void drawIcon(ImDrawList* dl, ImVec2 c, Icon i, ImU32 col) {
             dl->AddPolyline(p, 3, col, 1.8f);
             break;
         }
+        case Icon::Openings:  // a branching line
+            dl->AddLine({c.x, c.y + 7}, {c.x, c.y - 1}, col, 1.8f);
+            dl->AddLine({c.x, c.y - 1}, {c.x - 6, c.y - 5}, col, 1.8f);
+            dl->AddLine({c.x, c.y - 1}, {c.x + 6, c.y - 5}, col, 1.8f);
+            for (ImVec2 d : {ImVec2{c.x, c.y + 7}, ImVec2{c.x - 6, c.y - 6}, ImVec2{c.x + 6, c.y - 6}, ImVec2{c.x, c.y - 1}})
+                dl->AddCircleFilled(d, 2.4f, col);
+            break;
     }
 }
 
@@ -377,6 +384,7 @@ void App::Impl::selectProfile(const Profile& p) {
     statsJob.reset();
     statsStale = true;
     statsAcc = 0, statsPattern = -1;
+    ex = ExplorerUi{};
     bgFailed.clear();
     unreviewedAt = -100;
     syncer = std::make_unique<Syncer>();
@@ -1024,6 +1032,12 @@ void App::Impl::drawLibrary() {
     place(ImGui::CalcTextSize("Brilliant").x + 42);
     if (toggle("Brilliant", filter.brilliantOnly, false, Cls::Brilliant)) filter.brilliantOnly = !filter.brilliantOnly, libDirty = true;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Games where you played a brilliant move");
+    if (filter.ids) {  // from the opening explorer
+        std::string chip = "Position after " + (ex.shown.empty() ? std::string("the start") : ex.shown) + "   x";
+        place(ImGui::CalcTextSize(chip.c_str()).x + 24);
+        if (toggle(chip.c_str(), true)) filter.ids.reset(), ex.shown.clear(), libDirty = true;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Games from the opening explorer that reached this position. Click to clear");
+    }
     ImGui::Dummy({0, 8});
 
     // list

@@ -1,6 +1,7 @@
 #include "audio.hpp"
 #include <miniaudio.h>
 #include <filesystem>
+#include <random>
 
 struct Audio::Impl {
     ma_engine engine;
@@ -8,6 +9,7 @@ struct Audio::Impl {
     ma_sound snd[(int)Sfx::Count];
     bool have[(int)Sfx::Count] = {};
     std::string dir;
+    std::minstd_rand rng{std::random_device{}()};
 
     void unload() {
         for (int i = 0; i < (int)Sfx::Count; i++)
@@ -27,7 +29,7 @@ void Audio::load(const std::string& dir) {
     if (!d->ok || dir == d->dir) return;
     d->unload();
     d->dir = dir;
-    static const char* names[] = {"Move", "Capture", "Check", "Checkmate", "GenericNotify"};
+    static const char* names[] = {"Move", "Capture", "Check", "Checkmate", "GenericNotify", "Castle", "Success"};
     for (int i = 0; i < (int)Sfx::Count; i++)
         for (const char* ext : {".mp3", ".ogg", ".wav"}) {
             auto p = std::filesystem::path(dir) / (std::string(names[i]) + ext);
@@ -43,8 +45,16 @@ void Audio::load(const std::string& dir) {
 void Audio::play(Sfx s) {
     if (!d->ok) return;
     int i = (int)s;
-    if (!d->have[i]) i = s == Sfx::End ? (int)Sfx::Notify : (int)Sfx::Move;
+    bool chime = s == Sfx::End || s == Sfx::Notify || s == Sfx::Success;
+    if (!d->have[i]) i = chime ? (int)Sfx::Notify : (int)Sfx::Move;
     if (!d->have[i]) return;
+    float p = 1, v = 1;
+    if (!chime) {
+        std::uniform_real_distribution<float> u(-0.03f, 0.03f);
+        p += u(d->rng), v += u(d->rng);
+    }
+    ma_sound_set_pitch(&d->snd[i], p);
+    ma_sound_set_volume(&d->snd[i], v);
     ma_sound_seek_to_pcm_frame(&d->snd[i], 0);
     ma_sound_start(&d->snd[i]);
 }

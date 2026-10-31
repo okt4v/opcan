@@ -107,6 +107,8 @@ App::Impl::Impl() {
         }
     if (page && std::string(page) == "analyze") view = View::Analyze;
     if (page && std::string(page) == "stats" && prof && !prof->guest) view = View::Stats;
+    if (page && std::string(page) == "openings" && prof && !prof->guest) view = View::Openings;
+    if (page && std::string(page) == "editor" && prof) openPosEditor(std::getenv("OPCAN_FEN") ? std::getenv("OPCAN_FEN") : "", false);
     if (page && std::string(page) == "settings" && prof) view = View::Settings;
     if (const char* t = std::getenv("OPCAN_SETTINGS_TAB")) settingsTab = std::atoi(t);  // dev hook
     if (const char* g = std::getenv("OPCAN_GAME"); g && prof) openStored(std::atoll(g));  // dev hook
@@ -197,6 +199,7 @@ void App::Impl::loadPrefs() {
         if (auto s = get(std::string("key.") + kActs[i].id); !s.empty())
             std::sscanf(s.c_str(), "%d,%d", &p.keys[i][0], &p.keys[i][1]);
     p.scale = std::clamp(p.scale, 0.8f, 1.5f);
+    if (p.soundSet == "sfx" && get("soundSetV").empty()) p.soundSet = "classic-wood";  // sfx was the old default
     p.animSpeed = std::clamp(p.animSpeed, 0, 2);
     prefs = p;
     layoutToLoad = store.setting(pkey("layout"));
@@ -211,6 +214,7 @@ void App::Impl::savePrefs() {
     });
     for (int i = 0; i < kActCount; i++)
         store.setSetting(pkey(std::string("key.") + kActs[i].id), std::to_string(prefs.keys[i][0]) + "," + std::to_string(prefs.keys[i][1]));
+    store.setSetting(pkey("soundSetV"), "2");
     prefsDirty = false;
 }
 
@@ -228,7 +232,7 @@ void App::Impl::applyPrefs() {
     board.showLastMove = preview.showLastMove = prefs.lastMove;
     preview.interactive = false;
     auto snd = soundDir(prefs.soundSet);
-    audio.load(fs::is_directory(snd) ? snd : soundDir("sfx"));
+    audio.load(fs::is_directory(snd) ? snd : soundDir("classic-wood"));
     audio.setVolume(prefs.sound ? prefs.volume : 0);
     auto& io = ImGui::GetIO();
     if (prefs.docking) io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
@@ -402,7 +406,8 @@ void App::Impl::moveSound(int n) {
     Movelist ml;
     movegen::legalmoves(ml, b);
     Move m = game->nodes[n].move;
-    audio.play(ml.empty() ? Sfx::End : b.inCheck() ? Sfx::Check : pb.isCapture(m) && m.typeOf() != Move::CASTLING ? Sfx::Capture : Sfx::Move);
+    audio.play(ml.empty() ? Sfx::End : b.inCheck() ? Sfx::Check
+               : m.typeOf() == Move::CASTLING ? Sfx::Castle : pb.isCapture(m) ? Sfx::Capture : Sfx::Move);
 }
 
 void App::Impl::next() {
@@ -497,6 +502,7 @@ void App::Impl::keys() {
     if (act(Act::Lines)) set.engineLines = !set.engineLines, saveSettings();
     if (act(Act::Threat)) set.threatArrow = !set.threatArrow, saveSettings();
     if (act(Act::CoachChat)) toggleCoachChat();
+    if (act(Act::ExplainMove)) explainCurrent();
     if (act(Act::NextMistake)) retry.on ? retryNext() : jumpMistake(+1);
     if (act(Act::PrevMistake)) jumpMistake(-1);
     if (act(Act::PlayBest) && !retry.on)
@@ -511,6 +517,7 @@ void App::Impl::frame() {
     }
     if (prof) backgroundWork();
     statsStale |= libDirty;  // any library change (sync, review saved, edits) invalidates stats
+    ex.stale |= libDirty;
     if (prefsDirty && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) savePrefs();
     if (view != View::Settings) capture = -1;
     if (auto& io = ImGui::GetIO(); io.WantSaveIniSettings && prof) {
@@ -537,9 +544,10 @@ void App::Impl::frame() {
         drawProfiles();
     } else {
         bool gameView = game && (view == View::Summary || view == View::Review);
-        drawSidebar(gameView ? 64 : 208);
+        bool narrow = ImGui::GetMainViewport()->WorkSize.x < 900;  // icon-only sidebar, tighter margins
+        drawSidebar(gameView || narrow ? 64 : 208);
         ImGui::SameLine(0, 0);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, gameView ? ImVec2{20, 20} : ImVec2{32, 24});
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, narrow ? ImVec2{16, 16} : gameView ? ImVec2{20, 20} : ImVec2{32, 24});
         ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::bg);
         ImGui::BeginChild("content", {0, 0}, ImGuiChildFlags_AlwaysUseWindowPadding,
                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -550,6 +558,8 @@ void App::Impl::frame() {
         else if (view == View::Settings) drawSettings();
         else if (view == View::Analyze) drawHome();
         else if (view == View::Stats) drawStats();
+        else if (view == View::Openings) drawExplorer();
+        else if (view == View::Editor) drawPosEditor();
         else drawLibrary();
         ImGui::EndChild();
         drawLibraryModals();
@@ -620,14 +630,16 @@ void App::Impl::drawSidebar(float w) {
     struct Item {
         Icon icon;
         const char* label;
-        int act;  // 0 library, 1 analyze, 2 stats, 3 settings
-    } items[] = {{Icon::Library, "Library", 0}, {Icon::Analyze, "Analyze", 1}, {Icon::Stats, "Stats", 2}, {Icon::Settings, "Settings", 3}};
+        int act;  // 0 library, 1 analyze, 2 stats, 3 settings, 4 openings
+    } items[] = {{Icon::Library, "Library", 0}, {Icon::Analyze, "Analyze", 1}, {Icon::Openings, "Openings", 4},
+                 {Icon::Stats, "Stats", 2}, {Icon::Settings, "Settings", 3}};
     for (auto& it : items) {
         ImGui::PushID(it.act);
         p = ImGui::GetCursorScreenPos();
-        bool disabled = it.act == 2 && prof && prof->guest;
-        bool active = (it.act == 0 && activeView == View::Library) || (it.act == 1 && activeView == View::Analyze) ||
-                      (it.act == 2 && activeView == View::Stats) || (it.act == 3 && activeView == View::Settings);
+        bool disabled = (it.act == 2 || it.act == 4) && prof && prof->guest;
+        bool active = (it.act == 0 && activeView == View::Library) || (it.act == 1 && (activeView == View::Analyze || activeView == View::Editor)) ||
+                      (it.act == 2 && activeView == View::Stats) || (it.act == 3 && activeView == View::Settings) ||
+                      (it.act == 4 && activeView == View::Openings);
         bool clicked = ImGui::InvisibleButton("nav", {iw, 36}) && !disabled;
         bool hov = ImGui::IsItemHovered();
         if (active) {
@@ -639,12 +651,12 @@ void App::Impl::drawSidebar(float w) {
         ImU32 col = disabled ? alpha(theme::dim, 110) : active || hov ? theme::text : theme::dim;
         drawIcon(dl, {slim ? p.x + iw / 2 : p.x + 22, p.y + 18}, it.icon, active ? theme::accent : col);
         if (!slim) dl->AddText({p.x + 42, p.y + 18 - ImGui::GetFontSize() / 2}, col, it.label);
-        if (hov && (slim || disabled)) ImGui::SetTooltip("%s", disabled ? "The Guest profile has no stats" : it.label);
+        if (hov && (slim || disabled)) ImGui::SetTooltip("%s", disabled ? "The Guest profile has no game library" : it.label);
         if (clicked) {
             ed.open = false;
             if (it.act == 3) openSettings();
             else {
-                view = it.act == 0 ? View::Library : it.act == 1 ? View::Analyze : View::Stats;
+                view = it.act == 0 ? View::Library : it.act == 1 ? View::Analyze : it.act == 4 ? View::Openings : View::Stats;
                 if (it.act == 0) libDirty = true;
             }
         }
@@ -698,7 +710,7 @@ void App::Impl::drawSidebar(float w) {
 void App::Impl::drawHome() {
     auto avail = ImGui::GetContentRegionAvail();
     float w = std::min(560.f, avail.x);
-    ImGui::SetCursorPos({(avail.x - w) / 2 + 32, std::max(40.f, avail.y * 0.16f)});
+    ImGui::SetCursorPos({ImGui::GetCursorPosX() + (avail.x - w) / 2, std::max(40.f, avail.y * 0.16f)});
     ImGui::BeginGroup();
     ImGui::PushFont(f.bold, 28);
     ImGui::TextUnformatted("Analyze a game");
@@ -727,6 +739,7 @@ void App::Impl::drawHome() {
     if (ImGui::Button("Analysis board", {hw, 36})) open(*gameFromFen(Board().getFen()));
     ImGui::SameLine(0, 8);
     if (ImGui::Button("Open PGN file…", {hw, 36})) openFileDialog();
+    if (ImGui::Button("Set up position", {w, 36})) openPosEditor("", false);
     if (game && ImGui::Button("Back to current game", {w, 36})) view = review || reviewer ? View::Summary : View::Review;
     ImGui::Dummy({0, 16});
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + w);
@@ -749,22 +762,40 @@ float fitBoard(ImVec2 avail) {
     float size = std::min(avail.y - 2 * kStripH, avail.x - kBarW - 2 * kGap);
     return std::max(160.f, std::floor(size / 8) * 8);
 }
+
+// Narrow or portrait windows (e.g. a tiling-WM column): board on top, panel below.
+bool stackedLayout() {
+    ImVec2 ws = ImGui::GetMainViewport()->WorkSize;
+    return ws.x < 1000 || ws.x < ws.y * 1.1f;
+}
 }  // namespace
 
 void App::Impl::drawMain() {
     if (prefs.docking && prof) return drawDocked();
     auto avail = ImGui::GetContentRegionAvail();
     auto origin = ImGui::GetCursorPos();
-    float panelW = std::clamp(avail.x * 0.32f, 340.f, 470.f);
-    float boardSize = fitBoard({avail.x - panelW - kGap, avail.y});
-    float leftW = kBarW + kGap + boardSize;
-    float x0 = origin.x + std::max(0.f, (avail.x - panelW - kGap - leftW) / 2);
-    ImGui::SetCursorPos({x0, origin.y});
-    drawBoardArea({leftW + kGap, avail.y});
-    ImGui::SetCursorPos({x0 + leftW + kGap, origin.y});
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {16, 16});
-    ImGui::BeginChild("panel", {panelW, avail.y}, ImGuiChildFlags_AlwaysUseWindowPadding,
-                      ImGuiWindowFlags_NoScrollbar);
+    if (stackedLayout()) {
+        // narrow or portrait: strips + board across the full width, the panel below (at least kMinPanelH)
+        constexpr float kMinPanelH = 240;
+        float boardSize = fitBoard({avail.x, avail.y - kMinPanelH - kGap});
+        float areaW = kBarW + 2 * kGap + boardSize, areaH = boardSize + 2 * kStripH;
+        ImGui::SetCursorPos(origin);
+        drawBoardArea({avail.x, areaH});
+        float panelW = std::min(avail.x, std::max(areaW, 480.f));
+        ImGui::SetCursorPos({origin.x + (avail.x - panelW) / 2, origin.y + areaH + kGap});
+        ImGui::BeginChild("panel", {panelW, avail.y - areaH - kGap}, ImGuiChildFlags_AlwaysUseWindowPadding);
+    } else {
+        // side by side: the board takes the full height if it can, the panel gets the rest (clamped)
+        float panelW = std::clamp(avail.x - (kBarW + 2 * kGap + avail.y - 2 * kStripH), 320.f, 440.f);
+        float boardSize = fitBoard({avail.x - panelW - kGap, avail.y});
+        float leftW = kBarW + kGap + boardSize;
+        float x0 = origin.x + std::max(0.f, (avail.x - panelW - kGap - leftW) / 2);
+        ImGui::SetCursorPos({x0, origin.y});
+        drawBoardArea({leftW + kGap, avail.y});
+        ImGui::SetCursorPos({x0 + leftW + kGap, origin.y});
+        ImGui::BeginChild("panel", {panelW, avail.y}, ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
+    }
     ImGui::PopStyleVar();
     drawPanel();
     ImGui::EndChild();
@@ -953,8 +984,11 @@ void App::Impl::drawPanel() {
     ImGui::PopFont();
     float right = ImGui::GetWindowContentRegionMax().x;
     ImGui::SameLine();
-    float pw = ImGui::CalcTextSize("Play vs engine").x + 20;
-    ImGui::SetCursorPosX(right - 28 - 6 - pw);
+    float pw = ImGui::CalcTextSize("Play vs engine").x + 20, ew = ImGui::CalcTextSize("Edit").x + 20;
+    ImGui::SetCursorPosX(right - 28 - 6 - pw - 6 - ew);
+    if (ImGui::Button("Edit", {ew, 28})) openPosEditor((retry.on ? retry.board : game->board(cur)).getFen(), board.flipped);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Edit position: set up a new position from this one");
+    ImGui::SameLine(0, 6);
     if (ImGui::Button("Play vs engine", {pw, 28})) openPlaySetup();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Play the engine from this position  (%s)", chordName(prefs.keys[(int)Act::PlayEngine][0]).c_str());
@@ -1213,7 +1247,8 @@ void App::Impl::drawReview() {
     }
     if (set.engineLines && !prefs.docking && !retry.on) drawEngineLines();
     float infoH = !meta || prefs.docking ? 0 : infoOpen ? std::min(304.f, ImGui::GetContentRegionAvail().y * 0.55f) : 40;
-    ImGui::BeginChild("moves", {0, -46 - infoH}, ImGuiChildFlags_None);
+    // never squash the move list: in a short (stacked) panel the panel scrolls instead
+    ImGui::BeginChild("moves", {0, std::max(150.f, ImGui::GetContentRegionAvail().y - 46 - infoH)}, ImGuiChildFlags_None);
     drawMoveList();
     ImGui::EndChild();
     if (meta && !prefs.docking) drawGameInfo(infoH - 8);

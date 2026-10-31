@@ -6,6 +6,7 @@ void checkStore();
 void checkStats();
 void checkCoach();
 void checkPlay();
+void checkExplorer();
 int main() {
     checkCore();
     checkReview();
@@ -13,5 +14,6 @@ int main() {
     checkStats();
     checkCoach();
     checkPlay();
+    checkExplorer();
     std::puts("all checks passed");
 }

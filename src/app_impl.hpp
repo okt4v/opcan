@@ -5,10 +5,12 @@
 #include "board.hpp"
 #include "coach.hpp"
 #include "engine.hpp"
+#include "explorer.hpp"
 #include "game.hpp"
 #include "openings.hpp"
 #include "play.hpp"
 #include "review.hpp"
+#include "setup.hpp"
 #include "stats.hpp"
 #include "store.hpp"
 #include "sync.hpp"
@@ -35,7 +37,7 @@ struct Settings {
 
 // Rebindable actions; each has up to two key chords.
 enum class Act { Prev, Next, Start, End, BackToGame, NextMistake, PrevMistake, PlayBest, Retry, PlayEngine, Flip, Lines, Threat, CoachChat,
-                 Paste, Open, Settings, Help, Quit, Count };
+                 ExplainMove, Paste, Open, Settings, Help, Quit, Count };
 constexpr int kActCount = (int)Act::Count;
 struct ActDef {
     const char* id;
@@ -57,6 +59,7 @@ inline const ActDef kActs[kActCount] = {
     {"lines", "Engine lines", {ImGuiKey_E, 0}},
     {"threat", "Threat arrow", {ImGuiKey_T, 0}},
     {"coachChat", "Toggle coach chat", {ImGuiKey_C, 0}},
+    {"explainMove", "Explain this move (AI coach)", {ImGuiKey_X, 0}},
     {"paste", "Paste PGN / FEN", {ImGuiMod_Ctrl | ImGuiKey_V, 0}},
     {"open", "Open a PGN file", {ImGuiMod_Ctrl | ImGuiKey_O, 0}},
     {"settings", "Settings", {ImGuiMod_Ctrl | ImGuiKey_Comma, 0}},
@@ -74,7 +77,7 @@ struct Prefs {
     int animSpeed = 1, coords = 1;  // speed: 0 fast, 1 normal, 2 slow; coords: 0 off, 1 inside, 2 outside
     bool sound = true, moveSounds = true, notifySound = true;
     float volume = 0.7f;
-    std::string soundSet = "sfx";
+    std::string soundSet = "classic-wood";
     ImGuiKeyChord keys[kActCount][2] = {};
     bool docking = false;
     Prefs() {
@@ -138,8 +141,8 @@ void textCentered(ImDrawList* dl, ImVec2 c, ImU32 col, const char* s);
 std::string ellipsize(const std::string& s, float maxW);
 int segmented(const char* id, const char* const* labels, int n, int sel, float w, bool enabled = true);  // returns selection
 
-enum class View { Library, Analyze, Stats, Summary, Review, Settings };
-enum class Icon { Library, Analyze, Stats, Settings, Back };
+enum class View { Library, Analyze, Stats, Summary, Review, Settings, Openings, Editor };
+enum class Icon { Library, Analyze, Stats, Settings, Back, Openings };
 void drawIcon(ImDrawList* dl, ImVec2 c, Icon i, ImU32 col);
 
 struct AccRow {
@@ -185,6 +188,29 @@ struct PlaySession {
     std::unique_ptr<EngineOpponent> engine;
     std::optional<GameEnd> end;
 };
+// Opening explorer page (explorer_ui.cpp): a line through the tree of the user's games.
+struct ExplorerUi {
+    int color = -1, range = 3, tc = 0;  // color -1: not chosen yet (the one with more games)
+    std::vector<chess::Move> line;      // moves from the start; the first `pos` are played
+    int pos = 0;
+    std::optional<Explorer> tree;
+    Async<Explorer> job;
+    bool stale = true;
+    double at = -100;
+    std::string shown;  // the Library is filtered to the games at this line ("" = no position filter)
+};
+
+// Board editor page (editor_ui.cpp).
+struct PosEditor {
+    SetupPos pos;
+    int tool = -1;          // palette: piece index, 12 = eraser, -1 = none
+    int drag = -1, dragPiece = -1;  // drag source square (-1 = from the palette), piece being dragged
+    bool flipped = false, pressed = false, dragging = false;
+    ImVec2 pressAt;
+    char fen[128] = "";
+    View back = View::Analyze;
+};
+
 struct PlaySetup {
     bool open = false;
     int color = 0, elo = 1500, clock = 0, minutes = 15, inc = 10;  // clock: none, 5+0, 10+0, custom
@@ -223,6 +249,8 @@ struct App::Impl {
     std::set<int> retrySolved;  // mistakes solved in this session (per open game)
     std::unique_ptr<PlaySession> play;
     PlaySetup playSetup;
+    ExplorerUi ex;
+    PosEditor pe;
     TbDownloader tbDl;
     std::shared_ptr<struct CoachState> cs;  // AI coach (coach_ui.cpp)
     bool tbRunning = false;
@@ -390,6 +418,16 @@ struct App::Impl {
     void exitPlay();
     void devHooks();
 
+    // explorer_ui.cpp
+    void startExplorer();
+    void drawExplorer();
+    void showExplorerGames(const std::vector<int64_t>& ids, const std::string& line);
+
+    // editor_ui.cpp
+    void openPosEditor(const std::string& fen, bool flipped);
+    void drawPosEditor();
+    void drawEditorBoard(float size);
+
     // coach_ui.cpp (drawCoach above is the coach card)
     static constexpr int kCoachTab = 7;  // settings tab
     void drawCoachCard();
@@ -402,6 +440,10 @@ struct App::Impl {
     FactInput coachFacts(int node);
     void drawPip(ImDrawList* dl, ImVec2 center, float size, int mood, bool talking);
     void toggleCoachChat();
+    void explainCurrent(bool regenerate = false);  // the coach card: ask the model about the current move
+    std::string explainKey(int node);                    // cache key of a move's explanation
+    std::string cachedExplain(const std::string& key);   // "" if not explained yet
+    void startExplain(int node, bool background);
     float richText(const Parsed& pr, int msgIdx, float width, bool draw, ImU32 col);
     void sendCoachQuestion();
     void drawCoachChat(bool docked);

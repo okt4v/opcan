@@ -183,6 +183,11 @@ struct Store::Impl {
         if (f.greatOnly) sideHas("great_white", "great_black");
         if (f.since) sql += " AND played_at>=?", argI(f.since);
         if (f.until) sql += " AND played_at<?", argI(f.until);
+        if (f.ids) {
+            sql += " AND games.id IN (";
+            for (int64_t id : *f.ids) sql += std::to_string(id) + ",";
+            sql.back() == ',' ? (void)(sql.back() = ')') : (void)(sql += "NULL)");
+        }
     }
     static void bindArgs(Stmt& q, const std::vector<std::pair<bool, std::string>>& args) {
         for (auto& [isInt, v] : args) isInt ? (void)q.b((int64_t)std::stoll(v)) : (void)q.b(v);
@@ -451,6 +456,23 @@ std::vector<StatsGame> Store::statsGames(int64_t profileId, GameFilter f) {
         if (auto e = parseEvals(raw[i].first)) r[i].evals = std::move(*e);
         r[i].summary = parseSummary(raw[i].second);
     }
+    return r;
+}
+
+std::vector<GameRow> Store::countedRows(int64_t profileId, GameFilter f) {
+    f.countedOnly = true, f.includeBots = false;
+    std::lock_guard l(d->m);
+    std::string where;
+    std::vector<std::pair<bool, std::string>> args;
+    Impl::filterSql(profileId, f, where, args);
+    Stmt q(d->db, std::string("SELECT ") + kGameCols + ",pgn FROM games" + where + " ORDER BY played_at, id");
+    Impl::bindArgs(q, args);
+    std::vector<GameRow> r;
+    while (q.row()) {
+        r.push_back(readGame(q));
+        r.back().pgn = q.t(kGameColN);
+    }
+    d->noteErr();
     return r;
 }
 

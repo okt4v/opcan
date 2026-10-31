@@ -449,8 +449,8 @@ void App::Impl::settingsSound(float) {
     cardEnd();
 
     std::string userDir = dataDir + "/sounds";
-    cardBegin("sets", "Sound set", "Click a set to hear it. Add your own: Move, Capture, Check, Checkmate and GenericNotify "
-                                   "(.mp3, .ogg or .wav) in <data>/sounds/<name>/.");
+    cardBegin("sets", "Sound set", "Click a set to hear it. Add your own: Move, Capture, Check, Castle, Checkmate, GenericNotify "
+                                   "and Success (.mp3, .ogg or .wav) in <data>/sounds/<name>/.");
     static std::vector<std::pair<std::string, bool>> sets;
     static double listedAt = -10;
     if (ImGui::GetTime() - listedAt > 2) {
@@ -482,6 +482,31 @@ void App::Impl::settingsSound(float) {
         fs::create_directories(userDir, ec);
         openUrl("file://" + userDir);
     }
+    cardEnd();
+
+    // lichess's own set is not openly licensed: fetched on request into the user dir, never shipped
+    static Async<std::string> dl;
+    static std::string dlMsg;
+    if (auto r = dl.take()) {
+        dlMsg = r->empty() ? "Downloaded." : "Download failed: " + *r;
+        if (r->empty()) prefs.soundSet = "lichess-standard", listedAt = -10, changed = true;
+    }
+    ImGui::Dummy({0, 4});
+    cardBegin("lichess", "lichess standard sounds",
+              "The classic lichess.org move and capture sounds. They are not openly licensed (lila's COPYING.md lists them "
+              "as non-free), so opcan doesn't ship them: this downloads them from github.com/lichess-org/lila for your "
+              "personal use, into <data>/sounds/lichess-standard/.");
+    bool have = fs::exists(fs::path(userDir) / "lichess-standard" / "Move.ogg");
+    ImGui::BeginDisabled(dl.busy());
+    if (ImGui::Button(dl.busy() ? "Downloading..." : have ? "Download again" : "Download lichess standard sounds")) {
+        std::string dir = userDir + "/lichess-standard";
+        std::error_code ec;
+        fs::create_directories(userDir, ec);
+        dlMsg.clear();
+        dl.run([dir] { return downloadLichessSounds(dir); });
+    }
+    ImGui::EndDisabled();
+    if (!dlMsg.empty()) ImGui::SameLine(0, 12), ImGui::AlignTextToFramePadding(), hint(dlMsg.c_str());
     cardEnd();
     if (changed) applyPrefs(), prefsDirty = true;
 }

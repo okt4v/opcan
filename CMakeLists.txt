@@ -78,17 +78,21 @@ target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/
 target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
 
 # core = everything but the window; shared by the app and the self-checks
-add_library(opcan_core STATIC src/engine.cpp src/review.cpp src/game.cpp src/openings.cpp src/store.cpp src/stats.cpp src/sync.cpp src/coach.cpp src/play.cpp src/tablebase.cpp)
+add_library(opcan_core STATIC src/engine.cpp src/review.cpp src/game.cpp src/openings.cpp src/store.cpp src/stats.cpp src/sync.cpp src/coach.cpp src/play.cpp src/tablebase.cpp src/explorer.cpp src/setup.cpp)
 target_include_directories(opcan_core PUBLIC src ${chesslib_SOURCE_DIR}/include ${subprocess_SOURCE_DIR})
 target_link_libraries(opcan_core PUBLIC Threads::Threads sqlite3 llama nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
 
-add_executable(opcan src/main.cpp src/app.cpp src/library.cpp src/coach_ui.cpp src/play_ui.cpp src/stats_ui.cpp src/settings_ui.cpp src/board.cpp src/theme.cpp src/audio.cpp)
+add_executable(opcan src/main.cpp src/app.cpp src/library.cpp src/coach_ui.cpp src/play_ui.cpp src/stats_ui.cpp src/explorer_ui.cpp src/editor_ui.cpp src/settings_ui.cpp src/board.cpp src/theme.cpp src/audio.cpp)
 target_link_libraries(opcan PRIVATE opcan_core imgui lunasvg::lunasvg nfd::nfd opcan_miniaudio)
 target_include_directories(opcan PRIVATE ${stb_SOURCE_DIR})
 
-add_executable(opcan_check tests/check.cpp tests/check_core.cpp tests/check_review.cpp tests/check_store.cpp tests/check_stats.cpp tests/check_coach.cpp tests/check_play.cpp)
+add_executable(opcan_check tests/check.cpp tests/check_core.cpp tests/check_review.cpp tests/check_store.cpp tests/check_stats.cpp tests/check_coach.cpp tests/check_play.cpp tests/check_explorer.cpp)
 target_link_libraries(opcan_check PRIVATE opcan_core)
 target_compile_definitions(opcan_check PRIVATE OPCAN_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+# dev tool: AI coach accuracy harness (tests/coach_eval.cpp); not built by default
+add_executable(opcan_coach_eval EXCLUDE_FROM_ALL tests/coach_eval.cpp)
+target_link_libraries(opcan_coach_eval PRIVATE opcan_core)
+target_compile_definitions(opcan_coach_eval PRIVATE OPCAN_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 # assets live next to the binary
 add_custom_command(TARGET opcan POST_BUILD

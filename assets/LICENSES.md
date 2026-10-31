@@ -37,10 +37,16 @@ pirouetti | [pirouetti](https://lichess.org/@/pirouetti) | AGPLv3+
 
 Set | Author(s) | License
 --- | --- | ---
+classic-wood (default) | opcan contributors, synthesized by `tools/gen_wood_sounds.py` | CC0 1.0
 sfx, nes, piano, futuristic | [Enigmahack](https://github.com/Enigmahack) | AGPLv3+
 
+`classic-wood` contains no recordings: every file is rendered by modal synthesis (damped resonant
+partials struck by a short contact pulse); rerun the script to regenerate it.
+
 lila's `standard`, `robot` and `woodland` sound sets are listed as non-free in its COPYING.md, so
-they are not bundled. Put any sounds you own in `<data dir>/sounds/<name>/` instead.
+they are not bundled. Settings → Sound can download lila's `standard` set on request into
+`<data dir>/sounds/lichess-standard/` for personal use. Put any other sounds you own in
+`<data dir>/sounds/<name>/`.
 
 ## Openings (`openings/`)
 

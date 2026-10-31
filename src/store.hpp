@@ -62,6 +62,7 @@ struct GameFilter {
     bool brilliantOnly = false;  // the user's side (either side when userColor < 0) played a Brilliant move
     bool greatOnly = false;      // ...a Great move
     int64_t since = 0, until = 0;  // played_at in [since, until), 0 = open
+    std::optional<std::vector<int64_t>> ids;  // set: only these games (e.g. the explorer's games at a position)
     int limit = 200, offset = 0;  // newest first
 };
 
@@ -108,6 +109,8 @@ public:
     // Games that count toward stats (countsInStats and never vs bots) matching f, oldest first, no limit,
     // with pgn and review. JSON is parsed outside the lock.
     std::vector<StatsGame> statsGames(int64_t profileId, GameFilter f);
+    // The same games as statsGames with their pgn but without the review JSON (the opening explorer).
+    std::vector<GameRow> countedRows(int64_t profileId, GameFilter f);
     void setOpening(int64_t gameId, const std::string& eco, const std::string& name);
     // favorite, tags, notes, userColor, countsInStats, vsBot. vsBot can only be turned on, and a bot
     // game's countsInStats is always forced off.

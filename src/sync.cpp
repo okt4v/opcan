@@ -269,6 +269,40 @@ bool httpDownload(const std::string& url, const std::string& path, std::string* 
     return false;
 }
 
+std::string downloadLichessSounds(const std::string& dir) {
+    namespace fs = std::filesystem;
+    std::string err;
+    auto list = httpGet("https://api.github.com/repos/lichess-org/lila/contents/public/sound/standard", {}, &err);
+    if (!list) return "listing failed: " + err;
+    auto j = nlohmann::json::parse(*list, nullptr, false);
+    if (!j.is_array()) return "unexpected listing";
+    const std::pair<const char*, const char*> want[] = {{"Move.ogg", "Move.ogg"}, {"Capture.ogg", "Capture.ogg"},
+                                                        {"Check.ogg", "Check.ogg"}, {"Checkmate.ogg", "Checkmate.ogg"},
+                                                        {"GenericNotify.ogg", "GenericNotify.ogg"},
+                                                        {"Confirmation.ogg", "Success.ogg"}};
+    fs::path tmp = fs::path(dir).parent_path().parent_path() / ".sound-download.part";  // outside sounds/, so it never lists as a set
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
+    fs::create_directories(tmp, ec);
+    for (auto& e : j) {
+        std::string name = e.value("name", ""), url = e.value("download_url", "");
+        // lila keeps tiny placeholder files for sounds the set doesn't have
+        if (url.rfind("https://raw.githubusercontent.com/lichess-org/lila/", 0) != 0 || e.value("size", 0) < 512) continue;
+        for (auto [src, dst] : want)
+            if (name == src && !httpDownload(url, (tmp / dst).string(), &err)) return fs::remove_all(tmp, ec), name + ": " + err;
+    }
+    if (!fs::exists(tmp / "Move.ogg")) return fs::remove_all(tmp, ec), "no Move sound in the listing";
+    if (auto* f = std::fopen((tmp / "SOURCE.txt").string().c_str(), "w")) {
+        std::fputs("lichess.org \"standard\" sounds, from https://github.com/lichess-org/lila/tree/master/public/sound/standard\n"
+                   "Not openly licensed (lila's COPYING.md lists them as non-free). Downloaded by opcan for personal use;\n"
+                   "do not redistribute.\n", f);
+        std::fclose(f);
+    }
+    fs::remove_all(dir, ec);
+    fs::rename(tmp, dir, ec);
+    return ec ? "could not move into place: " + ec.message() : "";
+}
+
 SiteUser lookupUser(const std::string& site, const std::string& username) {
     SiteUser u;
     std::string err;
