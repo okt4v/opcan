@@ -1,6 +1,9 @@
 #include "engine.hpp"
 #include <subprocess.h>
+#include <condition_variable>
 #include <cstdio>
+#include <mutex>
+#include <thread>
 #include <cstdlib>
 #include <filesystem>
 #include <map>
@@ -179,8 +182,27 @@ bool UciProcess::start(const std::string& path, int threads, int hashMb) {
         }
         return false;
     };
+    // a crashed engine can hang instead of exiting (Windows error-report dialog, Wine's debugger),
+    // which would block the reads below forever: give it engineStartTimeoutSec to get ready, then kill it
+    std::mutex gm;
+    std::condition_variable gcv;
+    bool ready = false;
+    std::thread guard([&] {
+        std::unique_lock l(gm);
+        if (!gcv.wait_for(l, std::chrono::seconds(engineStartTimeoutSec), [&] { return ready; })) subprocess_terminate(&impl_->proc);
+    });
+    auto settle = [&](bool ok) {
+        {
+            std::lock_guard l(gm);
+            ready = true;
+        }
+        gcv.notify_one();
+        guard.join();
+        if (!ok) kill();
+        return ok;
+    };
     send("uci");
-    if (!waitFor("uciok")) return kill(), false;
+    if (!waitFor("uciok")) return settle(false);
     send("setoption name Threads value " + std::to_string(threads));
     send("setoption name Hash value " + std::to_string(hashMb));
     {
@@ -189,8 +211,7 @@ bool UciProcess::start(const std::string& path, int threads, int hashMb) {
             if (hasOption(k)) send("setoption name " + k + " value " + v);
     }
     send("isready");
-    if (!waitFor("readyok")) return kill(), false;
-    return true;
+    return settle(waitFor("readyok"));
 }
 
 bool UciProcess::running() const { return impl_->alive; }

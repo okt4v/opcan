@@ -38,6 +38,9 @@ std::string resDir();
 // Bundled engine (engines/stockfish[.exe] in exeDir() or resDir()), else "stockfish" on PATH. "" if none.
 std::string findEngine();
 
+// Seconds an engine gets to answer uci/isready before start() kills it (tests lower it).
+inline int engineStartTimeoutSec = 30;
+
 // One engine process speaking UCI. Not thread-safe: one owner thread.
 class UciProcess {
 public:

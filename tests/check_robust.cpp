@@ -80,6 +80,18 @@ void checkRobust() {
         for (int i = 0; i < 300 && r.running(); i++) std::this_thread::sleep_for(std::chrono::milliseconds(10));
         CHECK(!r.running() && !r.finished() && !r.error().empty());
     }
+    // engine hangs at startup (a crash dialog keeps it alive): start() gives up instead of blocking forever
+    {
+        fs::path p = fs::temp_directory_path() / "opcan_check_hung_engine.sh";
+        std::ofstream(p) << "#!/bin/sh\nexec sleep 60\n";
+        fs::permissions(p, fs::perms::owner_all);
+        engineStartTimeoutSec = 1;
+        auto t = Clock::now();
+        UciProcess e;
+        CHECK(!e.start(p.string()));
+        CHECK(since(t) < 5);
+        engineStartTimeoutSec = 30;
+    }
     // missing engine binary
     {
         UciProcess e;
