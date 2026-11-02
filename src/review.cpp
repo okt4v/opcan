@@ -11,6 +11,7 @@ constexpr double kMissChance = 60;      // mover needed at least this win% to "m
 constexpr double kMissNotLosing = 40;   // ...and must not be losing after the move
 constexpr double kGreatGap = 20;        // best vs second best line win% gap for an only-move
 constexpr double kGreatSecondMax = 80;  // second best must not already be winning comfortably
+constexpr double kMateBlunderMinBefore = 5;  // allowing mate from below this win% isn't called a blunder
 constexpr double kBrilliantMaxLoss = 2;
 constexpr double kBrilliantMinAfter = 50;
 constexpr double kBrilliantMaxBefore = 97;
@@ -18,7 +19,7 @@ constexpr int kEndgamePieces = 6, kOpeningPieces = 10, kOpeningMaxPly = 20, kOpe
 
 const char* clsName(Cls c) {
     static const char* n[] = {"None", "Brilliant", "Great", "Best", "Excellent", "Good",
-                              "Book", "Inaccuracy", "Mistake", "Miss", "Blunder"};
+                              "Book", "Inaccuracy", "Mistake", "Miss", "Blunder", "Forced"};
     return c < Cls::Count ? n[(int)c] : "?";
 }
 
@@ -214,6 +215,9 @@ ReviewResult buildReview(const Game& game, const std::vector<PosEval>& evals, co
             bool stillMate = nx.mated || nx.mate < 0;
             if (!isBest && e.best.mate > 0 && !stillMate && (cl == Cls::Excellent || cl == Cls::Good || cl == Cls::Inaccuracy))
                 cl = Cls::Mistake;
+            // walking into a forced mate is a Blunder (chess.com), unless already hopelessly lost
+            bool mateAgainstBefore = e.best.mated || e.best.mate < 0, mateAgainstAfter = nx.mate > 0;
+            if (!mateAgainstBefore && mateAgainstAfter && mr.wpBefore >= kMateBlunderMinBefore) cl = Cls::Blunder;
             if (bad(cl)) {
                 bool chance = mr.wpBefore >= kMissChance || e.best.mate > 0;
                 bool opening = (i > 0 && bad(r.moves[i - 1].cls)) || e.best.mate > 0;
@@ -226,8 +230,8 @@ ReviewResult buildReview(const Game& game, const std::vector<PosEval>& evals, co
                     Move pm = game.nodes[r.line[i]].move;
                     recapture = boards[i - 1].isCapture(pm) && pm.to() == m.to();
                 }
-                bool mates = evals[i + 1].best.mated;  // delivering mate is just Best
-                if (wb - ws >= kGreatGap && ws < kGreatSecondMax && !recapture && !mates) cl = Cls::Great;
+                // includes mating moves: like chess.com, a mate that is the only way to win is Great
+                if (wb - ws >= kGreatGap && ws < kGreatSecondMax && !recapture) cl = Cls::Great;
             }
             // not already totally winning, unless the sacrifice is the only way to keep it that way
             bool trivial = mr.wpBefore >= kBrilliantMaxBefore && !(e.hasSecond && winPercent(e.second) < kBrilliantMaxBefore);
@@ -237,6 +241,9 @@ ReviewResult buildReview(const Game& game, const std::vector<PosEval>& evals, co
                 movegen::legalmoves(ml, before);
                 if (ml.size() > 1) cl = Cls::Brilliant;
             }
+            Movelist legal;
+            movegen::legalmoves(legal, before);
+            if (legal.size() == 1) cl = Cls::Forced;
             mr.cls = cl;
         }
 

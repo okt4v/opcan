@@ -35,6 +35,7 @@ const char* verdictOf(Cls c) {
         case Cls::Mistake: return "is a mistake";
         case Cls::Miss: return "is a miss";
         case Cls::Blunder: return "is a blunder";
+        case Cls::Forced: return "was forced";
         default: return "";
     }
 }

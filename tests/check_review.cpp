@@ -206,4 +206,24 @@ void checkReview() {
                 rr.estRating[0], rr.estRating[1]);
     for (auto& m : rr.moves) std::printf("  %s:%s", real.nodes[m.node].san.c_str(), clsName(m.cls));
     std::puts("");
+
+    // chess.com parity (a real game): allowing mate is a Blunder, the only legal move is Forced,
+    // and a mate that is the only winning move is Great
+    {
+        auto zz = parsePgn("1. Nf3 d5 2. g3 Nf6 3. Bg2 e5 4. O-O e4 5. Nd4 Bc5 6. c3 O-O 7. f3 Nc6 8. fxe4 dxe4 "
+                           "9. d3 Nxd4 10. cxd4 Qxd4+ 11. Kh1 Ng4 12. dxe4 Qg1+ 13. Rxg1 Nf2# 0-1");
+        CHECK(zz.size() == 1 && zz[0].mainline().size() == 27);
+        std::vector<PosEval> e(27, ev(0, ""));
+        e[22] = ev(-560, "a2a3");                         // before 12.dxe4: White clearly worse, no mate yet
+        e[23] = ev(0, "d4g1"), e[23].best.mate = 2;       // Black mates in 2
+        e[24] = ev(0, "f1g1"), e[24].best.mate = -1;      // White's only move
+        e[25] = ev(0, "g4f2"), e[25].best.mate = 1;       // Nf2# ...
+        e[25].hasSecond = true, e[25].second.cp = -900;   // ... else Black is a queen down
+        e[26] = ev(0, ""), e[26].best.mated = true;
+        auto zr = buildReview(zz[0], e, Openings{});
+        CHECK(zr.moves.size() == 26);
+        CHECK(zr.moves[22].cls == Cls::Blunder);
+        CHECK(zr.moves[24].cls == Cls::Forced);
+        CHECK(zr.moves[25].cls == Cls::Great);
+    }
 }

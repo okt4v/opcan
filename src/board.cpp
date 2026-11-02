@@ -113,6 +113,11 @@ void drawBadge(ImDrawList* dl, ImVec2 c, float r, Cls cls) {
             fillPoly(dl, {c + ImVec2(0.06f, -0.22f) * r, c + ImVec2(0.56f, -0.34f) * r, c + ImVec2(0.56f, 0.32f) * r,
                           c + ImVec2(0.06f, 0.44f) * r}, white);
             break;
+        case Cls::Forced: {  // a right arrow: the only way forward
+            dl->AddLine(c + ImVec2(-0.42f, 0) * r, c + ImVec2(0.30f, 0) * r, white, t);
+            fillPoly(dl, {c + ImVec2(0.48f, 0) * r, c + ImVec2(0.10f, -0.30f) * r, c + ImVec2(0.10f, 0.30f) * r}, white);
+            break;
+        }
         case Cls::Miss:
             dl->AddLine(c + ImVec2(-0.32f, -0.32f) * r, c + ImVec2(0.32f, 0.32f) * r, white, t);
             dl->AddLine(c + ImVec2(0.32f, -0.32f) * r, c + ImVec2(-0.32f, 0.32f) * r, white, t);

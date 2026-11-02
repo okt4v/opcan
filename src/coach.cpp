@@ -557,6 +557,7 @@ Facts buildFacts(const FactInput& in) {
                     s = me + " misses a chance.";
                     if (!bestSan.empty()) s += " " + cap(who(f.mover)) + " could have played " + bestSan + ".";
                     break;
+                case Cls::Forced: s = me + " was the only legal move."; break;
                 case Cls::Brilliant: s = me + " is a brilliant move."; break;
                 case Cls::Great: s = me + " is a great move."; break;
                 case Cls::Best: s = me + " is the engine's top move."; break;

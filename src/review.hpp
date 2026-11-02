@@ -7,7 +7,7 @@
 #include <vector>
 
 // chess.com style move classifications.
-enum class Cls { None, Brilliant, Great, Best, Excellent, Good, Book, Inaccuracy, Mistake, Miss, Blunder, Count };
+enum class Cls { None, Brilliant, Great, Best, Excellent, Good, Book, Inaccuracy, Mistake, Miss, Blunder, Forced, Count };  // Forced: the only legal move (appended: stored indices stay valid)
 const char* clsName(Cls c);  // "Brilliant", ...
 
 // Engine result for one position, side to move POV.

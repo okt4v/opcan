@@ -59,6 +59,7 @@ inline ImU32 cls(Cls c) {
         case Cls::Mistake: return rgb(0xeb8f32);
         case Cls::Miss: return rgb(0xf06e78);
         case Cls::Blunder: return rgb(0xe8423a);
+        case Cls::Forced: return rgb(0x8b93a1);
         default: return dim;
     }
 }

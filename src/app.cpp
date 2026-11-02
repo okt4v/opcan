@@ -16,7 +16,7 @@ namespace {
 bool isBad(Cls c) { return c == Cls::Inaccuracy || c == Cls::Mistake || c == Cls::Miss || c == Cls::Blunder; }
 
 const Cls kOrder[] = {Cls::Brilliant, Cls::Great, Cls::Best, Cls::Excellent, Cls::Good,
-                      Cls::Book, Cls::Inaccuracy, Cls::Mistake, Cls::Miss, Cls::Blunder};
+                      Cls::Book, Cls::Forced, Cls::Inaccuracy, Cls::Mistake, Cls::Miss, Cls::Blunder};
 
 // White POV win% and label for a side-to-move score.
 double whiteWp(Score s, bool whiteToMove) { return whiteToMove ? winPercent(s) : 100 - winPercent(s); }
@@ -1285,6 +1285,7 @@ std::string App::Impl::explain(const MoveReview& m, int i) {
     auto& after = review->evals[i].best;  // opponent to move
     std::string s;
     switch (m.cls) {
+        case Cls::Forced: return "The only legal move.";
         case Cls::Book: {
             Board b = game->board(cur);
             if (auto* o = book.at(b)) return o->eco + "  " + o->name;
