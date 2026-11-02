@@ -368,6 +368,7 @@ void App::Impl::computeSpent() {
 void App::Impl::setReview(const std::vector<PosEval>& evals) {
     review = buildReview(*game, evals, book);
     trends.reset(), trendJob.reset(), trendsAsked = false;
+    updateTrends();  // ready (~25 ms) before the first chat question
     if (const char* p = std::getenv("OPCAN_PLY")) {  // dev hook: jump into review at this ply
         view = View::Review;
         cur = review->line[std::clamp(std::atoi(p), 0, (int)review->line.size() - 1)];

@@ -343,7 +343,7 @@ GameMetrics gameMetrics(const Game& g, const std::vector<PosEval>& evals, const 
     return m;
 }
 
-// ponytail: loads every counted game each call (~0.3 s for hundreds, on a worker); cache per profile if it grows
+// ponytail: reloads the counted games each call (23 ms for ~500 on a worker thread); cache per profile if libraries grow 100x
 GameTrends computeTrends(Store& store, int64_t profileId, int64_t excludeGameId, const GameMetrics& game) {
     GameTrends t;
     auto games = store.statsGames(profileId, GameFilter{});  // oldest first

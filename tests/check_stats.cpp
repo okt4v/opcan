@@ -1,4 +1,5 @@
 #include "stats.hpp"
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -136,4 +137,33 @@ void checkStats() {
     CHECK(computeStats(s, p.id, {}, none, &stop).cancelled);
     CHECK(openingFamily("Sicilian Defense: Open") == "Sicilian Defense" && openingFamily("Bird Opening") == "Bird Opening");
     std::puts("stats checks passed");
+
+    // trends: the opening score against the usual of a separate profile's 5 reviewed games (72 +- 2)
+    {
+        Profile q;
+        q.name = "Trends";
+        s.saveProfile(q);
+        auto empty = computeTrends(s, q.id, 0, GameMetrics{});
+        CHECK(empty.t[0].verdict == -2 && empty.t[0].n == 0);
+        int64_t last = 0;
+        for (int k = 0; k < 5; k++) {
+            last = addGame(s, q.id, "t" + std::to_string(k), 0, "1-0", 1500, 1500, "blitz", t0 + k * day, "\n1. e4 e5 2. Nf3 Nc6 1-0");
+            auto gs = parsePgn(s.game(last)->pgn);
+            std::vector<PosEval> ev(5);
+            for (auto& e : ev) e.best = {20, 0, false}, e.bestUci = "a2a3";
+            auto r = buildReview(gs[0], ev, none);
+            r.phaseAccuracy[0][0] = 70 + k;  // 70..74
+            s.saveReview(last, 16, ev, r);
+        }
+        GameMetrics gm;
+        gm.v[0] = 90;
+        auto t = computeTrends(s, q.id, 0, gm).t[0];
+        CHECK(t.n == 5 && std::abs(t.usual - 72) < 1e-9 && t.verdict == 1);
+        gm.v[0] = 73;
+        CHECK(computeTrends(s, q.id, 0, gm).t[0].verdict == 0);
+        gm.v[0] = 60;
+        CHECK(computeTrends(s, q.id, 0, gm).t[0].verdict == -1);
+        CHECK(trendSentence(TrendArea::Opening, computeTrends(s, q.id, 0, gm).t[0]) == "Your opening was weaker than usual.");
+        CHECK(computeTrends(s, q.id, last, gm).t[0].verdict == -2);  // the game itself is left out: only 4 remain
+    }
 }
