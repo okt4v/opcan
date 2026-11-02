@@ -134,6 +134,7 @@ public:
 };
 
 bool accentButton(const char* label, ImVec2 size);
+extern bool g_nfdOk;  // native file dialogs available (main.cpp)
 void spinner(ImDrawList* dl, ImVec2 center, float r, ImU32 col);
 void openUrl(const std::string& url);  // system browser, never blocks
 std::string fmtDate(int64_t t, bool relative);
@@ -381,6 +382,10 @@ struct App::Impl {
     void drawPicker();
     void drawHelp();
     void drawTour();
+    bool dialogsOk() {  // file dialogs, or a hint why there are none
+        if (!g_nfdOk) notify("File dialogs are unavailable: no desktop portal (xdg-desktop-portal) is running");
+        return g_nfdOk;
+    }
     void endTour();
     void drawToast();
 

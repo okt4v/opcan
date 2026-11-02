@@ -721,7 +721,7 @@ void App::Impl::drawEditor() {
     if (ImGui::Button("Upload photo…")) {
         nfdu8char_t* out = nullptr;
         nfdu8filteritem_t flt[1] = {{"Images", "png,jpg,jpeg"}};
-        if (NFD_OpenDialogU8(&out, flt, 1, nullptr) == NFD_OKAY) {
+        if (dialogsOk() && NFD_OpenDialogU8(&out, flt, 1, nullptr) == NFD_OKAY) {
             std::string dst = importAvatar(out);
             NFD_FreePathU8(out);
             if (!dst.empty() && photo(dst)) ed.p.avatar = dst, ed.err.clear();

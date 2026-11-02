@@ -8,3 +8,5 @@ packaging/stockfish/
 build-win/
 dist/
 packaging/stockfish-win/
+build-linux/
+build-mac/

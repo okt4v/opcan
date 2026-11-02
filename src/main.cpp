@@ -33,9 +33,11 @@ static void applyStyle() {
     s.WindowPadding = {14, 14};
 }
 
+bool g_nfdOk = false;
+
 int main(int argc, char** argv) {
     if (!glfwInit()) return 1;
-    NFD_Init();
+    g_nfdOk = NFD_Init() == NFD_OKAY;  // fails without a D-Bus session (Linux portal backend)
 #ifdef __APPLE__
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
@@ -144,7 +146,7 @@ int main(int argc, char** argv) {
     }
     g_app = nullptr;
     app.reset();  // GL textures go before the context
-    NFD_Quit();
+    if (g_nfdOk) NFD_Quit();
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();

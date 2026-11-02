@@ -1207,7 +1207,7 @@ void App::Impl::settingsCoach(float) {
     if (ImGui::Button("Use custom .gguf…")) {
         nfdu8char_t* out = nullptr;
         nfdu8filteritem_t filt[1] = {{"GGUF model", "gguf"}};
-        if (NFD_OpenDialogU8(&out, filt, 1, nullptr) == NFD_OKAY) {
+        if (dialogsOk() && NFD_OpenDialogU8(&out, filt, 1, nullptr) == NFD_OKAY) {
             c.model = out;
             NFD_FreePathU8(out);
             coachSave();

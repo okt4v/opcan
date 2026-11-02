@@ -312,7 +312,7 @@ void App::Impl::loadText(std::string_view text) {
 void App::Impl::openFileDialog() {
     nfdu8char_t* out = nullptr;
     nfdu8filteritem_t filter[1] = {{"PGN", "pgn"}};
-    if (NFD_OpenDialogU8(&out, filter, 1, nullptr) != NFD_OKAY) return;
+    if (!dialogsOk() || NFD_OpenDialogU8(&out, filter, 1, nullptr) != NFD_OKAY) return;
     std::string p = out;
     NFD_FreePathU8(out);
     std::ifstream in(p, std::ios::binary);

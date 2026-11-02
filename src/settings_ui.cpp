@@ -706,7 +706,7 @@ void App::Impl::settingsTablebases() {
         }
         if (ImGui::Button("Use existing folder…", {0, 32})) {
             nfdu8char_t* out = nullptr;
-            if (NFD_PickFolderU8(&out, nullptr) == NFD_OKAY) {
+            if (dialogsOk() && NFD_PickFolderU8(&out, nullptr) == NFD_OKAY) {
                 syzygyPath = out;
                 NFD_FreePathU8(out);
                 store.setSetting("syzygyPath", syzygyPath);
