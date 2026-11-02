@@ -1348,6 +1348,17 @@ void App::Impl::drawReview() {
         ImGui::ProgressBar(reviewer->progress(), {-1, 6}, "");
     }
     if (set.engineLines && !prefs.docking && !retry.on) drawEngineLines();
+    // the deepest named opening on the way to the current position, like chess.com above its move list
+    // ponytail: re-parses up to 40 FENs per frame (cheap); cache by node if it ever shows in a profile
+    for (int n = cur, ply = game->ply(cur); n > 0; n = game->nodes[n].parent, ply--) {
+        if (ply > 40) continue;
+        if (auto* o = book.at(game->board(n))) {
+            ImGui::TextDisabled("%s", o->eco.c_str());
+            ImGui::SameLine();
+            ImGui::TextWrapped("%s", o->name.c_str());
+            break;
+        }
+    }
     float infoH = !meta || prefs.docking ? 0 : infoOpen ? std::min(304.f, ImGui::GetContentRegionAvail().y * 0.55f) : 40;
     // never squash the move list: in a short (stacked) panel the panel scrolls instead
     ImGui::BeginChild("moves", {0, std::max(150.f, ImGui::GetContentRegionAvail().y - 46 - infoH)}, ImGuiChildFlags_None);
