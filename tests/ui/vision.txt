@@ -1,0 +1,58 @@
+# board vision drills: find the square (+stop/score), find every check, blindfold memory, blindfold game (illegal move rejected, peek)
+#needs-db
+#env OPCAN_PROFILE=2 OPCAN_PAGE=train
+wait 2s
+move 800 500
+scroll -20
+wait 10
+shot vision-tiles.png
+click 300 695
+wait 10
+key Enter
+wait 10
+click 500 500
+wait 5
+shot vision-find.png
+click 1049 322
+wait 5
+shot vision-find-done.png
+key Escape
+wait 10
+move 800 500
+scroll -20
+wait 10
+click 300 819
+wait 10
+key Enter
+wait 10
+shot vision-checks.png
+key Escape
+wait 10
+move 800 500
+scroll -20
+wait 10
+click 882 819
+wait 10
+key Enter
+wait 5
+key Enter
+wait 5
+shot vision-memory.png
+key Escape
+wait 10
+move 800 500
+scroll -20
+wait 10
+click 1173 819
+wait 10
+key Enter
+wait 10
+type e4
+key Enter
+wait 2s
+type Ke3
+key Enter
+wait 10
+click 1117 282
+wait 10
+shot vision-game.png

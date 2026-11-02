@@ -493,6 +493,7 @@ bool App::Impl::act(Act a, bool repeat) {
 void App::Impl::keys() {
     auto& io = ImGui::GetIO();
     if (io.WantTextInput || capture >= 0 || tourStep >= 0) return;  // the tour handles its own keys
+    if (view == View::Train && tr.page != TrainUi::Page::Home) return;  // drills and sessions take the keyboard
     // Esc closes dropdowns and context menus (keyboard nav is off, so ImGui won't); modals handle Esc themselves
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup)) ImGui::ClosePopupsExceptModals();
     if (act(Act::Quit)) quit = true;

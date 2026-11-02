@@ -17,10 +17,12 @@
 #include "tablebase.hpp"
 #include "theme.hpp"
 #include "train.hpp"
+#include "vision.hpp"
 #include <algorithm>
 #include <atomic>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <set>
 #include <string>
 #include <thread>
@@ -203,10 +205,44 @@ struct ExplorerUi {
     std::string shown;  // the Library is filtered to the games at this line ("" = no position filter)
 };
 
+// Board vision drills (vision_ui.cpp), on the Train page.
+enum class Drill { FindSquare, NameSquare, PlayMove, Routes, Checks, Captures, BlindMemory, BlindGame, Count };
+struct VisionUi {
+    Drill drill = Drill::FindSquare;
+    bool running = false, over = false;
+    int side = 0;             // 0 White, 1 Black, 2 random: orientation (square drills) / the side played (blind game)
+    bool coords = false;      // show coordinates on the board
+    int level = 2;            // blindfold memory: index into its move counts
+    int elo = 2;              // blind game: index into its strengths
+    std::mt19937 rng{std::random_device{}()};
+    double endsAt = 0, nextAt = 0, flashUntil = 0, peekUntil = 0;
+    int score = 0, wrong = 0, round = 0, best = 0, peeks = 0;
+    std::vector<std::pair<int, ImU32>> flash;
+    std::string msg, typed;
+    int mood = 0, target = -1;
+    chess::Board pos;
+    chess::Move want = chess::Move::NO_MOVE, last = chess::Move::NO_MOVE;
+    std::vector<chess::Move> all, found;
+    bool showAll = false;
+    Route route;
+    int at = 0, moves = 0;
+    std::vector<int> trail;
+    BlindQuiz quiz;
+    int shown = 0, qi = 0;
+    bool asking = false, answered = false;
+    std::vector<std::string> uciMoves, sans;
+    std::shared_ptr<EngineOpponent> opp;
+    bool thinking = false;
+    std::optional<GameEnd> end;
+    char input[16] = "";
+    bool wasFlipped = false;
+    int wasCoords = 1;
+};
+
 // Train page (train_ui.cpp): spaced-repetition sessions over puzzles from the user's mistakes,
 // repertoire lines and opening courses.
 struct TrainUi {
-    enum class Page { Home, Session, Repertoire, Courses } page = Page::Home;
+    enum class Page { Home, Session, Repertoire, Courses, Vision } page = Page::Home;
     std::vector<Card> all;  // every card of the profile (refreshed when stale)
     bool stale = true;
     Async<int> gen;         // background card generation (puzzles / repertoire), returns cards added
@@ -287,6 +323,7 @@ struct App::Impl {
     PlaySetup playSetup;
     ExplorerUi ex;
     TrainUi tr;
+    VisionUi vs;
     PosEditor pe;
     TbDownloader tbDl;
     std::shared_ptr<struct CoachState> cs;  // AI coach (coach_ui.cpp)
@@ -427,6 +464,13 @@ struct App::Impl {
     void trainGrade(Grade g);
     void trainNext();
     void trainExit();
+    void visionTiles(float W);
+    void drawVision();
+    void visionStart();
+    void visionNext();
+    void visionFinish();
+    void visionBlindEngine();
+    std::string visionBestKey() const;
     bool dialogsOk() {  // file dialogs, or a hint why there are none
         if (!g_nfdOk) notify("File dialogs are unavailable: no desktop portal (xdg-desktop-portal) is running");
         return g_nfdOk;

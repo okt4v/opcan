@@ -249,6 +249,7 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
     ImGuiIO& io = ImGui::GetIO();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     Move result = Move::NO_MOVE;
+    clicked = -1;
 
     ImVec2 cur = ImFloor(ImGui::GetCursorScreenPos());
     ImGui::InvisibleButton("##board", ImVec2(size, size), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
@@ -282,10 +283,15 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
     };
 
     // Position change: reset interaction, maybe start a slide animation.
+    // Boards without both kings (board-vision drills) are drawn but have no legal moves or check.
+    auto hasKings = [](const Board& x) {
+        return x.pieces(PieceType::KING, Color::WHITE).count() == 1 && x.pieces(PieceType::KING, Color::BLACK).count() == 1;
+    };
+    const bool kings = hasKings(b);
     const std::uint64_t h = b.hash();
     if (!s.havePrev || h != s.prevHash) {
         s.animN = 0;
-        if (s.havePrev && animTime > 0 && lastMove.move() != Move::NO_MOVE && lastMove.move() != s.noAnim) {
+        if (s.havePrev && kings && hasKings(s.prev) && animTime > 0 && lastMove.move() != Move::NO_MOVE && lastMove.move() != s.noAnim) {
             Movelist ml;
             movegen::legalmoves(ml, s.prev);
             if (std::find(ml.begin(), ml.end(), lastMove) != ml.end()) {
@@ -321,7 +327,7 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
     }
 
     Movelist legal;
-    movegen::legalmoves(legal, b);
+    if (kings) movegen::legalmoves(legal, b);
     const int stm = (int)b.sideToMove(), mover = pre ? premoveSide : stm;
     auto own = [&](int sq) { int p = pieceAt(sq); return p < 12 && p / 6 == mover; };
     std::vector<int> preTargets;  // premove destinations of the selected piece
@@ -361,6 +367,7 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
 
     const ImVec2 mouse = io.MousePos;
     const int hoverSq = hovered ? sqAt(mouse) : -1;
+    clicked = hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) ? hoverSq : -1;
     float promoX = 0, promoY0 = 0, promoDir = 1;
     if (s.promo) {
         ImVec2 p = sqPos(s.promoTo);
@@ -465,7 +472,7 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
             dl->AddText(f, fs, ImFloor(ImVec2(o.x - lab + (lab - rs.x) / 2 - 1, pr.y + (q - rs.y) / 2)), theme::dim, rc);
         }
     }
-    if (b.inCheck()) {
+    if (kings && b.inCheck()) {
         int k = b.kingSq(b.sideToMove()).index();
         ImVec2 p = sqPos(k);
         dl->PushClipRect(p, p + ImVec2(q, q), true);

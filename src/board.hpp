@@ -32,6 +32,7 @@ public:
     // returned; right-click clears them. The owner plays or drops them once it's that side's turn.
     int premoveSide = -1;
     std::vector<Premove> premoves;
+    int clicked = -1;  // square left-clicked during the last draw (also when not interactive), -1 none
     std::vector<std::pair<int, ImU32>> marks;  // extra square highlights (square index, color), e.g. the coach's tags
     // Draws at the cursor, size x size pixels. Returns a legal move the user made, or NO_MOVE.
     // lastMove is highlighted; badge is drawn on lastMove's destination (Cls::None = no badge).

@@ -78,6 +78,7 @@ void App::Impl::drawTrain() {
         case TrainUi::Page::Session: trainSession(); break;
         case TrainUi::Page::Repertoire: trainRepertoire(); break;
         case TrainUi::Page::Courses: trainCourses(); break;
+        case TrainUi::Page::Vision: drawVision(); break;
     }
     ImGui::PopStyleColor();
 }
@@ -242,6 +243,7 @@ void App::Impl::trainHome() {
             std::stable_sort(tr.families.begin(), tr.families.end(), [](const Family& a, const Family& b) { return a.lines > b.lines; });
         }
     }
+    visionTiles(W);
     ImGui::Dummy({0, 20});
     ImGui::EndChild();
 }

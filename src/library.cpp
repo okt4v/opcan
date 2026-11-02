@@ -408,6 +408,7 @@ void App::Impl::selectProfile(const Profile& p) {
     syncer = std::make_unique<Syncer>();
     if (!p.accounts.empty()) startSync(false);
     tr = TrainUi{};
+    vs = VisionUi();
     tourStep = !p.guest && store.setting("p" + std::to_string(p.id) + ".tour") == "1" ? 0 : -1;
 }
 
