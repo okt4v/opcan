@@ -491,7 +491,7 @@ bool App::Impl::act(Act a, bool repeat) {
 
 void App::Impl::keys() {
     auto& io = ImGui::GetIO();
-    if (io.WantTextInput || capture >= 0) return;
+    if (io.WantTextInput || capture >= 0 || tourStep >= 0) return;  // the tour handles its own keys
     // Esc closes dropdowns and context menus (keyboard nav is off, so ImGui won't); modals handle Esc themselves
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup)) ImGui::ClosePopupsExceptModals();
     if (act(Act::Quit)) quit = true;
@@ -582,6 +582,7 @@ void App::Impl::frame() {
     drawPicker();
     drawPlaySetup();
     drawHelp();
+    if (prof && tourStep >= 0) drawTour();
     drawToast();
     ImGui::End();
 }
@@ -664,6 +665,7 @@ void App::Impl::drawSidebar(float w) {
                       (it.act == 2 && activeView == View::Stats) || (it.act == 3 && activeView == View::Settings) ||
                       (it.act == 4 && activeView == View::Openings);
         bool clicked = ImGui::InvisibleButton("nav", {iw, 36}) && !disabled;
+        navRect[it.act] = {p.x, p.y, p.x + iw, p.y + 36};
         bool hov = ImGui::IsItemHovered();
         if (active) {
             dl->AddRectFilled(p, {p.x + iw, p.y + 36}, theme::panel2, 8);
@@ -707,6 +709,7 @@ void App::Impl::drawSidebar(float w) {
     }
     ImGui::SetCursorScreenPos({wp.x + 12, y});
     p = ImGui::GetCursorScreenPos();
+    navRect[5] = {p.x, p.y, p.x + iw, p.y + 48};
     if (ImGui::InvisibleButton("me", {iw, 48})) leaveProfile();
     bool hov = ImGui::IsItemHovered();
     if (hov) {
@@ -1661,6 +1664,11 @@ void App::Impl::drawHelp() {
         ImGui::EndTable();
     }
     ImGui::Dummy({0, 4});
+    if (prof && !prof->guest && ImGui::Button("Take the tour")) {
+        showHelp = false;
+        tourStep = 0;
+    }
+    if (prof && !prof->guest) ImGui::SameLine();
     if (ImGui::Button("Change shortcuts…")) {
         showHelp = false;
         settingsTab = 4;

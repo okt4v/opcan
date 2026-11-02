@@ -92,7 +92,7 @@ add_library(opcan_core STATIC src/engine.cpp src/review.cpp src/game.cpp src/ope
 target_include_directories(opcan_core PUBLIC src ${chesslib_SOURCE_DIR}/include ${subprocess_SOURCE_DIR})
 target_link_libraries(opcan_core PUBLIC Threads::Threads sqlite3 llama nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
 
-add_executable(opcan src/main.cpp src/devscript.cpp src/app.cpp src/library.cpp src/coach_ui.cpp src/play_ui.cpp src/stats_ui.cpp src/explorer_ui.cpp src/editor_ui.cpp src/settings_ui.cpp src/board.cpp src/theme.cpp src/audio.cpp)
+add_executable(opcan src/main.cpp src/devscript.cpp src/app.cpp src/library.cpp src/coach_ui.cpp src/play_ui.cpp src/stats_ui.cpp src/explorer_ui.cpp src/editor_ui.cpp src/settings_ui.cpp src/tour_ui.cpp src/board.cpp src/theme.cpp src/audio.cpp)
 target_link_libraries(opcan PRIVATE opcan_core imgui lunasvg::lunasvg nfd::nfd opcan_miniaudio)
 target_include_directories(opcan PRIVATE ${stb_SOURCE_DIR})
 

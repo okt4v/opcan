@@ -262,6 +262,8 @@ struct App::Impl {
     std::string evalText = "0.0";
     View view = View::Library, backView = View::Library;
     bool showHelp = false, quit = false, scrollToCur = false, infoOpen = false;
+    int tourStep = -1;     // first-run tour (tour_ui.cpp), -1 = off
+    ImVec4 navRect[6]{};   // sidebar items (0 library, 1 analyze, 2 stats, 3 settings, 4 openings, 5 profile) for the tour
     std::string paste;
     char tagInput[64] = "", infoNotes[2048] = "";
     int64_t infoNotesFor = 0;
@@ -378,6 +380,8 @@ struct App::Impl {
     void drawNav();
     void drawPicker();
     void drawHelp();
+    void drawTour();
+    void endTour();
     void drawToast();
 
     // library.cpp

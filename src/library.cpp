@@ -402,6 +402,7 @@ void App::Impl::selectProfile(const Profile& p) {
     unreviewedAt = -100;
     syncer = std::make_unique<Syncer>();
     if (!p.accounts.empty()) startSync(false);
+    tourStep = !p.guest && store.setting("p" + std::to_string(p.id) + ".tour") == "1" ? 0 : -1;
 }
 
 void App::Impl::leaveProfile() {
@@ -902,7 +903,9 @@ void App::Impl::drawEditor() {
                 accs.push_back(a);
             }
             ed.p.accounts = accs;
+            bool created = ed.p.id == 0;
             store.saveProfile(ed.p);
+            if (created) store.setSetting("p" + std::to_string(ed.p.id) + ".tour", "1");  // tour on first open
             profiles = store.profiles();
             if (prof && prof->id == ed.p.id) prof = ed.p;
             ed.open = false;

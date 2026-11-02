@@ -22,6 +22,10 @@ wait 2s
 type 1234
 wait 10
 shot prof-in.png
+# a new profile opens Pip's tour; Esc skips it
+key Escape
+wait 5
+shot prof-tour-skipped.png
 click 60 856
 wait 5
 shot prof-avatar-click.png
