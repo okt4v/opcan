@@ -1592,7 +1592,7 @@ void App::dropFiles(const std::vector<std::string>& paths) {
 std::string App::configDir() {
     fs::path p;
 #ifdef _WIN32
-    if (const char* a = std::getenv("APPDATA")) p = fs::path(a) / "opcan";
+    if (const wchar_t* a = _wgetenv(L"APPDATA")) p = fs::path(a) / "opcan";  // wide: non-ASCII user names
 #elif defined(__APPLE__)
     if (const char* h = std::getenv("HOME")) p = fs::path(h) / "Library/Application Support/opcan";
 #else

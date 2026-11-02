@@ -11,6 +11,14 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <shellapi.h>
+#endif
 
 #ifndef GL_CLAMP_TO_EDGE
 #define GL_CLAMP_TO_EDGE 0x812F
@@ -199,14 +207,16 @@ void spinner(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {
 
 void openUrl(const std::string& url) {
     if (url.find_first_of("'\"`$\\ ") != std::string::npos) return;
-#ifdef _WIN32
-    std::string cmd = "start \"\" \"" + url + "\"";
-#elif defined(__APPLE__)
+#ifdef _WIN32  // ShellExecute, not system("start"): no console window flashes up
+    std::thread([url] { ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL); }).detach();
+#else
+#ifdef __APPLE__
     std::string cmd = "open '" + url + "'";
 #else
     std::string cmd = "xdg-open '" + url + "' >/dev/null 2>&1";
 #endif
     std::thread([cmd] { if (std::system(cmd.c_str())) {} }).detach();
+#endif
 }
 
 std::string fmtDate(int64_t t, bool relative) {

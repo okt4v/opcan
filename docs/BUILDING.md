@@ -25,6 +25,9 @@ new files before building. Dependency pins live in `packaging/package.nix`; keep
 Installers are made with CPack from a normal build. Bundling Stockfish (GPLv3, shipped with its license)
 is optional: the fetch scripts download the pinned official release and check its sha256.
 
+    # Windows installer, cross-compiled on Linux with Nix (no Windows machine needed):
+    packaging/build-windows.sh           # -> dist/opcan-<ver>-windows-x64-setup.exe
+
     # Windows (Developer PowerShell; NSIS 3 on PATH for the installer)
     packaging\fetch-stockfish.ps1 -Out packaging\stockfish
     cmake -S . -B build -DOPCAN_STOCKFISH_PATH="$PWD/packaging/stockfish/stockfish.exe"
@@ -40,6 +43,18 @@ is optional: the fetch scripts download the pinned official release and check it
     packaging/fetch-stockfish.sh packaging/stockfish
     cmake -S . -B build -G Ninja -DOPCAN_STOCKFISH_PATH=$PWD/packaging/stockfish/stockfish
     cmake --build build && (cd build && cpack)
+
+`packaging/build-windows.sh` enters `nix develop .#windows` (MinGW-w64 GCC, CMake, Ninja, NSIS), downloads
+the official Stockfish 19 Windows build (sha256-checked, cached in `packaging/stockfish-win/`), cross-compiles
+into `build-win/` with `packaging/mingw-w64.cmake` and runs `makensis packaging/opcan.nsi`. Everything is linked
+statically (libstdc++, libgcc, winpthreads), so the installer runs on a bare Windows 10/11 x64 PC; the script fails
+if `opcan.exe` imports anything but Windows system DLLs. llama.cpp is built for an x86-64-v2 (SSE4.2) baseline;
+Stockfish's "universal" build picks the best code path for the CPU at runtime. The installer is per-user
+(`%LOCALAPPDATA%\Programs\opcan`, no admin prompt), adds a Start menu entry (desktop shortcut optional) and an
+Add/Remove Programs entry; uninstalling keeps `%APPDATA%\opcan` unless "Remove my opcan data" is ticked.
+Silent: `setup.exe /S`, `Uninstall.exe /S`. It is unsigned, so SmartScreen warns on first run
+("More info" > "Run anyway"). To try it under Wine: `nix shell nixpkgs#wineWow64Packages.stable`, then
+`wine dist/opcan-*-setup.exe`.
 
 To install without CPack use `cmake --install build --prefix <dir> --component opcan` (the component
 keeps the dependencies' own headers and libraries out). `.github/workflows/release.yml` does all three

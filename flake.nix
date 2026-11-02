@@ -19,6 +19,11 @@
           # GLFW dlopens wayland/x11/GL and miniaudio dlopens pulse/alsa at runtime
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (with pkgs; [ libGL vulkan-loader alsa-lib libpulseaudio wayland libxkbcommon libx11 libxcursor libxi libxrandr ]);
         };
+        # Windows cross build (x86_64 only): packaging/build-windows.sh -> dist/opcan-<ver>-windows-x64-setup.exe
+        windows = pkgs.pkgsCross.mingwW64.mkShell {
+          nativeBuildInputs = with pkgs; [ cmake ninja nsis curl unzip ];
+          buildInputs = [ pkgs.pkgsCross.mingwW64.windows.pthreads ];
+        };
       });
     };
 }

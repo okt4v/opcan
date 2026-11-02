@@ -5,3 +5,6 @@ compile_commands.json
 .cache/
 build-b*/
 packaging/stockfish/
+build-win/
+dist/
+packaging/stockfish-win/
