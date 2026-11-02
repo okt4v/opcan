@@ -98,4 +98,13 @@ void checkExplorer() {
     CHECK(p && p->fen() == "4k3/8/8/3pP3/8/8/8/4K2R w K d6 0 1");          // impossible rights dropped, ep kept
     p->ep = 20;
     CHECK(p->fen() == "4k3/8/8/3pP3/8/8/8/4K2R w K - 0 1");
+
+    // fuzz regressions: the light PGN reader looped forever on a stray '}' or a NUL byte, and read out of
+    // bounds (chess-library setFen/movegen) on a [FEN] without kings
+    chess::Board sb;
+    CHECK(pgnMainline("1. e4 } e5 2. Nf3", 30, sb).size() == 3);
+    CHECK(pgnMainline(std::string_view("1. e4\0 e5", 10), 30, sb).size() == 2);
+    CHECK(pgnMainline("[FEN \"8/8/8/8/8/8/8/8 w - e6 0 1\"]\n1. e4", 30, sb).size() == 1);  // bad FEN: standard start
+    CHECK(pgnMainline("[FEN \"4k3/8/8/8/8/8/8/4K3 w - - 0 1\"]\n1. Kd2", 30, sb).size() == 1);
+    CHECK(pgnMainline("1. e4 ) ) e5 (2. d4) 2. Nf3", 30, sb).size() == 3);  // unbalanced ')' doesn't flip mainline/variation
 }

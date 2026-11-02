@@ -1,5 +1,6 @@
 #include "app.hpp"
 #include "engine.hpp"
+#include "devscript.hpp"
 #include "theme.hpp"
 #include <GLFW/glfw3.h>
 #include <imgui.h>
@@ -32,7 +33,7 @@ static void applyStyle() {
     s.WindowPadding = {14, 14};
 }
 
-int main() {
+int main(int argc, char** argv) {
     if (!glfwInit()) return 1;
     NFD_Init();
 #ifdef __APPLE__
@@ -47,7 +48,12 @@ int main() {
     const char* glsl = "#version 130";
 #endif
     glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
-    GLFWwindow* win = glfwCreateWindow(1440, 900, "opcan", nullptr, nullptr);
+    glfwWindowHintString(GLFW_WAYLAND_APP_ID, "opcan");  // matches packaging/opcan.desktop
+    glfwWindowHintString(GLFW_X11_CLASS_NAME, "opcan");
+    int winW = 1440, winH = 900;
+    devscript::windowSize(winW, winH);
+    if (devscript::active()) glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);  // fixed size: sway floats it, script coords stay valid
+    GLFWwindow* win = glfwCreateWindow(winW, winH, "opcan", nullptr, nullptr);
     if (!win) return 1;
     glfwMakeContextCurrent(win);
     glfwSwapInterval(1);
@@ -80,7 +86,7 @@ int main() {
     g_app = app.get();
     app->beforeFrame();
     if (!app->fonts().ui || !app->fonts().bold || !app->fonts().mono) {
-        std::fprintf(stderr, "opcan: fonts missing in %s/assets/fonts\n", exeDir().c_str());
+        std::fprintf(stderr, "opcan: fonts missing in %s/assets/fonts\n", resDir().c_str());
         return 1;
     }
     glfwSetDropCallback(win, [](GLFWwindow*, int n, const char** paths) {
@@ -90,6 +96,7 @@ int main() {
 
     // dev hooks: OPCAN_OPEN=<pgn> loads a file, OPCAN_SHOT=<png> saves a screenshot after OPCAN_SHOT_AFTER seconds and quits
     if (const char* o = std::getenv("OPCAN_OPEN")) app->dropFiles({o});
+    if (argc > 1) app->dropFiles({argv + 1, argv + argc});  // "Open with" / opcan game.pgn
     const char* shot = std::getenv("OPCAN_SHOT");
     double shotAt = std::getenv("OPCAN_SHOT_AFTER") ? std::atof(std::getenv("OPCAN_SHOT_AFTER")) : 3;
 
@@ -107,6 +114,7 @@ int main() {
             for (auto& e : GImGui->InputEventsQueue)
                 if (e.Type == ImGuiInputEventType_MousePos && e.MousePos.PosX != -FLT_MAX) e.MousePos.PosX /= us, e.MousePos.PosY /= us;
         }
+        devscript::frame();
         ImGui::NewFrame();
         app->frame();
         if (app->wantsQuit()) glfwSetWindowShouldClose(win, 1);
@@ -117,7 +125,9 @@ int main() {
         glClearColor(bg.x, bg.y, bg.z, 1);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-        if (shot && glfwGetTime() > shotAt) {
+        auto shotNow = devscript::takeShot();
+        if (shot && glfwGetTime() > shotAt) shotNow = shot;
+        if (!shotNow.empty()) {
             std::vector<unsigned char> px(size_t(fw) * fh * 4), out(px.size());
             glReadPixels(0, 0, fw, fh, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
             for (int y = 0; y < fh; y++)
@@ -126,9 +136,10 @@ int main() {
                     auto* d = &out[(size_t(y) * fw + x) * 4];
                     d[0] = s[2], d[1] = s[1], d[2] = s[0], d[3] = 255;  // RGBA -> ARGB32 (BGRA bytes)
                 }
-            lunasvg::Bitmap(out.data(), fw, fh, fw * 4).writeToPng(shot);
-            break;
+            lunasvg::Bitmap(out.data(), fw, fh, fw * 4).writeToPng(shotNow);
+            if (shot && shotNow == shot) break;
         }
+        if (devscript::done()) break;
         glfwSwapBuffers(win);
     }
     g_app = nullptr;

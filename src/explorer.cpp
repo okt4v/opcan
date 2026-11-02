@@ -1,4 +1,5 @@
 #include "explorer.hpp"
+#include "game.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -36,18 +37,22 @@ std::vector<Move> pgnMainline(std::string_view pgn, int maxPlies, Board& start) 
             auto tag = pgn.substr(i + 1, e - i - 1);
             if (out.empty() && tag.starts_with("FEN ")) {
                 auto q = tag.find('"'), q2 = tag.rfind('"');
-                if (q != q2 && b.setFen(tag.substr(q + 1, q2 - q - 1))) start = b;
+                if (q != q2 && loadFen(b, tag.substr(q + 1, q2 - q - 1))) start = b;
                 else b = start;
             }
             i = e + 1;
         } else if (c == '(' || c == ')') {
-            depth += c == '(' ? 1 : -1;
+            depth = std::max(0, depth + (c == '(' ? 1 : -1));
             i++;
         } else if (std::isspace((unsigned char)c)) {
             i++;
         } else {
             size_t e = i;
             while (e < pgn.size() && !std::isspace((unsigned char)pgn[e]) && !std::strchr("{}();[", pgn[e])) e++;
+            if (e == i) {  // a stray '}' or a NUL byte: skip it (looped forever before)
+                i++;
+                continue;
+            }
             std::string tok(pgn.substr(i, e - i));
             i = e;
             if (depth > 0 || tok[0] == '$' || tok == "*" || tok == "1-0" || tok == "0-1" || tok == "1/2-1/2") continue;

@@ -289,6 +289,7 @@ struct Reviewer::Impl {
     mutable std::mutex mu;
     std::string err;
     std::vector<std::thread> threads;
+    std::vector<UciProcess*> engines;  // running workers' engines (under mu): cancel() sends them "stop"
 };
 
 Reviewer::~Reviewer() { cancel(); }
@@ -311,12 +312,17 @@ void Reviewer::start(const Game& game, const std::string& enginePath, int depth,
                 im->active--;
                 return;
             }
+            {
+                std::lock_guard l(im->mu);
+                im->engines.push_back(&eng);
+            }
             // contiguous chunks: consecutive positions reuse the engine's hash table
             constexpr int kChunk = 4;
             const int total = (int)im->fens.size();
             for (int c; !im->cancel && (c = im->next.fetch_add(kChunk)) < total;)
             for (int i = c; i < std::min(c + kChunk, total) && !im->cancel; i++) {
                 auto lines = analyse(eng, im->fens[i], depth, 2);
+                if (im->cancel) break;  // stopped early: a shallow result
                 if (lines.empty()) {
                     std::lock_guard l(im->mu);
                     im->err = "engine stopped responding";
@@ -334,6 +340,10 @@ void Reviewer::start(const Game& game, const std::string& enginePath, int depth,
                 }
                 im->done++;
             }
+            {
+                std::lock_guard l(im->mu);
+                std::erase(im->engines, &eng);
+            }
             eng.kill();
             im->active--;
         });
@@ -342,7 +352,11 @@ void Reviewer::start(const Game& game, const std::string& enginePath, int depth,
 
 void Reviewer::cancel() {
     if (!impl_) return;
-    impl_->cancel = true;
+    {
+        std::lock_guard l(impl_->mu);
+        impl_->cancel = true;
+        for (auto* e : impl_->engines) e->send("stop");  // a deep search would otherwise finish first
+    }
     for (auto& t : impl_->threads)
         if (t.joinable()) t.join();
 }

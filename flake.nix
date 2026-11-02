@@ -6,6 +6,13 @@
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAll = f: nixpkgs.lib.genAttrs systems (s: f nixpkgs.legacyPackages.${s});
     in {
+      packages = forAll (pkgs: rec {
+        opcan = pkgs.callPackage ./packaging/package.nix { src = self; };
+        default = opcan;
+      });
+      apps = forAll (pkgs: {
+        default = { type = "app"; program = "${self.packages.${pkgs.stdenv.hostPlatform.system}.opcan}/bin/opcan"; };
+      });
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
           packages = with pkgs; [ cmake ninja pkg-config gcc14 glfw libGL stockfish curl dbus wayland wayland-scanner libffi systemdLibs vulkan-headers vulkan-loader shaderc ];

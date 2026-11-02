@@ -204,7 +204,8 @@ void App::Impl::startExplain(int node, bool background) {
 }
 
 void App::Impl::explainCurrent(bool regenerate) {
-    if (!game || !coachReady() || !curReview()) return;
+    if (!game || !curReview()) return;
+    if (!coachReady()) return notify("Explanations need the AI coach: download it in Settings > AI coach");
     std::string key = explainKey(cur);
     if (regenerate) {
         cs->cache.erase(key);
@@ -497,7 +498,7 @@ void App::Impl::drawCoachCard() {
         text = "Use the arrow keys or click a move.";
     } else if (!game->isMainline(cur)) {
         title = "Exploring a variation";
-        text = "Press R to return to the game.";
+        text = keyHint(Act::BackToGame).empty() ? "Click a game move to return to the game." : "Press " + keyHint(Act::BackToGame) + " to return to the game.";
     } else {
         title = game->nodes[cur].san;
         text = reviewer && reviewer->running() ? "Analyzing..." : "Not reviewed";
@@ -567,7 +568,7 @@ void App::Impl::drawCoachCard() {
             ImGui::PopStyleVar();
             ImGui::PopFont();
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Find a better move  (%s)", chordName(prefs.keys[(int)Act::Retry][0]).c_str());
+                ImGui::SetTooltip("Find a better move  (%s)", keyHint(Act::Retry).c_str());
             ImGui::SetCursorScreenPos(keep);
         }
     }
@@ -619,7 +620,7 @@ void App::Impl::drawCoachCard() {
             ImGui::PushStyleColor(ImGuiCol_Text, theme::accent);
             if (ImGui::SmallButton("Explain this move")) explainCurrent();
             ImGui::PopStyleColor(2);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Ask %s to explain it (%s)", kName, chordName(prefs.keys[(int)Act::ExplainMove][0]).c_str());
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Ask %s to explain it (%s)", kName, keyHint(Act::ExplainMove).c_str());
             ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
         } else if (c.explainMode == CoachState::Pregen && !c.pgNodes.empty()) {
             int done = 0;
@@ -647,7 +648,7 @@ void App::Impl::drawCoachCard() {
     ImGui::PushStyleColor(ImGuiCol_Button, c.chatOpen ? alpha(theme::accent, 90) : theme::panel);
     if (ImGui::Button(ask.c_str(), {aw, footH})) c.chatOpen = !c.chatOpen, c.focusInput = c.chatOpen;
     ImGui::PopStyleColor();
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Chat with the coach (%s)", chordName(prefs.keys[(int)Act::CoachChat][0]).c_str());
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Chat with the coach (%s)", keyHint(Act::CoachChat).c_str());
     ImGui::PopFont();
     ImGui::SetCursorScreenPos({p.x, p.y + h + 8});
     ImGui::Dummy({0, 0});
@@ -831,6 +832,13 @@ void App::Impl::drawCoachChat(bool docked) {
     ImGui::PopStyleColor(2);
     if (!open) c.chatOpen = false;
     if (!vis) return ImGui::End();
+    if (!docked) {  // keep the floating chat inside the window: a position saved at a larger size can leave only a sliver
+        auto* vp = ImGui::GetMainViewport();
+        ImVec2 p = ImGui::GetWindowPos(), sz = ImGui::GetWindowSize();
+        ImVec2 q{std::clamp(p.x, vp->WorkPos.x, std::max(vp->WorkPos.x, vp->WorkPos.x + vp->WorkSize.x - sz.x)),
+                 std::clamp(p.y, vp->WorkPos.y, std::max(vp->WorkPos.y, vp->WorkPos.y + vp->WorkSize.y - sz.y))};
+        if (q.x != p.x || q.y != p.y) ImGui::SetWindowPos(q);
+    }
 
     auto* dl = ImGui::GetWindowDrawList();
     // header

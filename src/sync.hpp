@@ -32,6 +32,14 @@ SiteUser lookupUser(const std::string& site, const std::string& username);
 std::vector<GameRow> fetchGames(const Account& acc, int64_t profileId, int64_t since, int64_t until,
                                 std::string* err, const std::atomic<bool>* cancel = nullptr);
 
+// Response parsing (separate from the network for tests). parseChessComMonth: one monthly archive
+// (https://api.chess.com/pub/player/<u>/games/<y>/<m>), games ending in [since, until); *ok = false when the
+// body isn't an archive at all. parseLichessGames: the ndjson of /api/games/user (pgnInJson), bad lines skipped.
+std::vector<GameRow> parseChessComMonth(const std::string& body, const Account& acc, int64_t profileId, int64_t since,
+                                        int64_t until, bool* ok = nullptr);
+std::vector<GameRow> parseLichessGames(const std::string& body, const Account& acc, int64_t profileId,
+                                       const std::atomic<bool>* cancel = nullptr);
+
 // Background sync of all accounts of one profile into the store.
 class Syncer {
 public:

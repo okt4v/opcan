@@ -1,0 +1,32 @@
+# review: summary -> "Start Review", keyboard nav, eval graph click, move list click, variation by drag + click-click, R back to game line
+#needs-db
+#env OPCAN_PROFILE=2 OPCAN_GAME=558
+wait 1s
+click 1166 840
+wait 10
+key RightArrow
+wait 3
+key RightArrow
+wait 3
+key RightArrow
+wait 20
+shot review-ply3.png
+click 1150 260
+wait 20
+shot review-graph.png
+# move list: 10. Bc4
+click 1031 581
+wait 20
+shot review-movelist.png
+key Home
+wait 3
+drag 593 692 593 498 10
+wait 20
+click 690 207
+wait 2
+click 690 304
+wait 20
+shot review-variation.png
+key R
+wait 20
+shot review-back.png

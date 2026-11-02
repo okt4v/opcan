@@ -1,0 +1,5 @@
+# docking2 (run after docking): the docked layout survives a restart
+#needs-db
+#env OPCAN_DB=$OUT/.db-docking/opcan.db OPCAN_PROFILE=2 OPCAN_GAME=558
+wait 1s
+shot dock-restart.png

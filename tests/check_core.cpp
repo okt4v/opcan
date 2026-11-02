@@ -1,4 +1,5 @@
 #include "engine.hpp"
+#include "game.hpp"
 #include "openings.hpp"
 #include <chrono>
 #include <cstdio>
@@ -79,5 +80,31 @@ void checkCore() {
         la.setPosition(start, 40);
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }  // destructor mid-search must not hang
+
+    // fuzz regressions: chess-library's setFen indexes by king square, so a FEN without a king (with an ep
+    // square, or then any move generation) read out of bounds. loadFen refuses it first.
+    CHECK(!gameFromFen("8/8/8/8/8/8/8/8 w - e6 0 1"));
+    CHECK(!gameFromFen("8/8/8/8/8/8/8/K7 b - e3 0 1"));
+    CHECK(!gameFromFen("kK6/8/8/8/8/8/8/K7 w - - 0 1"));
+    CHECK(gameFromFen("4k3/8/8/8/8/8/8/4K3 w - - 0 1"));
+    CHECK(parsePgn("[FEN \"8/8/8/8/8/8/8/8 w - e6 0 1\"]\n\n1. e4 *").empty());
+    // BOM + CRLF + several games, variations, NAGs, comments; a Chess960 start position isn't a crash
+    auto multi = parsePgn("\xEF\xBB\xBF[Event \"a\"]\r\n\r\n1. e4 $1 {c} (1. d4 d5) e5 2. Nf3 1-0\r\n\r\n"
+                          "[Event \"b\"]\r\n[SetUp \"1\"]\r\n[FEN \"nrbkqbrn/pppppppp/8/8/8/8/PPPPPPPP/NRBKQBRN w KQkq - 0 1\"]\r\n"
+                          "[Variant \"Chess960\"]\r\n\r\n1. e4 e5 *\r\n");
+    CHECK(multi.size() == 2 && multi[0].mainline().size() == 4 && multi[0].nodes[0].children.size() == 2);
+    CHECK(isBotGame(multi[1]));  // non-standard variant: never counts
+    // fuzz regression: a header value with a quote (or an odd key) exported unparseable PGN, and imports
+    // store g.pgn(): the game then vanished from the library
+    auto q = parsePgn("[Site \"Chess.co\\\"]09\"]\n[Rookt\"]Result \"0-1\"]\n\n1. d4 g6 *");
+    CHECK(q.size() == 1 && q[0].header("Site") == "Chess.co\"]09");
+    auto q2 = parsePgn(q[0].pgn());
+    CHECK(q2.size() == 1 && q2[0].mainline().size() == 3 && q2[0].header("Site") == "Chess.co\"]09");
+    auto q3 = parsePgn("[{FEN \"8/8/8/8/8/8/8/8 w - - 0 1\"]\n\n1. e4 e5 *");  // odd key: dropped, not made a FEN tag
+    CHECK(q3.size() == 1 && parsePgn(q3[0].pgn()).size() == 1 && parsePgn(q3[0].pgn())[0].mainline().size() == 3);
+    std::string longPgn;  // 400 plies of knight shuffling (no repetition rule in PGN parsing)
+    for (int i = 0; i < 100; i++) longPgn += std::to_string(2 * i + 1) + ". Nf3 Nf6 " + std::to_string(2 * i + 2) + ". Ng1 Ng8 ";
+    auto lg = parsePgn(longPgn + "*");
+    CHECK(lg.size() == 1 && lg[0].mainline().size() == 401 && parsePgn(lg[0].pgn())[0].mainline().size() == 401);
     std::puts("core checks passed");
 }

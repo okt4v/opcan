@@ -1,0 +1,28 @@
+# docking: enable custom layouts in Settings > Layout, open a game, drag a panel tab to dock it elsewhere (layout is saved; docking2 checks it after a restart)
+#needs-db
+#env OPCAN_PROFILE=2 OPCAN_PAGE=settings OPCAN_SETTINGS_TAB=5
+wait 1s
+shot dock-settings.png
+click 1357 160
+wait 5
+click 75 84
+wait 5
+click 600 213
+wait 1s
+shot dock-review.png
+move 1041 636
+down
+wait 2
+move 1000 600
+wait 2
+move 800 500
+wait 2
+move 520 460
+wait 5
+shot dock-dragging.png
+up
+wait 10
+shot dock-docked.png
+# leave the review so the layout is saved, then quit
+click 32 84
+wait 1s

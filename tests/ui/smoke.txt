@@ -1,0 +1,7 @@
+# smoke: the driver starts, takes a screenshot of the library and quits
+#needs-db
+#env OPCAN_PROFILE=2 OPCAN_PAGE=library
+wait 1s
+move 700 400
+log hover
+shot smoke.png

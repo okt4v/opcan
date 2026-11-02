@@ -94,7 +94,7 @@ App::Impl::Impl() {
     loadSettings();
     loadPrefs();
     applyPrefs();
-    if (!book.load(exeDir() + "/assets/openings/openings.tsv")) notify("Openings database missing");
+    if (!book.load(resDir() + "/assets/openings/openings.tsv")) notify("Openings database missing");
     resolveEngine();
     coachInit();
     if (storeErr.empty()) profiles = store.profiles();
@@ -241,18 +241,18 @@ void App::Impl::applyPrefs() {
 
 std::string App::Impl::pieceDir(const std::string& set) const {
     auto user = fs::path(dataDir) / "pieces" / set;
-    return fs::exists(user / "wK.svg") ? user.string() : exeDir() + "/assets/pieces/" + set;
+    return fs::exists(user / "wK.svg") ? user.string() : resDir() + "/assets/pieces/" + set;
 }
 
 std::string App::Impl::soundDir(const std::string& set) const {
     auto user = fs::path(dataDir) / "sounds" / set;
-    return fs::is_directory(user) ? user.string() : exeDir() + "/assets/sounds/" + set;
+    return fs::is_directory(user) ? user.string() : resDir() + "/assets/sounds/" + set;
 }
 
 void App::Impl::beforeFrame() {
     if (std::string want = prefs.uiFont + "|" + prefs.monoFont; want != fontsLoaded) {
         auto& io = ImGui::GetIO();
-        std::string dir = exeDir() + "/assets/fonts/";
+        std::string dir = resDir() + "/assets/fonts/";
         auto pick = [](const auto& list, const std::string& n) {
             for (auto& c : list)
                 if (n == c.name) return &c;
@@ -426,9 +426,11 @@ void App::Impl::backToGame() {
 }
 void App::Impl::jumpMistake(int dir) {
     if (!review) return;
-    int i = lineIdx.count(cur) ? lineIdx[cur] : 0;
+    int i = lineIdx.count(cur) ? lineIdx[cur] : 0, me = userSide();  // only the user's mistakes when known
     for (int j = i + dir; j >= 1 && j < (int)review->line.size(); j += dir)
-        if (isBad(review->moves[j - 1].cls)) return go(review->line[j]);
+        if (isBad(review->moves[j - 1].cls) &&
+            (me < 0 || (game->board(review->line[j - 1]).sideToMove() == Color::BLACK) == (me == 1)))
+            return go(review->line[j]);
 }
 void App::Impl::playUci(const std::string& u) {
     Board b = game->board(cur);
@@ -465,6 +467,16 @@ std::string chordName(ImGuiKeyChord c) {
     }
 }
 
+void App::Impl::saveLayout() {
+    if (prof && layoutToLoad.empty()) store.setSetting(pkey("layout"), ImGui::SaveIniSettingsToMemory());
+    ImGui::GetIO().WantSaveIniSettings = false;
+}
+
+std::string App::Impl::keyHint(Act a) const {
+    auto& k = prefs.keys[(int)a];
+    return chordName(k[0] ? k[0] : k[1]);
+}
+
 bool App::Impl::act(Act a, bool repeat) {
     auto& io = ImGui::GetIO();
     ImGuiKeyChord mods = io.KeyMods;
@@ -477,6 +489,8 @@ bool App::Impl::act(Act a, bool repeat) {
 void App::Impl::keys() {
     auto& io = ImGui::GetIO();
     if (io.WantTextInput || capture >= 0) return;
+    // Esc closes dropdowns and context menus (keyboard nav is off, so ImGui won't); modals handle Esc themselves
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup)) ImGui::ClosePopupsExceptModals();
     if (act(Act::Quit)) quit = true;
     if (act(Act::Help)) showHelp = !showHelp;
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) showHelp = false;
@@ -520,10 +534,7 @@ void App::Impl::frame() {
     ex.stale |= libDirty;
     if (prefsDirty && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) savePrefs();
     if (view != View::Settings) capture = -1;
-    if (auto& io = ImGui::GetIO(); io.WantSaveIniSettings && prof) {
-        store.setSetting(pkey("layout"), ImGui::SaveIniSettingsToMemory());
-        io.WantSaveIniSettings = false;
-    }
+    if (ImGui::GetIO().WantSaveIniSettings) saveLayout();
     keys();
     pollTablebases();
     devHooks();
@@ -583,6 +594,14 @@ void App::Impl::updateEval() {
     Board b = game->board(cur);
     bool wtm = b.sideToMove() == Color::WHITE;
     bool reviewed = review && lineIdx.count(cur);
+    if (live && live->snapshot().dead) {  // engine crashed or was killed: restart it, at most every 10 s
+        static double lastRestart = -100;
+        if (ImGui::GetTime() - lastRestart > 10) {
+            lastRestart = ImGui::GetTime();
+            notify("Engine stopped, restarting it");
+            resolveEngine();
+        }
+    }
     if (live) {
         bool busy = reviewer && reviewer->running();  // don't steal cores from the review
         if ((!reviewed && !busy) || set.engineLines || coachWantsLive()) live->setPosition(game->nodes[cur].fen, set.liveDepth);
@@ -745,9 +764,9 @@ void App::Impl::drawHome() {
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + w);
     ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
     ImGui::TextWrapped("%s pastes anywhere  ·  %s opens a file  ·  drop a .pgn on the window  ·  %s shows shortcuts",
-                       chordName(prefs.keys[(int)Act::Paste][0]).c_str(), chordName(prefs.keys[(int)Act::Open][0]).c_str(),
-                       chordName(prefs.keys[(int)Act::Help][0]).c_str());
-    if (enginePath.empty()) ImGui::TextWrapped("No engine found. Open Settings with %s", chordName(prefs.keys[(int)Act::Settings][0]).c_str());
+                       keyHint(Act::Paste).c_str(), keyHint(Act::Open).c_str(),
+                       keyHint(Act::Help).c_str());
+    if (enginePath.empty()) ImGui::TextWrapped("No engine found. Open Settings with %s", keyHint(Act::Settings).c_str());
     ImGui::PopStyleColor();
     ImGui::PopTextWrapPos();
     ImGui::EndGroup();
@@ -866,7 +885,7 @@ void App::Impl::drawDocked() {
             else if (i == 2) {
                 if (retry.on || play) ImGui::TextDisabled("Engine lines are hidden while you play.");
                 else if (set.engineLines) drawEngineLines();
-                else if (ImGui::Button(("Show engine lines  (" + chordName(prefs.keys[(int)Act::Lines][0]) + ")").c_str()))
+                else if (ImGui::Button(("Show engine lines  (" + keyHint(Act::Lines) + ")").c_str()))
                     set.engineLines = true, saveSettings();
             } else if (i == 3) {
                 if (review) drawGraph(avail.x, std::max(40.f, avail.y));
@@ -991,7 +1010,7 @@ void App::Impl::drawPanel() {
     ImGui::SameLine(0, 6);
     if (ImGui::Button("Play vs engine", {pw, 28})) openPlaySetup();
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Play the engine from this position  (%s)", chordName(prefs.keys[(int)Act::PlayEngine][0]).c_str());
+        ImGui::SetTooltip("Play the engine from this position  (%s)", keyHint(Act::PlayEngine).c_str());
     ImGui::SameLine(0, 6);
     if (ImGui::Button("?", {28, 28})) showHelp = true;
     ImGui::Dummy({0, 2});

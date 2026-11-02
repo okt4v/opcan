@@ -1,0 +1,26 @@
+# promotion: a7 pawn set up via the editor's FEN field, Analyze, a7-a8 opens the picker, pick a knight; right-click cancels a second picker; then play vs engine from the editor
+#needs-db
+#env OPCAN_PROFILE=2 OPCAN_PAGE=editor
+wait 1s
+click 1083 386
+key ctrl+A
+type 4k3/P7/8/8/8/8/8/4K3 w - - 0 1
+key Enter
+wait 3
+click 1083 520
+wait 1s
+drag 205 207 205 110 6
+wait 5
+shot promo-picker.png
+# picker column runs down from a8: Q N R B
+click 205 207
+wait 10
+shot promo-knight.png
+key LeftArrow
+wait 5
+click 205 207
+click 205 110
+wait 5
+rclick 600 500
+wait 5
+shot promo-cancel.png

@@ -1,0 +1,57 @@
+# library: search, filter dropdown, row context menu (favorite, tags & notes, delete with confirm), tag filter
+#needs-db
+#env OPCAN_PROFILE=2 OPCAN_PAGE=library
+wait 1s
+click 360 96
+type caro
+wait 10
+shot lib-search.png
+key ctrl+A
+key Backspace
+wait 5
+click 690 96
+wait 5
+shot lib-result-combo.png
+key Escape
+wait 3
+rclick 700 213
+wait 5
+shot lib-menu.png
+key Escape
+# star toggles favorite (shown on hover at the row's right end)
+move 1000 213
+wait 3
+click 1374 213
+wait 5
+shot lib-fav.png
+rclick 700 213
+wait 5
+click 760 278
+wait 5
+type endgame, Test
+click 719 480
+type a note
+wait 3
+shot lib-tags.png
+click 569 574
+wait 5
+click 1055 96
+wait 5
+shot lib-tag-combo.png
+key Escape
+wait 3
+# delete with confirm: cancel first, then delete
+rclick 700 271
+wait 5
+click 740 405
+wait 5
+shot lib-delete.png
+key Escape
+wait 3
+rclick 700 271
+wait 5
+click 740 405
+wait 5
+click 607 491
+wait 10
+shot lib-deleted.png

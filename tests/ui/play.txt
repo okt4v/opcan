@@ -1,0 +1,44 @@
+# play vs engine: V opens setup, 5+0 full strength, drag + click-click moves, multiple premoves, right-click cancels, resign
+#needs-db
+#env OPCAN_PROFILE=2 OPCAN_GAME=558
+wait 1s
+click 1166 840
+wait 10
+key Home
+wait 3
+key V
+wait 10
+shot play-setup.png
+click 809 432
+wait 2
+click 674 534
+wait 2
+click 719 590
+wait 20
+shot play-start.png
+drag 580 692 580 498 6
+wait 2
+drag 483 692 483 498 6
+click 774 789
+click 677 595
+wait 2
+shot play-premoves.png
+wait 4s
+shot play-after-premoves.png
+click 289 789
+click 386 595
+wait 1
+drag 192 692 192 595 4
+wait 1
+shot play-premove-queued.png
+rclick 500 400
+wait 2
+shot play-cancelled.png
+wait 3s
+shot play-clock.png
+click 1062 852
+wait 10
+shot play-resigned.png
+click 1166 810
+wait 3s
+shot play-reviewed.png

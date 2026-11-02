@@ -10,6 +10,14 @@ std::string Game::header(const std::string& key) const {
     return it == headers.end() ? "" : it->second;
 }
 
+bool loadFen(Board& b, std::string_view fen) {
+    // chess-library's setFen indexes tables by the king squares (out of bounds without a king): check first
+    auto board = fen.substr(0, fen.find(' '));
+    if (std::count(board.begin(), board.end(), 'K') != 1 || std::count(board.begin(), board.end(), 'k') != 1) return false;
+    return b.setFen(fen) && b.pieces(PieceType::KING, Color::WHITE).count() == 1 &&
+           b.pieces(PieceType::KING, Color::BLACK).count() == 1;
+}
+
 namespace {
 std::vector<std::string> words(const std::string& s) {
     std::vector<std::string> r(1);
@@ -118,7 +126,17 @@ static std::string moveNum(const std::string& fen, bool forceBlack) {
 std::string Game::pgn() const {
     static const char* roster[] = {"Event", "Site", "Date", "Round", "White", "Black", "Result"};
     std::string out;
-    auto hdr = [&](const std::string& k, const std::string& v) { out += "[" + k + " \"" + v + "\"]\n"; };
+    // escaped so any parsed header (quotes, brackets, odd keys) exports back to parseable PGN
+    auto hdr = [&](const std::string& k, const std::string& v) {
+        // a key PGN can't hold is dropped (stripping it could turn "{FEN" into a real FEN tag)
+        if (k.empty() || !std::all_of(k.begin(), k.end(), [](char c) { return std::isalnum((unsigned char)c) || c == '_'; }))
+            return;
+        out += "[" + k + " \"";
+        for (char c : v)
+            if (c == '"' || c == '\\') out += '\\', out += c;
+            else out += c == '\n' || c == '\r' || c == '\0' ? ' ' : c;
+        out += "\"]\n";
+    };
     for (auto k : roster) hdr(k, headers.count(k) ? headers.at(k) : (std::string(k) == "Result" ? "*" : "?"));
     for (auto& [k, v] : headers)
         if (std::find_if(std::begin(roster), std::end(roster), [&](auto r) { return k == r; }) == std::end(roster)) hdr(k, v);
@@ -208,9 +226,7 @@ struct Builder : pgn::Visitor {
         if (auto f = g.header("FEN"); !f.empty()) {
             Board b;
             hasFen = true;
-            if (!b.setFen(f) || b.pieces(PieceType::KING, Color::WHITE).count() != 1 ||
-                b.pieces(PieceType::KING, Color::BLACK).count() != 1)
-                broken = true;
+            if (!loadFen(b, f)) broken = true;
             root.fen = b.getFen();
         }
         g.nodes.push_back(root);
@@ -269,9 +285,7 @@ std::vector<Game> parsePgn(std::string_view text) {
 
 std::optional<Game> gameFromFen(std::string_view fen) {
     Board b;
-    if (!b.setFen(fen) || b.pieces(PieceType::KING, Color::WHITE).count() != 1 ||
-        b.pieces(PieceType::KING, Color::BLACK).count() != 1)
-        return std::nullopt;
+    if (!loadFen(b, fen)) return std::nullopt;
     Game g;
     Node root;
     root.fen = b.getFen();

@@ -1,0 +1,20 @@
+# coach keys without a model: X (explain this move) and C (chat) say what's missing instead of doing nothing; ? shows the shortcuts
+#needs-db
+#env OPCAN_PROFILE=2 OPCAN_GAME=558
+wait 1s
+click 1166 840
+wait 10
+key N
+wait 5
+key X
+wait 10
+shot coach-x.png
+key C
+wait 10
+shot coach-c.png
+key shift+Slash
+wait 10
+shot help.png
+key Escape
+wait 5
+shot help-closed.png

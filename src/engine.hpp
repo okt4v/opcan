@@ -31,7 +31,11 @@ void setDefaultUciOption(const std::string& name, const std::string& value);
 // Directory of the running executable, no trailing slash.
 std::string exeDir();
 
-// Bundled engine next to the executable (engines/stockfish[.exe]), else "stockfish" on PATH. "" if none.
+// Directory holding assets/ (and engines/): exeDir() in dev builds and on Windows,
+// <prefix>/share/opcan when installed on Linux, Contents/Resources in a macOS .app. No trailing slash.
+std::string resDir();
+
+// Bundled engine (engines/stockfish[.exe] in exeDir() or resDir()), else "stockfish" on PATH. "" if none.
 std::string findEngine();
 
 // One engine process speaking UCI. Not thread-safe: one owner thread.
@@ -71,6 +75,7 @@ public:
         std::string fen;
         std::vector<PvLine> lines;  // by multipv
         bool searching = false;
+        bool dead = false;  // the engine process exited (crashed or was killed); start a new analyzer
     };
     Snapshot snapshot() const;
 

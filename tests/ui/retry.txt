@@ -1,0 +1,24 @@
+# retry mistake: N jumps to the user's (White's) mistake, Y starts the retry (White stays at the bottom), a wrong try, Show solution; Esc exits
+#needs-db
+#env OPCAN_PROFILE=2 OPCAN_GAME=558
+wait 1s
+click 1166 840
+wait 10
+key N
+wait 5
+shot retry-mistake.png
+key Y
+wait 10
+shot retry-start.png
+# wrong: a2-a3
+drag 205 692 205 595 6
+wait 3
+shot retry-checking.png
+wait 3s
+shot retry-wrong.png
+click 1070 208
+wait 1s
+shot retry-solution.png
+key Escape
+wait 5
+shot retry-exit.png

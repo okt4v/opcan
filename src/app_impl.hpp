@@ -123,9 +123,10 @@ public:
     }
     std::optional<T> take() {
         if (!s_) return {};
-        std::lock_guard l(s_->m);
-        if (!s_->v) return {};
-        auto v = std::move(s_->v);
+        auto s = s_;  // outlives the lock: s_.reset() below may free the mutex (use-after-free before)
+        std::lock_guard l(s->m);
+        if (!s->v) return {};
+        auto v = std::move(s->v);
         s_.reset();
         return v;
     }
@@ -269,6 +270,7 @@ struct App::Impl {
     std::optional<Profile> prof;  // active profile; none = picker
     bool manage = false;
     int64_t pinFor = 0;
+    bool pinEdit = false;  // the PIN unlocks the profile editor (Manage profiles), not the profile
     std::string pinEntry;
     double pinErrorAt = -10;
     std::unordered_map<int64_t, float> hoverT;
@@ -314,6 +316,8 @@ struct App::Impl {
     void saveSettings();
     void resolveEngine();
     std::string pkey(const std::string& k) const;  // per-profile settings key
+    std::string keyHint(Act a) const;  // the action's first bound chord, "" if none
+    void saveLayout();                 // the docking layout, now (ImGui only asks every 5 s)
     void loadPrefs();
     void savePrefs();
     void applyPrefs();

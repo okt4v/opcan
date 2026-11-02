@@ -1,0 +1,42 @@
+# light theme: switch in Settings > Appearance, then screenshot the main pages
+#needs-db
+#env OPCAN_PROFILE=2 OPCAN_PAGE=settings OPCAN_SETTINGS_TAB=0
+wait 1s
+shot light-0.png
+click 958 162
+wait 5
+shot light-settings.png
+click 1300 120
+wait 3
+shot light-settings-keys.png
+click 280 306
+wait 3
+click 1128 331
+wait 3
+shot light-keys.png
+key Escape
+wait 2
+click 75 84
+wait 10
+shot light-library.png
+click 600 213
+wait 1s
+shot light-summary.png
+click 1166 840
+wait 10
+key N
+wait 5
+key Y
+wait 10
+shot light-retry.png
+key Escape
+wait 5
+click 32 184
+wait 1s
+shot light-openings.png
+click 32 134
+wait 10
+shot light-analyze.png
+click 32 234
+wait 2s
+shot light-stats.png

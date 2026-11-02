@@ -3,3 +3,5 @@ result
 .direnv/
 compile_commands.json
 .cache/
+build-b*/
+packaging/stockfish/

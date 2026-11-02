@@ -1,0 +1,100 @@
+# App metadata, install layout and CPack installers (included from the top-level CMakeLists.txt).
+# Layout (resDir() in src/engine.cpp finds assets/ and engines/ in each):
+#   Linux:   bin/opcan, share/opcan/{assets,engines}, share/applications, share/icons
+#   Windows: opcan.exe, assets/, engines/ side by side
+#   macOS:   opcan.app/Contents/{MacOS/opcan, Resources/{assets,engines,opcan.icns}}
+# Only the "opcan" component is ours; dependencies (llama.cpp, glfw, ...) add their own install rules,
+# so install with `cmake --install <build> --component opcan` (CPack does this already).
+set(OPCAN_STOCKFISH_PATH "" CACHE FILEPATH "Stockfish binary to bundle into the package (see packaging/fetch-stockfish.*)")
+set(OPCAN_PKG ${CMAKE_CURRENT_LIST_DIR})
+
+if(WIN32)
+  file(TO_CMAKE_PATH "${OPCAN_PKG}/opcan.ico" OPCAN_ICO)
+  configure_file(${OPCAN_PKG}/opcan.rc.in ${CMAKE_BINARY_DIR}/opcan.rc @ONLY)
+  target_sources(opcan PRIVATE ${CMAKE_BINARY_DIR}/opcan.rc)
+  if(MSVC)  # GUI app without a console window, keeping the plain main()
+    set_target_properties(opcan PROPERTIES WIN32_EXECUTABLE ON)
+    target_link_options(opcan PRIVATE /ENTRY:mainCRTStartup)
+  endif()
+  set(OPCAN_BIN_DEST .)
+  set(OPCAN_RES_DEST .)
+elseif(APPLE)
+  target_sources(opcan PRIVATE ${OPCAN_PKG}/opcan.icns)
+  set_source_files_properties(${OPCAN_PKG}/opcan.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+  set_target_properties(opcan PROPERTIES
+    MACOSX_BUNDLE ON
+    MACOSX_BUNDLE_INFO_PLIST ${OPCAN_PKG}/Info.plist.in
+    MACOSX_BUNDLE_BUNDLE_NAME opcan
+    MACOSX_BUNDLE_GUI_IDENTIFIER org.opcan.opcan
+    MACOSX_BUNDLE_ICON_FILE opcan.icns
+    MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
+    MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
+    MACOSX_BUNDLE_COPYRIGHT "opcan contributors")
+  set(OPCAN_RES_DEST opcan.app/Contents/Resources)
+else()
+  include(GNUInstallDirs)
+  set(OPCAN_BIN_DEST ${CMAKE_INSTALL_BINDIR})
+  set(OPCAN_RES_DEST ${CMAKE_INSTALL_DATADIR}/opcan)
+  install(FILES ${OPCAN_PKG}/opcan.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications COMPONENT opcan)
+  install(FILES ${OPCAN_PKG}/opcan.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps COMPONENT opcan)
+endif()
+
+if(APPLE)  # assets are already in the bundle (POST_BUILD copy)
+  install(TARGETS opcan BUNDLE DESTINATION . COMPONENT opcan)
+else()
+  install(TARGETS opcan RUNTIME DESTINATION ${OPCAN_BIN_DEST} COMPONENT opcan)
+  install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets DESTINATION ${OPCAN_RES_DEST} COMPONENT opcan)
+endif()
+foreach(f LICENSE COPYING README.md)
+  if(EXISTS ${CMAKE_SOURCE_DIR}/${f})
+    install(FILES ${CMAKE_SOURCE_DIR}/${f} DESTINATION ${OPCAN_RES_DEST} COMPONENT opcan)
+  endif()
+endforeach()
+if(OPCAN_STOCKFISH_PATH)
+  if(NOT EXISTS ${OPCAN_STOCKFISH_PATH})
+    message(FATAL_ERROR "OPCAN_STOCKFISH_PATH=${OPCAN_STOCKFISH_PATH} does not exist")
+  endif()
+  install(PROGRAMS ${OPCAN_STOCKFISH_PATH} DESTINATION ${OPCAN_RES_DEST}/engines
+          RENAME stockfish${CMAKE_EXECUTABLE_SUFFIX} COMPONENT opcan)
+  get_filename_component(_sfdir ${OPCAN_STOCKFISH_PATH} DIRECTORY)
+  if(EXISTS ${_sfdir}/stockfish-COPYING.txt)  # Stockfish is GPLv3: ship its license with it
+    install(FILES ${_sfdir}/stockfish-COPYING.txt DESTINATION ${OPCAN_RES_DEST}/engines COMPONENT opcan)
+  endif()
+endif()
+
+# CPack: Windows NSIS installer + zip, macOS .dmg, Linux .tar.gz (the Nix flake is the primary Linux package)
+set(CPACK_PACKAGE_NAME opcan)
+set(CPACK_PACKAGE_VENDOR "opcan contributors")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "opcan - open chess analysis")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY opcan)
+set(CPACK_PACKAGE_EXECUTABLES opcan opcan)
+set(CPACK_INSTALL_CMAKE_PROJECTS "${CMAKE_BINARY_DIR};opcan;opcan;/")
+string(TOLOWER "${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" _plat)
+if(APPLE AND CMAKE_OSX_ARCHITECTURES)
+  string(REPLACE ";" "-" _arch "${CMAKE_OSX_ARCHITECTURES}")
+  set(_plat darwin-${_arch})
+endif()
+set(CPACK_PACKAGE_FILE_NAME opcan-${PROJECT_VERSION}-${_plat})
+if(EXISTS ${CMAKE_SOURCE_DIR}/LICENSE)
+  set(CPACK_RESOURCE_FILE_LICENSE ${CMAKE_SOURCE_DIR}/LICENSE)
+endif()
+if(WIN32)
+  set(CPACK_GENERATOR NSIS ZIP)
+  set(CPACK_NSIS_PACKAGE_NAME opcan)
+  set(CPACK_NSIS_DISPLAY_NAME opcan)
+  set(CPACK_NSIS_MUI_ICON ${OPCAN_ICO})
+  set(CPACK_NSIS_MUI_UNIICON ${OPCAN_ICO})
+  set(CPACK_NSIS_INSTALLED_ICON_NAME opcan.exe)
+  set(CPACK_NSIS_EXECUTABLES_DIRECTORY .)
+  set(CPACK_NSIS_MUI_FINISHPAGE_RUN opcan.exe)
+  set(CPACK_NSIS_INSTALL_ROOT "$PROGRAMFILES64")
+  set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+  set(CPACK_NSIS_MANIFEST_DPI_AWARE ON)
+elseif(APPLE)
+  set(CPACK_GENERATOR DragNDrop)
+  set(CPACK_DMG_VOLUME_NAME opcan)
+  set(CPACK_PRE_BUILD_SCRIPTS ${OPCAN_PKG}/macos-sign.cmake)  # ad-hoc sign the staged .app
+else()
+  set(CPACK_GENERATOR TGZ)
+endif()
+include(CPack)

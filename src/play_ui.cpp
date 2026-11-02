@@ -97,7 +97,7 @@ void App::Impl::startRetry(int node) {
     retry.revertAt = 0;
     retry.board = game->board(parent);
     retry.shown = game->nodes[parent].move;
-    board.flipped = retry.board.sideToMove() == Color::BLACK;
+    if (userSide() < 0) board.flipped = retry.board.sideToMove() == Color::BLACK;  // the user's side stays at the bottom
     view = View::Review;
     cur = parent;
     scrollToCur = true;
@@ -153,7 +153,7 @@ void App::Impl::updateRetry() {
             } else if (retryAccepted(review->evals[lineIdx[parent]].best, **r)) {
                 retry.phase = RetryState::Correct;
                 retrySolved.insert(retry.node);
-                audio.play(Sfx::Notify);
+                audio.play(Sfx::Success);  // same sound as an exact match
             } else {
                 retry.phase = RetryState::Wrong;
                 retry.revertAt = ImGui::GetTime() + 0.7;
@@ -237,7 +237,8 @@ void App::Impl::drawRetryCard() {
     float bw = (w - 32 - 8) / 2, by = p.y + h - 12 - 32;
     ImGui::SetCursorScreenPos({p.x + 16, by});
     bool solved = retry.phase == P::Correct || retry.phase == P::Solution;
-    std::string nextKey = chordName(prefs.keys[(int)Act::NextMistake][0]);
+    ImGui::PushStyleColor(ImGuiCol_Button, theme::hover);  // the card is panel2, like a plain button
+    std::string nextKey = keyHint(Act::NextMistake);
     if (solved) {
         if (accentButton(("Next mistake" + (nextKey.empty() ? "" : "  (" + nextKey + ")")).c_str(), {bw, 32})) retryNext();
     } else {
@@ -259,6 +260,7 @@ void App::Impl::drawRetryCard() {
     }
     ImGui::SameLine(0, 8);
     if (ImGui::Button("Exit  (Esc)", {bw, 32})) exitRetry();
+    ImGui::PopStyleColor();
     ImGui::SetCursorScreenPos({p.x, p.y + h + 8});
     ImGui::Dummy({0, 0});
 }
@@ -393,7 +395,9 @@ void App::Impl::updatePlay() {
             std::vector<std::string> ucis;
             for (Move m : s.moves) ucis.push_back(uci::moveToUci(m));
             int movetime = s.elo ? 150 + (s.elo - 1320) / 4 : 900;
-            s.engine->think(s.startFen, ucis, movetime, s.baseMs ? s.clockMs : nullptr, s.incMs);
+            // on the clock too: Stockfish's own time management spends ~15 s on move one of a 5+0 game
+            if (s.baseMs) movetime = std::max(50, std::min(movetime, s.clockMs[stm] / 30 + s.incMs));
+            s.engine->think(s.startFen, ucis, movetime, nullptr, 0);
             s.thinking = true;
             s.thinkAt = now;
         } else if (now - s.thinkAt >= s.minDelay) {
@@ -459,6 +463,8 @@ void App::Impl::drawPlayBoard(ImVec2 avail) {
         if (white) dl->AddRect({p.x, yy}, {p.x + av, yy + av}, theme::edge, 6);
         const std::string& name = white ? s.white : s.black;
         ImGui::PushFont(f.bold, 15);
+        std::string ini = name.substr(0, 1);  // initial in the avatar square, like the review strips
+        dl->AddText({p.x + av / 2 - ImGui::CalcTextSize(ini.c_str()).x / 2, yy + av / 2 - 8}, white ? theme::evalBlack : theme::evalWhite, ini.c_str());
         dl->AddText({p.x + av + 10, yy + av / 2 - 8}, theme::text, name.c_str());
         float nx = p.x + av + 10 + ImGui::CalcTextSize(name.c_str()).x + 8;
         ImGui::PopFont();

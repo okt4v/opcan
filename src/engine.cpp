@@ -98,6 +98,18 @@ std::string exeDir() {
 #endif
 }
 
+std::string resDir() {
+    // dev build / Windows / portable: assets next to the exe; installed Linux: <prefix>/share/opcan; macOS .app: Contents/Resources
+    static const std::string dir = [] {
+        fs::path exe = exeDir();
+        std::error_code ec;
+        for (fs::path d : {exe, exe / "../share/opcan", exe / "../Resources"})
+            if (fs::is_directory(d / "assets", ec)) return d.lexically_normal().string();
+        return exe.string();
+    }();
+    return dir;
+}
+
 std::string findEngine() {
 #ifdef _WIN32
     const char* exe = "stockfish.exe";
@@ -107,8 +119,10 @@ std::string findEngine() {
     const char sep = ':';
 #endif
     std::error_code ec;
-    fs::path bundled = fs::path(exeDir()) / "engines" / exe;
-    if (fs::is_regular_file(bundled, ec)) return bundled.string();
+    for (const std::string& d : {exeDir(), resDir()}) {
+        fs::path bundled = fs::path(d) / "engines" / exe;
+        if (fs::is_regular_file(bundled, ec)) return bundled.string();
+    }
     const char* path = std::getenv("PATH");
     if (!path) return "";
     std::stringstream ss(path);
@@ -217,9 +231,12 @@ std::vector<PvLine> analyse(UciProcess& engine, const std::string& fen, int dept
     engine.send("go depth " + std::to_string(depth));
     std::vector<PvLine> lines(multipv);
     PvLine noMoves;
-    bool hasNoMoves = false;
+    bool hasNoMoves = false, done = false;
     for (std::string l; engine.readLine(l);) {
-        if (startsWith(l, "bestmove")) break;
+        if (startsWith(l, "bestmove")) {
+            done = true;
+            break;
+        }
         int k;
         PvLine p;
         if (parseInfo(l, k, p)) {
@@ -229,6 +246,7 @@ std::vector<PvLine> analyse(UciProcess& engine, const std::string& fen, int dept
             hasNoMoves = true;
         }
     }
+    if (!done) return {};  // the engine died mid-search: whatever it printed is a shallow, partial result
     std::erase_if(lines, [](const PvLine& p) { return p.pv.empty(); });
     if (lines.empty() && hasNoMoves) lines.push_back(noMoves);
     return lines;
@@ -270,7 +288,9 @@ struct LiveAnalyzer::Impl {
         std::lock_guard lk(m);
         pending = false;
         snap.searching = false;
+        snap.dead = !quitting;
     }
+    bool quitting = false;  // under m: the destructor asked the engine to quit
 };
 
 LiveAnalyzer::LiveAnalyzer() = default;
@@ -280,6 +300,7 @@ LiveAnalyzer::~LiveAnalyzer() {
     {
         std::lock_guard lk(impl_->m);
         impl_->stop();
+        impl_->quitting = true;
         impl_->proc.send("quit");
     }
     if (impl_->reader.joinable()) impl_->reader.join();
@@ -308,7 +329,7 @@ void LiveAnalyzer::setPosition(const std::string& fen, int maxDepth) {
     impl_->pending = true;
     impl_->stopSent = false;
     impl_->maxDepth = maxDepth;
-    impl_->snap = {fen, {}, true};
+    impl_->snap = {fen, {}, !impl_->snap.dead, impl_->snap.dead};
     impl_->proc.send("position fen " + fen);
     impl_->proc.send("go infinite");
 }

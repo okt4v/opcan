@@ -162,8 +162,9 @@ void EngineOpponent::start(const std::string& path, int elo) {
             eng.send(go);
             std::string best;
             for (std::string l; eng.readLine(l);)
-                if (l.rfind("bestmove", 0) == 0) {
+                if (l.rfind("bestmove ", 0) == 0) {
                     best = l.substr(9, l.find(' ', 9) - 9);
+                    if (best == "(none)") best.clear();
                     break;
                 }
             std::lock_guard l(im->m);

@@ -38,7 +38,7 @@ void resultBar(ImDrawList* dl, ImVec2 p, float w, float h, const int wdl[3]) {
 
 std::string lineText(const std::vector<std::string>& sans, int n) {
     std::string s;
-    for (int i = 0; i < n; i++) s += (i ? " " : "") + (i % 2 == 0 ? std::to_string(i / 2 + 1) + ". " : std::string()) + sans[i];
+    for (int i = 0; i < std::min(n, (int)sans.size()); i++) s += (i ? " " : "") + (i % 2 == 0 ? std::to_string(i / 2 + 1) + ". " : std::string()) + sans[i];
     return s;
 }
 }  // namespace
@@ -243,7 +243,8 @@ void App::Impl::drawExplorer() {
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (28 - ImGui::GetFontSize()) / 2);
             ImGui::TextDisabled("Pick a move to start a line");
         }
-        for (int i = 0; i < (int)ex.line.size(); i++) {
+        // sans is from the top of the frame: a move played on the board above changed ex.line since
+        for (int i = 0; i < (int)std::min(sans.size(), ex.line.size()); i++) {
             std::string t = (i % 2 == 0 ? std::to_string(i / 2 + 1) + "." : "") + sans[i];
             ImVec2 ts = ImGui::CalcTextSize(t.c_str());
             if (i) {

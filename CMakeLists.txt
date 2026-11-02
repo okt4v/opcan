@@ -1,4 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
+if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+  set(CMAKE_OSX_DEPLOYMENT_TARGET 11.0 CACHE STRING "Minimum macOS version")  # keep in sync with packaging/Info.plist.in
+endif()
 project(opcan VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -82,18 +85,28 @@ add_library(opcan_core STATIC src/engine.cpp src/review.cpp src/game.cpp src/ope
 target_include_directories(opcan_core PUBLIC src ${chesslib_SOURCE_DIR}/include ${subprocess_SOURCE_DIR})
 target_link_libraries(opcan_core PUBLIC Threads::Threads sqlite3 llama nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
 
-add_executable(opcan src/main.cpp src/app.cpp src/library.cpp src/coach_ui.cpp src/play_ui.cpp src/stats_ui.cpp src/explorer_ui.cpp src/editor_ui.cpp src/settings_ui.cpp src/board.cpp src/theme.cpp src/audio.cpp)
+add_executable(opcan src/main.cpp src/devscript.cpp src/app.cpp src/library.cpp src/coach_ui.cpp src/play_ui.cpp src/stats_ui.cpp src/explorer_ui.cpp src/editor_ui.cpp src/settings_ui.cpp src/board.cpp src/theme.cpp src/audio.cpp)
 target_link_libraries(opcan PRIVATE opcan_core imgui lunasvg::lunasvg nfd::nfd opcan_miniaudio)
 target_include_directories(opcan PRIVATE ${stb_SOURCE_DIR})
 
-add_executable(opcan_check tests/check.cpp tests/check_core.cpp tests/check_review.cpp tests/check_store.cpp tests/check_stats.cpp tests/check_coach.cpp tests/check_play.cpp tests/check_explorer.cpp)
+add_executable(opcan_check tests/check.cpp tests/check_core.cpp tests/check_review.cpp tests/check_store.cpp tests/check_stats.cpp tests/check_coach.cpp tests/check_play.cpp tests/check_explorer.cpp tests/check_robust.cpp)
 target_link_libraries(opcan_check PRIVATE opcan_core)
 target_compile_definitions(opcan_check PRIVATE OPCAN_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 # dev tool: AI coach accuracy harness (tests/coach_eval.cpp); not built by default
 add_executable(opcan_coach_eval EXCLUDE_FROM_ALL tests/coach_eval.cpp)
 target_link_libraries(opcan_coach_eval PRIVATE opcan_core)
 target_compile_definitions(opcan_coach_eval PRIVATE OPCAN_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+# dev tool: parser fuzzer (tests/fuzz.cpp); build with -fsanitize=address,undefined; not built by default
+add_executable(opcan_fuzz EXCLUDE_FROM_ALL tests/fuzz.cpp)
+target_link_libraries(opcan_fuzz PRIVATE opcan_core)
 
-# assets live next to the binary
+# assets live next to the binary (macOS: in the .app's Resources); see resDir() in src/engine.cpp
+if(APPLE)
+  set(OPCAN_RES_DIR $<TARGET_BUNDLE_CONTENT_DIR:opcan>/Resources)
+else()
+  set(OPCAN_RES_DIR $<TARGET_FILE_DIR:opcan>)
+endif()
 add_custom_command(TARGET opcan POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:opcan>/assets)
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets ${OPCAN_RES_DIR}/assets)
+
+include(packaging/packaging.cmake)

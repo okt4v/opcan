@@ -1,0 +1,48 @@
+# profiles (fresh db): picker, create a profile with a PIN, wrong PIN, right PIN, edit, delete with confirm, guest
+wait 1s
+shot prof-picker.png
+click 635 433
+wait 5
+shot prof-new.png
+type Tester
+click 480 688
+wait 5
+shot prof-advanced.png
+click 525 709
+type 1234
+click 959 789
+wait 10
+shot prof-saved.png
+click 551 433
+wait 5
+type 9999
+wait 5
+shot prof-pin-wrong.png
+wait 2s
+type 1234
+wait 10
+shot prof-in.png
+click 60 856
+wait 5
+shot prof-avatar-click.png
+click 719 610
+wait 3
+shot prof-manage.png
+# managing a PIN profile asks for the PIN first
+click 551 433
+wait 5
+shot prof-manage-pin.png
+type 1234
+wait 5
+shot prof-edit.png
+click 487 730
+wait 3
+shot prof-delete-confirm.png
+click 684 730
+wait 5
+shot prof-deleted.png
+click 719 610
+wait 3
+click 803 433
+wait 10
+shot prof-guest.png

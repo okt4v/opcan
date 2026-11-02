@@ -26,12 +26,19 @@ std::string str(const json& j, const char* k) {
 }
 int64_t num(const json& j, const char* k) {
     auto it = j.find(k);
-    return it != j.end() && it->is_number() ? it->get<int64_t>() : 0;
+    if (it == j.end() || !it->is_number()) return 0;
+    if (it->is_number_float()) {  // out-of-range double -> int64 is UB
+        double d = it->get<double>();
+        return d > -9e18 && d < 9e18 ? (int64_t)d : 0;
+    }
+    return it->get<int64_t>();  // an unsigned above INT64_MAX wraps, harmless
 }
 
-// Runs curl with args; returns combined output and exit code, or nullopt if curl can't start.
-std::optional<std::string> runCurl(std::vector<std::string> args) {
-    args.insert(args.begin(), {"curl", "-sS", "-L", "--compressed", "--max-time", "60", "-A",
+// Runs curl with args; returns combined output and sets *rc to curl's exit code, or nullopt if curl can't start.
+// A set cancel kills curl within ~50 ms. Transfers that stall (< 1 byte/s for 30 s), never connect or run past 30 min fail.
+std::optional<std::string> runCurl(std::vector<std::string> args, int* rc = nullptr, const std::atomic<bool>* cancel = nullptr) {
+    args.insert(args.begin(), {"curl", "-sS", "-L", "--compressed", "--connect-timeout", "20", "--speed-limit", "1",
+                               "--speed-time", "30", "--max-time", "1800", "-A",
                                "opcan/0.1 (local chess analysis app)"});
     std::vector<const char*> argv;
     for (auto& a : args) argv.push_back(a.c_str());
@@ -40,13 +47,24 @@ std::optional<std::string> runCurl(std::vector<std::string> args) {
     int opts = subprocess_option_inherit_environment | subprocess_option_search_user_path |
                subprocess_option_no_window | subprocess_option_combined_stdout_stderr;
     if (subprocess_create(argv.data(), opts, &p) != 0) return std::nullopt;
+    // the read below blocks until curl exits: a watcher kills curl on cancel (quitting mid-sync must not hang)
+    std::atomic<bool> eof{false};
+    std::thread watch;
+    if (cancel)
+        watch = std::thread([&] {
+            while (!eof && !*cancel) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            if (!eof) subprocess_terminate(&p);  // curl is not reaped before join below, so its pid is still ours
+        });
     std::string out;
     char buf[65536];
     FILE* f = subprocess_stdout(&p);
     for (size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) out.append(buf, n);
-    int rc = 0;
-    subprocess_join(&p, &rc);
+    eof = true;
+    if (watch.joinable()) watch.join();
+    int code = -1;
+    if (subprocess_join(&p, &code) != 0) code = -1;
     subprocess_destroy(&p);
+    if (rc) *rc = code;
     return out;
 }
 
@@ -72,12 +90,22 @@ std::optional<std::string> get(const std::string& url, const std::vector<std::st
         std::vector<std::string> args{"-w", "\n%{http_code}"};
         for (auto& h : headers) args.insert(args.end(), {"-H", h});
         args.push_back(url);
-        auto out = runCurl(args);
+        int rc = 0;
+        auto out = runCurl(args, &rc, cancel);
         if (!out) {
             if (err) *err = "could not run curl";
             return std::nullopt;
         }
+        if (cancel && *cancel) {
+            if (err) *err = "cancelled";
+            return std::nullopt;
+        }
         int code = splitCode(*out);
+        // curl failed mid-transfer (timeout, reset): the body is truncated even with a 2xx status
+        if (rc != 0 && code >= 200 && code < 300) {
+            if (err) *err = "transfer failed (curl " + std::to_string(rc) + ")";
+            return std::nullopt;
+        }
         if (code >= 200 && code < 300) return out;
         if (code == 429 && attempt == 0) {
             if (sleepFor(60000, cancel)) continue;
@@ -119,91 +147,61 @@ std::optional<Game> fillFromPgn(GameRow& g, const Account& acc) {
     return std::move(h);
 }
 
-using Sink = std::function<void(const std::string& status, std::vector<GameRow>& games)>;
+}  // namespace
 
-bool fetchChessCom(const Account& acc, int64_t pid, int64_t since, int64_t until, std::string* err,
-                   const std::atomic<bool>* cancel, const Sink& sink) {
-    std::string base = "https://api.chess.com/pub/player/" + lower(acc.username);
-    auto body = get(base + "/games/archives", {}, err, cancel);
-    if (!body) return false;
-    auto j = json::parse(*body, nullptr, false);
-    if (j.is_discarded() || !j.contains("archives") || !j["archives"].is_array()) {
-        if (err) *err = "chess.com: bad archive list";
-        return false;
-    }
-    bool first = true;
-    for (auto& a : j["archives"]) {
-        if (cancel && *cancel) return false;
-        if (!a.is_string()) continue;
-        std::string url = a.get<std::string>();
-        int y = 0, m = 0;
-        auto s = url.rfind("/games/");
-        if (s == std::string::npos || std::sscanf(url.c_str() + s, "/games/%d/%d", &y, &m) != 2 || m < 1 || m > 12)
-            continue;
-        int64_t from = monthStart(y, m), to = m == 12 ? monthStart(y + 1, 1) : monthStart(y, m + 1);
-        if (to <= since || from >= until) continue;
-        if (!first && !sleepFor(150, cancel)) return false;
-        first = false;
-        char label[32];
-        std::snprintf(label, sizeof label, "chess.com · %04d/%02d", y, m);
-        auto mb = get(url, {}, err, cancel);
-        if (!mb) return false;
-        auto mj = json::parse(*mb, nullptr, false);
-        if (mj.is_discarded() || !mj.contains("games") || !mj["games"].is_array()) continue;
-        std::vector<GameRow> out;
-        for (auto& x : mj["games"]) {
-            int64_t end = num(x, "end_time");
-            if (end < since || end >= until || str(x, "rules") != "chess") continue;
-            GameRow g;
-            g.profileId = pid;
-            g.site = "chess.com";
-            g.url = str(x, "url");
-            g.siteId = str(x, "uuid");
-            if (g.siteId.empty()) g.siteId = g.url;
-            g.pgn = str(x, "pgn");
-            g.playedAt = end;
-            g.timeClass = str(x, "time_class");
-            if (x.contains("white") && x["white"].is_object())
-                g.white = str(x["white"], "username"), g.whiteElo = (int)num(x["white"], "rating");
-            if (x.contains("black") && x["black"].is_object())
-                g.black = str(x["black"], "username"), g.blackElo = (int)num(x["black"], "rating");
-            if (auto eco = str(x, "eco"); !eco.empty()) {
-                // "Italian-Game-Two-Knights...4.d3" -> "Italian Game Two Knights": drop move suffixes
-                auto slug = eco.substr(eco.find_last_of('/') + 1);
-                slug = slug.substr(0, slug.find("..."));
-                for (size_t a = 0, b; a < slug.size() && !std::isdigit((unsigned char)slug[a]); a = b + 1) {
-                    b = std::min(slug.find('-', a), slug.size());
-                    g.opening += (g.opening.empty() ? "" : " ") + slug.substr(a, b - a);
-                }
+std::vector<GameRow> parseChessComMonth(const std::string& body, const Account& acc, int64_t pid, int64_t since,
+                                        int64_t until, bool* ok) {
+    std::vector<GameRow> out;
+    auto mj = json::parse(body, nullptr, false);
+    bool valid = !mj.is_discarded() && mj.is_object() && mj.contains("games") && mj["games"].is_array();
+    if (ok) *ok = valid;
+    if (!valid) return out;
+    for (auto& x : mj["games"]) {
+        if (!x.is_object()) continue;
+        int64_t end = num(x, "end_time");
+        if (end < since || end >= until || str(x, "rules") != "chess") continue;
+        GameRow g;
+        g.profileId = pid;
+        g.site = "chess.com";
+        g.url = str(x, "url");
+        g.siteId = str(x, "uuid");
+        if (g.siteId.empty()) g.siteId = g.url;
+        g.pgn = str(x, "pgn");
+        g.playedAt = end;
+        g.timeClass = str(x, "time_class");
+        if (x.contains("white") && x["white"].is_object())
+            g.white = str(x["white"], "username"), g.whiteElo = (int)num(x["white"], "rating");
+        if (x.contains("black") && x["black"].is_object())
+            g.black = str(x["black"], "username"), g.blackElo = (int)num(x["black"], "rating");
+        if (auto eco = str(x, "eco"); !eco.empty()) {
+            // "Italian-Game-Two-Knights...4.d3" -> "Italian Game Two Knights": drop move suffixes
+            auto slug = eco.substr(eco.find_last_of('/') + 1);
+            slug = slug.substr(0, slug.find("..."));
+            for (size_t a = 0, b; a < slug.size() && !std::isdigit((unsigned char)slug[a]); a = b + 1) {
+                b = std::min(slug.find('-', a), slug.size());
+                g.opening += (g.opening.empty() ? "" : " ") + slug.substr(a, b - a);
             }
-            auto pg = fillFromPgn(g, acc);
-            if (!pg) continue;
-            // "Play vs Coach" (Coach-Magnus), "Play vs Bot", "vs Computer"
-            g.vsBot = isBotGame(*pg, g.userColor);
-            g.countsInStats = g.userColor >= 0 && !g.vsBot;
-            out.push_back(std::move(g));
         }
-        sink(label, out);
+        if (g.siteId.empty()) continue;
+        auto pg = fillFromPgn(g, acc);
+        if (!pg) continue;
+        // "Play vs Coach" (Coach-Magnus), "Play vs Bot", "vs Computer"
+        g.vsBot = isBotGame(*pg, g.userColor);
+        g.countsInStats = g.userColor >= 0 && !g.vsBot;
+        out.push_back(std::move(g));
     }
-    return true;
+    return out;
 }
 
-bool fetchLichess(const Account& acc, int64_t pid, int64_t since, int64_t until, std::string* err,
-                  const std::atomic<bool>* cancel, const Sink& sink) {
+std::vector<GameRow> parseLichessGames(const std::string& body, const Account& acc, int64_t pid,
+                                       const std::atomic<bool>* cancel) {
     std::vector<GameRow> out;
-    sink("lichess · " + acc.username, out);
-    std::string url = "https://lichess.org/api/games/user/" + acc.username + "?since=" + std::to_string(since * 1000) +
-                      "&until=" + std::to_string(until * 1000) +
-                      "&pgnInJson=true&clocks=true&opening=true"
-                      "&perfType=ultraBullet,bullet,blitz,rapid,classical,correspondence";
-    auto body = get(url, {"Accept: application/x-ndjson"}, err, cancel);
-    if (!body) return false;
     size_t pos = 0;
-    while (pos < body->size()) {
-        if (cancel && *cancel) return false;
-        size_t nl = body->find('\n', pos);
-        if (nl == std::string::npos) nl = body->size();
-        auto x = json::parse(body->begin() + pos, body->begin() + nl, nullptr, false);
+    while (pos < body.size()) {
+        if (cancel && *cancel) break;
+        size_t nl = body.find('\n', pos);
+        if (nl == std::string::npos) nl = body.size();
+        auto x = json::parse(body.begin() + pos, body.begin() + nl, nullptr, false);
         pos = nl + 1;
         if (x.is_discarded() || !x.is_object() || str(x, "variant") != "standard") continue;
         GameRow g;
@@ -237,6 +235,63 @@ bool fetchLichess(const Account& acc, int64_t pid, int64_t since, int64_t until,
         g.countsInStats = g.userColor >= 0 && !g.vsBot;
         out.push_back(std::move(g));
     }
+    return out;
+}
+
+namespace {
+
+using Sink = std::function<void(const std::string& status, std::vector<GameRow>& games)>;
+
+bool fetchChessCom(const Account& acc, int64_t pid, int64_t since, int64_t until, std::string* err,
+                   const std::atomic<bool>* cancel, const Sink& sink) {
+    std::string base = "https://api.chess.com/pub/player/" + lower(acc.username);
+    auto body = get(base + "/games/archives", {}, err, cancel);
+    if (!body) return false;
+    auto j = json::parse(*body, nullptr, false);
+    if (j.is_discarded() || !j.contains("archives") || !j["archives"].is_array()) {
+        if (err) *err = "chess.com: bad archive list";
+        return false;
+    }
+    bool first = true;
+    for (auto& a : j["archives"]) {
+        if (cancel && *cancel) return false;
+        if (!a.is_string()) continue;
+        std::string url = a.get<std::string>();
+        int y = 0, m = 0;
+        auto s = url.rfind("/games/");
+        if (s == std::string::npos || std::sscanf(url.c_str() + s, "/games/%d/%d", &y, &m) != 2 || m < 1 || m > 12)
+            continue;
+        int64_t from = monthStart(y, m), to = m == 12 ? monthStart(y + 1, 1) : monthStart(y, m + 1);
+        if (to <= since || from >= until) continue;
+        if (!first && !sleepFor(150, cancel)) return false;
+        first = false;
+        char label[32];
+        std::snprintf(label, sizeof label, "chess.com · %04d/%02d", y, m);
+        auto mb = get(url, {}, err, cancel);
+        if (!mb) return false;
+        bool ok = false;
+        auto out = parseChessComMonth(*mb, acc, pid, since, until, &ok);
+        if (!ok) {  // a skipped month would be marked synced and never fetched again
+            if (err) *err = "chess.com: bad response for " + url.substr(s + 7);
+            return false;
+        }
+        sink(label, out);
+    }
+    return true;
+}
+
+bool fetchLichess(const Account& acc, int64_t pid, int64_t since, int64_t until, std::string* err,
+                  const std::atomic<bool>* cancel, const Sink& sink) {
+    std::vector<GameRow> out;
+    sink("lichess · " + acc.username, out);
+    std::string url = "https://lichess.org/api/games/user/" + acc.username + "?since=" + std::to_string(since * 1000) +
+                      "&until=" + std::to_string(until * 1000) +
+                      "&pgnInJson=true&clocks=true&opening=true"
+                      "&perfType=ultraBullet,bullet,blitz,rapid,classical,correspondence";
+    auto body = get(url, {"Accept: application/x-ndjson"}, err, cancel);
+    if (!body) return false;
+    out = parseLichessGames(*body, acc, pid, cancel);
+    if (cancel && *cancel) return false;
     sink("lichess · " + acc.username, out);
     return true;
 }
@@ -256,16 +311,19 @@ std::optional<std::string> httpGet(const std::string& url, const std::vector<std
 }
 
 bool httpDownload(const std::string& url, const std::string& path, std::string* err) {
-    auto out = runCurl({"-o", path, "-w", "\n%{http_code}", url});
+    int rc = 0;
+    auto out = runCurl({"-o", path, "-w", "\n%{http_code}", url}, &rc);
     if (!out) {
         if (err) *err = "could not run curl";
         return false;
     }
     int code = splitCode(*out);
-    if (code >= 200 && code < 300) return true;
+    if (rc == 0 && code >= 200 && code < 300) return true;  // rc != 0 on 2xx: truncated (disk full, timeout)
     std::error_code ec;
     std::filesystem::remove(path, ec);
-    if (err) *err = code == 404 ? "not found" : code ? "HTTP " + std::to_string(code) : "network error";
+    if (err) *err = code == 404 ? "not found" : rc == 23 ? "could not write the file (disk full?)"
+                  : code >= 200 && code < 300 ? "download failed (curl " + std::to_string(rc) + ")"
+                  : code ? "HTTP " + std::to_string(code) : "network error";
     return false;
 }
 
@@ -369,6 +427,7 @@ void Syncer::start(Store& store, const Profile& p, bool older, const Openings* b
                                [&](const std::string& st, std::vector<GameRow>& v) {
                                    d->set(&d->status, st);
                                    for (auto& g : v) {
+                                       if (d->cancel) return;  // quitting: the account's sync state isn't saved below
                                        if (book) {
                                            auto gs = parsePgn(g.pgn);
                                            if (auto* o = gs.empty() ? nullptr : book->of(gs[0])) g.eco = o->eco, g.opening = o->name;
@@ -379,7 +438,7 @@ void Syncer::start(Store& store, const Profile& p, bool older, const Openings* b
                                        maxSeen = std::max(maxSeen, g.playedAt);
                                    }
                                });
-            if (ok) store.setAccountSync(acc.id, std::max(acc.newest, maxSeen), acc.oldest ? std::min(acc.oldest, since) : since);
+            if (ok && !d->cancel) store.setAccountSync(acc.id, std::max(acc.newest, maxSeen), acc.oldest ? std::min(acc.oldest, since) : since);
             else if (!d->cancel) d->set(&d->error, acc.site + " (" + acc.username + "): " + err);
         }
         d->set(&d->status, "");

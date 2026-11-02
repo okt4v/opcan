@@ -1,0 +1,43 @@
+# keybinds: rebind "Return to the game line" to B, steal N from Next mistake, Esc cancels, Backspace clears, ctrl chord; then B works in the review and the hint follows
+#needs-db
+#env OPCAN_PROFILE=2 OPCAN_PAGE=settings OPCAN_SETTINGS_TAB=4
+wait 1s
+click 1128 331
+wait 3
+shot keys-capture.png
+key B
+wait 3
+click 1290 220
+wait 2
+key N
+wait 3
+shot keys-steal.png
+click 1128 183
+wait 2
+key Escape
+wait 2
+click 1290 331
+wait 2
+key ctrl+B
+wait 2
+click 1290 220
+wait 2
+key Backspace
+wait 3
+shot keys-edited.png
+# into the newest game (user is black: board flipped): a2-a3 variation by click-click, then B returns to the game line
+click 75 84
+wait 10
+click 600 155
+wait 1s
+click 1166 840
+wait 10
+key Home
+wait 3
+click 884 207
+click 884 304
+wait 20
+shot keys-variation.png
+key B
+wait 10
+shot keys-back.png

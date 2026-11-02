@@ -65,9 +65,17 @@ void App::Impl::drawEditorBoard(float size) {
             if (sel || hov) dl->AddRectFilled({a.x + 2, a.y + 2}, {a.x + cell - 2, a.y + cell - 2}, sel ? alpha(theme::accent, 140) : alpha(theme::sqDark, 90), 6);
             if (piece >= 0 && piece < 12) dl->AddImage(tex(piece), {a.x + 4, a.y + 4}, {a.x + cell - 4, a.y + cell - 4});
             else if (piece == kEraser) eraserIcon(dl, {a.x + cell / 2, a.y + cell / 2}, cell * 0.2f, theme::rgb(0x3a3e46));
-            else {  // hand: move pieces only
-                dl->AddCircle({a.x + cell / 2, a.y + cell / 2}, cell * 0.2f, theme::rgb(0x3a3e46), 0, 2);
-                dl->AddLine({a.x + cell * 0.36f, a.y + cell * 0.64f}, {a.x + cell * 0.64f, a.y + cell * 0.36f}, theme::rgb(0x3a3e46), 2);
+            else {  // hand: move pieces only; a four-way arrow (a slashed circle read as "forbidden")
+                ImVec2 c{a.x + cell / 2, a.y + cell / 2};
+                float r = cell * 0.24f, hd = cell * 0.08f;
+                ImU32 ink = theme::rgb(0x3a3e46);
+                dl->AddLine({c.x - r, c.y}, {c.x + r, c.y}, ink, 2);
+                dl->AddLine({c.x, c.y - r}, {c.x, c.y + r}, ink, 2);
+                for (ImVec2 d : {ImVec2{1, 0}, ImVec2{-1, 0}, ImVec2{0, 1}, ImVec2{0, -1}}) {
+                    ImVec2 tip{c.x + d.x * (r + 1), c.y + d.y * (r + 1)}, n{-d.y, d.x};
+                    dl->AddTriangleFilled(tip, {tip.x - d.x * hd + n.x * hd, tip.y - d.y * hd + n.y * hd},
+                                          {tip.x - d.x * hd - n.x * hd, tip.y - d.y * hd - n.y * hd}, ink);
+                }
             }
             if (hov) ImGui::SetTooltip("%s", piece == kEraser ? "Eraser: click a piece to remove it"
                                               : piece < 0     ? "Move pieces (no placing)"

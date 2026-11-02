@@ -270,9 +270,11 @@ void drawIcon(ImDrawList* dl, ImVec2 c, Icon i, ImU32 col) {
 }
 
 App::Impl::~Impl() {
+    saveLayout();  // a layout changed in the last 5 s would be lost otherwise
     // the stats thread uses the store and the book: stop it before they go away
     if (statsCancel) *statsCancel = true;
-    for (int i = 0; i < 400 && statsJob.busy(); i++) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    // ...and the explorer thread reads the store too (not cancellable, but quick)
+    for (int i = 0; i < 400 && (statsJob.busy() || ex.job.busy()); i++) std::this_thread::sleep_for(std::chrono::milliseconds(5));
     for (auto& [k, t] : photos)
         if (t) {
             GLuint id = (GLuint)t;
@@ -372,6 +374,7 @@ std::string App::Impl::importAvatar(const std::string& src) {
 // ---------- profiles ----------
 
 void App::Impl::selectProfile(const Profile& p) {
+    saveLayout();  // the previous profile's pending layout change
     prof = p;
     loadPrefs();
     applyPrefs();
@@ -401,6 +404,7 @@ void App::Impl::leaveProfile() {
     game.reset();
     gameId = 0;
     meta.reset();
+    saveLayout();
     prof.reset();
     manage = false;
     view = View::Library;
@@ -486,8 +490,8 @@ void App::Impl::drawProfiles() {
         ImGui::PopFont();
         if (click) {
             if (isAdd) openEditor(nullptr);
+            else if (!p->pin.empty()) pinFor = p->id, pinEdit = manage, pinEntry.clear();  // editing could remove the PIN
             else if (manage) openEditor(p);
-            else if (!p->pin.empty()) pinFor = p->id, pinEntry.clear();
             else selectProfile(*p);
         }
     }
@@ -518,6 +522,7 @@ void App::Impl::drawPinModal() {
     auto it = std::find_if(profiles.begin(), profiles.end(), [&](auto& p) { return p.id == pinFor; });
     auto close = [&] {
         pinFor = 0;
+        pinEdit = false;
         pinEntry.clear();
         ImGui::CloseCurrentPopup();
     };
@@ -559,9 +564,10 @@ void App::Impl::drawPinModal() {
     if (pinEntry.size() == 4) {
         if (Store::hashPin(pinEntry) == it->pin) {
             Profile chosen = *it;
+            bool edit = pinEdit;
             close();
             ImGui::EndPopup();
-            return selectProfile(chosen);
+            return edit ? openEditor(&chosen) : selectProfile(chosen);
         }
         pinErrorAt = ImGui::GetTime();
         pinEntry.clear();
@@ -806,7 +812,9 @@ void App::Impl::drawEditor() {
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, theme::panel2);
     ImGui::PushStyleColor(ImGuiCol_HeaderActive, theme::panel2);
     ImGui::PushFont(f.bold, 15);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {4, 6});  // (nearly) flush left with the other section titles
     bool adv = ImGui::CollapsingHeader("Advanced");
+    ImGui::PopStyleVar();
     ImGui::PopFont();
     ImGui::PopStyleColor(3);
     if (adv) {
@@ -932,6 +940,10 @@ void App::Impl::refreshLibrary() {
     rows = store.games(prof->id, filter);
     total = store.countGames(prof->id, filter);
     tagList = store.tags(prof->id);
+    std::ranges::sort(tagList, [](const std::string& a, const std::string& b) {  // case-insensitive: "endgame" before "Test"
+        return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(),
+                                            [](unsigned char x, unsigned char y) { return std::tolower(x) < std::tolower(y); });
+    });
     GameFilter all;
     all.includeBots = true;
     allGames = store.countGames(prof->id, all);
@@ -1086,7 +1098,7 @@ void App::Impl::drawGameRow(const GameRow& g, float w) {
     const float h = 52;
     ImGui::SetNextItemAllowOverlap();
     bool click = ImGui::InvisibleButton("row", {w, h});
-    bool hov = ImGui::IsItemHovered();
+    bool hov = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenOverlappedByItem);  // stays lit under the star
     GameRow& row = const_cast<GameRow&>(g);
     if (ImGui::BeginPopupContextItem("ctx")) {
         drawRowMenu(row);
@@ -1252,6 +1264,7 @@ void App::Impl::drawLibraryModals() {
     if (ImGui::BeginPopupModal("Tags & notes", nullptr, ImGuiWindowFlags_NoSavedSettings)) {
         ImGui::TextDisabled("Tags (comma separated)");
         ImGui::SetNextItemWidth(-1);
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
         ImGui::InputTextWithHint("##tags", "e.g. endgame, tournament", editTags, sizeof editTags);
         ImGui::Dummy({0, 4});
         ImGui::TextDisabled("Notes");

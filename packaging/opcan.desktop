@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=opcan
+GenericName=Chess Analysis
+Comment=Review and analyse your chess games
+Exec=opcan %F
+Icon=opcan
+Terminal=false
+Categories=Game;BoardGame;
+Keywords=chess;analysis;stockfish;pgn;
+MimeType=application/x-chess-pgn;application/vnd.chess-pgn;
+StartupWMClass=opcan

@@ -1,0 +1,2 @@
+// Windows exe icon; GLFW also picks up GLFW_ICON as the default window icon
+GLFW_ICON ICON "@OPCAN_ICO@"

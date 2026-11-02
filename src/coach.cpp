@@ -1549,6 +1549,11 @@ struct Coach::Impl {
             q.pop_front();
             l.unlock();
             run(*job);
+            // others dereference `running` under m: clear it there before the job can be freed
+            l.lock();
+            running = nullptr;
+            l.unlock();
+            job.reset();
         }
         freeModel();
     }

@@ -1,0 +1,40 @@
+# board editor: palette placement, drag, right-click delete, drag-off delete, en passant after a double push, FEN field (bad, good), Play vs engine from here
+#needs-db
+#env OPCAN_PROFILE=2 OPCAN_PAGE=editor
+wait 1s
+shot ed-0.png
+# white queen from the palette: place on e4, click again removes, place on d5, right-click d5 removes
+click 412 816
+wait 2
+click 577 513
+wait 2
+click 577 513
+wait 2
+click 502 438
+wait 2
+shot ed-queen.png
+rclick 502 438
+wait 2
+# hand tool, then drag the a1 rook off the board, and e2-e4 (double push: Black to move, ep e3)
+click 732 136
+wait 2
+drag 277 738 1000 820 8
+wait 2
+drag 577 663 577 513 8
+wait 5
+shot ed-moves.png
+# FEN: garbage keeps the board and warns, then a valid FEN loads
+click 1083 386
+key ctrl+A
+type garbage
+wait 5
+shot ed-badfen.png
+key ctrl+A
+type 8/8/8/4k3/8/8/4K3/7R w - - 0 1
+wait 5
+shot ed-goodfen.png
+key Enter
+wait 2
+click 1083 562
+wait 1s
+shot ed-play-setup.png

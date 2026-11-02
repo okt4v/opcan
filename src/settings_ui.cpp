@@ -350,7 +350,7 @@ void App::Impl::settingsAppearance(float) {
     static std::vector<std::pair<std::string, bool>> sets;
     static double listedAt = -10;
     if (ImGui::GetTime() - listedAt > 2) {
-        sets = listSets(exeDir() + "/assets/pieces", dataDir + "/pieces", "wK.svg");
+        sets = listSets(resDir() + "/assets/pieces", dataDir + "/pieces", "wK.svg");
         listedAt = ImGui::GetTime();
     }
     int cur = -1;
@@ -359,7 +359,7 @@ void App::Impl::settingsAppearance(float) {
     float scale = ImGui::GetIO().DisplayFramebufferScale.x;
     pick = tiles("sets", (int)sets.size(), 96, 86, cur, [&](int i, ImVec2 a, ImVec2 b) {
         auto* dl = ImGui::GetWindowDrawList();
-        std::string dir = sets[i].second ? dataDir + "/pieces/" + sets[i].first : exeDir() + "/assets/pieces/" + sets[i].first;
+        std::string dir = sets[i].second ? dataDir + "/pieces/" + sets[i].first : resDir() + "/assets/pieces/" + sets[i].first;
         float s = 40, cx = (a.x + b.x) / 2;
         int px = (int)std::lround(s * scale);
         dl->AddImage(svgTexture(dir + "/wN.svg", px), {cx - s + 2, a.y + 8}, {cx + 2, a.y + 8 + s});
@@ -454,7 +454,7 @@ void App::Impl::settingsSound(float) {
     static std::vector<std::pair<std::string, bool>> sets;
     static double listedAt = -10;
     if (ImGui::GetTime() - listedAt > 2) {
-        sets = listSets(exeDir() + "/assets/sounds", userDir, nullptr);
+        sets = listSets(resDir() + "/assets/sounds", userDir, nullptr);
         listedAt = ImGui::GetTime();
     }
     int cur = -1;
@@ -565,13 +565,18 @@ void App::Impl::settingsKeys(float) {
             auto& slot = prefs.keys[capture / 2][capture % 2];
             if (k == ImGuiKey_Escape && !mods) {}
             else if ((k == ImGuiKey_Backspace || k == ImGuiKey_Delete) && !mods) slot = 0;
-            else slot = k | mods;
+            else {
+                slot = k | mods;
+                for (int j = 0; j < kActCount; j++)  // a chord does one thing: take it from any other action
+                    for (auto& o : prefs.keys[j])
+                        if (&o != &slot && o == slot) o = 0, notify(chordName(slot) + " moved from \"" + kActs[j].label + "\"");
+            }
             capture = -1;
             prefsDirty = true;
             break;
         }
     }
-    cardBegin("keys", "Keyboard shortcuts", "Click a shortcut and press the new key combination. Esc cancels, Backspace clears.");
+    cardBegin("keys", "Keyboard shortcuts", "Click a shortcut and press the new key combination. Esc cancels, Backspace clears; a key in use moves here.");
     float cw = std::min(150.f, ImGui::GetContentRegionAvail().x * 0.24f);
     ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, {6, 5});
     if (ImGui::BeginTable("keys", 3, ImGuiTableFlags_BordersInnerH)) {

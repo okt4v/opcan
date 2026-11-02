@@ -58,6 +58,7 @@ const char* kGameCols =
     "id,profile_id,site,site_id,url,white,black,white_elo,black_elo,result,played_at,time_class,eco,opening,"
     "user_color,vs_bot,counts,favorite,tags,notes,review_depth,acc_white,acc_black,est_white,est_black,"
     "brill_white,brill_black,great_white,great_black";
+constexpr int kSchemaVersion = 2;  // PRAGMA user_version after all migrations
 constexpr int kGameColN = 29;  // columns in kGameCols; extra selected columns start here
 
 GameRow readGame(Stmt& q) {
@@ -91,7 +92,8 @@ std::string likeEscape(const std::string& s) {
 
 json scoreJ(const Score& s) { return {s.cp, s.mate, s.mated ? 1 : 0}; }
 
-std::optional<std::vector<PosEval>> parseEvals(const std::string& text) {
+// Both parsers return nullopt for anything malformed (a corrupt or hand-edited row must not crash).
+std::optional<std::vector<PosEval>> parseEvals(const std::string& text) try {
     auto j = json::parse(text, nullptr, false);
     if (!j.is_array()) return std::nullopt;
     std::vector<PosEval> r;
@@ -106,9 +108,11 @@ std::optional<std::vector<PosEval>> parseEvals(const std::string& text) {
         r.push_back(std::move(p));
     }
     return r;
+} catch (const json::exception&) {
+    return std::nullopt;
 }
 
-std::optional<ReviewSummary> parseSummary(const std::string& text) {
+std::optional<ReviewSummary> parseSummary(const std::string& text) try {
     auto j = json::parse(text, nullptr, false);
     if (!j.is_object()) return std::nullopt;
     ReviewSummary s;
@@ -119,6 +123,8 @@ std::optional<ReviewSummary> parseSummary(const std::string& text) {
     for (auto& v : j["cls"]) s.cls.push_back((uint8_t)v.get<int>());
     for (auto& v : j["wp"]) s.wpWhite.push_back(v.get<float>());
     return s;
+} catch (const json::exception&) {
+    return std::nullopt;
 }
 
 }  // namespace
@@ -268,6 +274,11 @@ bool Store::open(const std::string& path) {
         Stmt q(d->db, "PRAGMA user_version");
         if (q.row()) ver = (int)q.i(0);
     }
+    if (ver > kSchemaVersion) {  // written by a newer opcan: don't touch it
+        d->err = "the database is from a newer version of opcan (schema " + std::to_string(ver) + ")";
+        sqlite3_close(d->db), d->db = nullptr;
+        return false;
+    }
     if (ver < 1) {
         if (!d->exec("BEGIN")) return false;
         if (!d->exec(kSchema) || !d->exec("PRAGMA user_version=1")) return d->exec("ROLLBACK"), false;
@@ -318,7 +329,7 @@ void Store::saveProfile(Profile& p) {
     if (p.id == 0) {
         Stmt q(d->db, "INSERT INTO profiles(name,avatar,pin,guest) VALUES(?,?,?,?)");
         q.bind(p.name, p.avatar, p.pin, p.guest).run();
-        p.id = sqlite3_last_insert_rowid(d->db);
+        p.id = (d->db ? sqlite3_last_insert_rowid(d->db) : 0);
     } else {
         Stmt q(d->db, "UPDATE profiles SET name=?,avatar=?,pin=?,guest=? WHERE id=?");
         q.bind(p.name, p.avatar, p.pin, p.guest, p.id).run();
@@ -344,7 +355,7 @@ void Store::saveProfile(Profile& p) {
         } else {
             Stmt q(d->db, "INSERT INTO accounts(profile_id,site,username) VALUES(?,?,?)");
             q.bind(p.id, a.site, a.username).run();
-            a.id = sqlite3_last_insert_rowid(d->db), a.newest = a.oldest = 0;
+            a.id = (d->db ? sqlite3_last_insert_rowid(d->db) : 0), a.newest = a.oldest = 0;
         }
     }
     d->noteErr();
@@ -388,7 +399,7 @@ int64_t Store::upsertGame(GameRow& g, bool* inserted) {
         q.bind(g.profileId, g.site, g.siteId, g.url, g.pgn, g.white, g.black, g.whiteElo, g.blackElo, g.result,
                g.playedAt, g.timeClass, g.eco, g.opening, g.userColor, g.vsBot, g.countsInStats && !g.vsBot,
                g.favorite, g.tags, g.notes).run();
-        id = sqlite3_last_insert_rowid(d->db);
+        id = (d->db ? sqlite3_last_insert_rowid(d->db) : 0);
     }
     d->noteErr();
     if (inserted) *inserted = !existed;
