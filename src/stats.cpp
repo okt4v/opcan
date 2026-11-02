@@ -1,6 +1,7 @@
 #include "stats.hpp"
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <ctime>
 #include <map>
@@ -25,6 +26,7 @@ namespace {
 constexpr int kRolling = 10, kMaxExamples = 12;
 constexpr double kTroubleFrac = 0.1, kHungLoss = 10;
 constexpr int kTacticGain = 2, kTacticPlies = 8;
+constexpr int kTrendGames = 50, kTrendMinGames = 5, kTrendShortMate = 5;
 
 std::string lower(std::string s) {
     for (auto& c : s) c = (char)std::tolower((unsigned char)c);
@@ -56,6 +58,20 @@ int outcome(const GameRow& g) {
 
 bool isBad(Cls c) { return c == Cls::Inaccuracy || c == Cls::Mistake || c == Cls::Miss || c == Cls::Blunder; }
 
+// Material the mover's best line wins (pawns), compared after the opponent's replies (even plies) only.
+int lineGain(const Board& before, const PosEval& e) {
+    Color me = before.sideToMove();
+    int start = material(before, me) - material(before, ~me), best = start;
+    Board b = before;
+    for (int k = 0; k < (int)e.pv.size() && k < kTacticPlies; k++) {
+        Move m = legalUci(b, e.pv[k]);
+        if (m == Move::NO_MOVE) break;
+        b.makeMove(m);
+        if (k % 2 == 1) best = material(b, me) - material(b, ~me);
+    }
+    return best - start;
+}
+
 // Mistake pattern of the mover's bad move from boards[i] (evals[i] before, evals[i+1] after).
 Pattern classify(const Board& before, const Board& after, const PosEval& e, const PosEval& nx, Cls cls) {
     bool wasMated = e.best.mated || e.best.mate < 0;
@@ -70,17 +86,7 @@ Pattern classify(const Board& before, const Board& after, const PosEval& e, cons
             return Pattern::HungPiece;
     }
     if (cls == Cls::Miss) return Pattern::MissedTactic;
-    // best line wins material: compare after the opponent's replies (even plies) only
-    Color me = before.sideToMove();
-    int start = material(before, me) - material(before, ~me), best = start;
-    Board b = before;
-    for (int k = 0; k < (int)e.pv.size() && k < kTacticPlies; k++) {
-        Move m = legalUci(b, e.pv[k]);
-        if (m == Move::NO_MOVE) break;
-        b.makeMove(m);
-        if (k % 2 == 1) best = material(b, me) - material(b, ~me);
-    }
-    if (best - start >= kTacticGain) return Pattern::MissedTactic;
+    if (lineGain(before, e) >= kTacticGain) return Pattern::MissedTactic;
     return Pattern::Positional;
 }
 
@@ -294,4 +300,89 @@ Stats computeStats(Store& store, int64_t profileId, const StatsFilter& f, const 
         s.renamedOpenings = (int)renames.size();
     }
     return s;
+}
+
+// ---------- trends ----------
+
+const char* trendAreaName(TrendArea a) {
+    static const char* n[] = {"Opening", "Tactics", "Strategy"};
+    return a < TrendArea::Count ? n[(int)a] : "?";
+}
+
+GameMetrics gameMetrics(const Game& g, const std::vector<PosEval>& evals, const std::vector<uint8_t>& cls, int uc,
+                        double openingAcc) {
+    GameMetrics m;
+    if (uc < 0 || g.nodes.empty()) return m;
+    m.v[0] = openingAcc >= 0 ? openingAcc : -1;
+    auto ml = g.mainline();
+    size_t n = std::min(ml.size(), evals.size());
+    Board before(g.nodes[0].fen);
+    Phase phase = Opening;
+    double sum[2] = {};
+    int cnt[2] = {};
+    for (size_t i = 0; i + 1 < n; i++) {
+        Board after = before;
+        after.makeMove(g.nodes[ml[i + 1]].move);
+        Cls c = i < cls.size() ? (Cls)cls[i] : Cls::None;
+        phase = phaseAfter(after, (int)i, c == Cls::Book, phase);
+        const PosEval &e = evals[i], &nx = evals[i + 1];
+        bool mine = (before.sideToMove() == Color::WHITE ? 0 : 1) == uc;
+        bool lost = e.best.mated || e.best.mate < 0;  // already getting mated: nothing to judge
+        if (mine && !lost && c != Cls::Book && c != Cls::Forced && c != Cls::None) {
+            double acc = moveAccuracy(winPercent(e.best), 100 - winPercent(nx.best));
+            // a tactic on the board: a short mate, a line winning material, or the move walked into one
+            bool tactic = (e.best.mate > 0 && e.best.mate <= kTrendShortMate) || nx.best.mate > 0 ||
+                          lineGain(before, e) >= kTacticGain || (isBad(c) && classify(before, after, e, nx, c) != Pattern::Positional);
+            if (tactic) sum[0] += acc, cnt[0]++;
+            else if (phase != Opening) sum[1] += acc, cnt[1]++;
+        }
+        before = std::move(after);
+    }
+    if (cnt[0] >= 2) m.v[1] = sum[0] / cnt[0];
+    if (cnt[1] >= 5) m.v[2] = sum[1] / cnt[1];
+    return m;
+}
+
+// ponytail: loads every counted game each call (~0.3 s for hundreds, on a worker); cache per profile if it grows
+GameTrends computeTrends(Store& store, int64_t profileId, int64_t excludeGameId, const GameMetrics& game) {
+    GameTrends t;
+    auto games = store.statsGames(profileId, GameFilter{});  // oldest first
+    std::vector<double> xs[3];
+    int used = 0;
+    for (auto it = games.rbegin(); it != games.rend() && used < kTrendGames; ++it) {
+        auto& row = it->row;
+        if (row.id == excludeGameId || row.userColor < 0 || !it->summary || it->evals.empty()) continue;
+        auto gs = parsePgn(row.pgn);
+        if (gs.empty()) continue;
+        auto m = gameMetrics(gs[0], it->evals, it->summary->cls, row.userColor, it->summary->phaseAccuracy[row.userColor][0]);
+        used++;
+        for (int k = 0; k < 3; k++)
+            if (m.v[k] >= 0) xs[k].push_back(m.v[k]);
+    }
+    for (int k = 0; k < 3; k++) {
+        Trend& r = t.t[k];
+        r.game = game.v[k];
+        r.n = (int)xs[k].size();
+        if (r.n < kTrendMinGames) continue;
+        double mean = 0, var = 0;
+        for (double x : xs[k]) mean += x;
+        mean /= r.n;
+        for (double x : xs[k]) var += (x - mean) * (x - mean);
+        r.usual = mean;
+        if (r.game < 0) continue;
+        double band = std::max(3.0, 0.5 * std::sqrt(var / r.n));  // within half a standard deviation: as usual
+        r.verdict = r.game > mean + band ? 1 : r.game < mean - band ? -1 : 0;
+    }
+    return t;
+}
+
+std::string trendSentence(TrendArea a, const Trend& t) {
+    if (t.game < 0) return "";
+    if (t.verdict == -2) return "";
+    static const char* s[3][3] = {
+        {"Your opening was weaker than usual.", "You played the opening like you usually do.", "You played the opening better than usual."},
+        {"You handled the tactics worse than usual.", "You handled the tactics like you usually do.", "You handled the tactics better than usual."},
+        {"Your positional play was weaker than usual.", "Your positional play was like it usually is.", "Your positional play was better than usual."},
+    };
+    return s[(int)a][t.verdict + 1];
 }

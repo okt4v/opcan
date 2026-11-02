@@ -367,6 +367,7 @@ void App::Impl::computeSpent() {
 
 void App::Impl::setReview(const std::vector<PosEval>& evals) {
     review = buildReview(*game, evals, book);
+    trends.reset(), trendJob.reset(), trendsAsked = false;
     if (const char* p = std::getenv("OPCAN_PLY")) {  // dev hook: jump into review at this ply
         view = View::Review;
         cur = review->line[std::clamp(std::atoi(p), 0, (int)review->line.size() - 1)];
@@ -1135,6 +1136,7 @@ void App::Impl::drawSummary() {
         ImGui::TextWrapped("%s  %s", r.openingEco.c_str(), r.openingName.c_str());
         ImGui::PopStyleColor();
     }
+    drawTrends();
     drawKeyMoments();
     ImGui::Dummy({0, 12});
     if (ImGui::GetScrollY() < ImGui::GetScrollMaxY() - 1) {  // more below: fade the bottom edge
@@ -1146,6 +1148,86 @@ void App::Impl::drawSummary() {
     if (accentButton("Start Review", {-1, 40})) {
         view = View::Review;
         go(r.line.size() > 1 ? r.line[1] : 0);
+    }
+}
+
+void App::Impl::updateTrends() {
+    if (auto t = trendJob.take()) trends = std::move(*t);
+    int u = userSide();
+    if (trendsAsked || !review || !prof || u < 0 || review->accuracy[u] < 0) return;
+    trendsAsked = true;
+    std::vector<uint8_t> cls;
+    for (auto& m : review->moves) cls.push_back((uint8_t)m.cls);
+    GameMetrics gm = gameMetrics(*game, review->evals, cls, u, review->phaseAccuracy[u][0]);
+    trendJob.run([st = &store, pid = prof->id, id = meta ? meta->id : 0, gm] { return computeTrends(*st, pid, id, gm); });
+}
+
+std::vector<std::string> App::Impl::trendNotes() {
+    updateTrends();
+    std::vector<std::string> out;
+    for (int k = 0; trends && k < (int)TrendArea::Count; k++) {
+        auto& t = trends->t[k];
+        if (auto s = trendSentence((TrendArea)k, t); !s.empty()) {
+            char buf[80];
+            std::snprintf(buf, sizeof buf, " (%s score %.0f, usually %.0f)", trendAreaName((TrendArea)k), t.game, t.usual);
+            out.push_back(s + buf);
+        }
+    }
+    return out;
+}
+
+// chess.com-style trends: this game's opening / tactics / strategy against the user's last counted games
+void App::Impl::drawTrends() {
+    updateTrends();
+    if (!trendsAsked) return;  // no user side, or too few moves
+    ImGui::Dummy({0, 8});
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
+    ImGui::TextUnformatted("Compared to your usual");
+    ImGui::PopStyleColor();
+    if (!trends) {
+        ImGui::TextDisabled("Comparing with your recent games...");
+        return;
+    }
+    auto* dl = ImGui::GetWindowDrawList();
+    bool any = false;
+    for (int k = 0; k < (int)TrendArea::Count; k++) {
+        auto& t = trends->t[k];
+        std::string s = trendSentence((TrendArea)k, t);
+        if (s.empty()) continue;
+        any = true;
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        float r = 9;
+        ImVec2 c{p.x + r, p.y + 11};
+        ImU32 col = t.verdict > 0 ? theme::win : t.verdict < 0 ? theme::loss : theme::dim;
+        dl->AddCircleFilled(c, r, alpha(col, 50));
+        if (t.verdict == 0) dl->AddLine({c.x - 4, c.y}, {c.x + 4, c.y}, col, 2);
+        else {
+            float d = t.verdict > 0 ? -1.f : 1.f;  // up / down triangle
+            dl->AddTriangleFilled({c.x, c.y + d * 5}, {c.x - 5, c.y - d * 3}, {c.x + 5, c.y - d * 3}, col);
+        }
+        ImGui::Dummy({2 * r + 6, 22});
+        ImGui::SameLine();
+        ImGui::BeginGroup();
+        ImGui::PushFont(f.bold, 0);
+        ImGui::TextUnformatted(trendAreaName((TrendArea)k));
+        ImGui::PopFont();
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
+        ImGui::Text("%.0f  vs  usual %.0f", t.game, t.usual);
+        ImGui::PopStyleColor();
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextUnformatted(s.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::EndGroup();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s score: %.1f this game, %.1f on average over your last %d reviewed games", trendAreaName((TrendArea)k),
+                              t.game, t.usual, t.n);
+        ImGui::Dummy({0, 2});
+    }
+    if (!any) {
+        int n = 0;
+        for (auto& t : trends->t) n = std::max(n, t.n);
+        ImGui::TextDisabled(n < 5 ? "Not enough reviewed games to compare yet." : "Too few moves in this game to compare.");
     }
 }
 

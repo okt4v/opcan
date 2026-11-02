@@ -313,6 +313,7 @@ void App::Impl::coachFrame() {
         FactInput in = coachFacts(m.node);
         if (snap.fen == m.fen) in.liveLines = snap.lines;
         in.uci = true;
+        in.gameNotes = trendNotes();  // whole-game trends: "you played the opening like you usually do"
         Facts f = buildFacts(in);
         // double-check: the facts must describe the position the question was asked on
         auto same = [](const std::string& x, const std::string& y) {  // placement, side, castling, en passant

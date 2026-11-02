@@ -284,7 +284,7 @@ App::Impl::~Impl() {
     // the stats thread uses the store and the book: stop it before they go away
     if (statsCancel) *statsCancel = true;
     // ...and the explorer thread reads the store too (not cancellable, but quick)
-    for (int i = 0; i < 400 && (statsJob.busy() || ex.job.busy()); i++) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    for (int i = 0; i < 400 && (statsJob.busy() || ex.job.busy() || trendJob.busy()); i++) std::this_thread::sleep_for(std::chrono::milliseconds(5));
     for (auto& [k, t] : photos)
         if (t) {
             GLuint id = (GLuint)t;

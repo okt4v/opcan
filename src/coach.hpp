@@ -75,6 +75,7 @@ struct FactInput {
     int userColor = -1;                // 0 white, 1 black: the facts say "you" / "your opponent"; -1 unknown
     bool legacyText = false;           // dev (harness baseline): the old fact sheet text
     bool pieceFacts = true;            // per-piece board facts (attacks, defenders, pins, checks, king safety)
+    std::vector<std::string> gameNotes;  // whole-game trend sentences ("You played the opening like you usually do.")
 };
 struct Facts {
     std::string text;                 // the fact sheet, one fact per line

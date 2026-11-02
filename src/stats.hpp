@@ -1,5 +1,6 @@
 #pragma once
 // Phase 3 stats: pure computation over the stored library (no UI).
+#include "game.hpp"
 #include "openings.hpp"
 #include "store.hpp"
 #include <atomic>
@@ -93,3 +94,25 @@ std::string openingFamily(const std::string& name);
 // differs (chess.com URL names), when renameOpenings is set. Checks *cancel between games.
 Stats computeStats(Store& store, int64_t profileId, const StatsFilter& f, const Openings& book,
                    const std::atomic<bool>* cancel = nullptr, bool renameOpenings = true);
+
+// Trends (like chess.com's): this game's opening / tactics / strategy against the user's usual, i.e. their last
+// 50 counted, reviewed games (bots and aborted games never count).
+enum class TrendArea { Opening, Tactics, Strategy, Count };
+const char* trendAreaName(TrendArea a);
+// The user's per-game scores, -1 where there were too few moves:
+//   opening:  opening-phase accuracy
+//   tactics:  mean move accuracy where a tactic was on the board (a short mate, a line that wins material,
+//             or the move walked into mate / hung a piece); needs 2 such moves
+//   strategy: mean accuracy of the other (non-book, non-forced) moves after the opening; needs 5
+struct GameMetrics { double v[3] = {-1, -1, -1}; };
+GameMetrics gameMetrics(const Game& g, const std::vector<PosEval>& evals, const std::vector<uint8_t>& cls, int userColor,
+                        double openingAccuracy);
+struct Trend {
+    double game = -1, usual = -1;  // usual = mean over the compared games, -1 with fewer than 5
+    int n = 0;                     // compared games with a score
+    int verdict = -2;              // 1 better than usual, 0 as usual (within half a std dev, min 3 points), -1 worse, -2 unknown
+};
+struct GameTrends { Trend t[3]; };
+GameTrends computeTrends(Store& store, int64_t profileId, int64_t excludeGameId, const GameMetrics& game);
+// "You played the opening like you usually do." ("" when unknown)
+std::string trendSentence(TrendArea a, const Trend& t);

@@ -714,6 +714,7 @@ Facts buildFacts(const FactInput& in) {
     Phase ph = phaseAfter(after, std::max(0, in.ply - 1), in.cls == Cls::Book, Opening);
     line(std::string("Game phase: ") + (ph == Opening ? "opening" : ph == Middlegame ? "middlegame" : "endgame") +
          (in.opening.empty() ? "." : ". Opening: " + in.opening + "."));
+    for (auto& n : in.gameNotes) line("Compared with " + std::string(in.userColor >= 0 ? "your" : "the player's") + " usual games: " + n);
     line("Summary: " + f.summary);
     f.text = t;
     return f;

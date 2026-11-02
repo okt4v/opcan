@@ -294,6 +294,12 @@ struct App::Impl {
     int statsRange = 3, statsTc = 0, statsColor = 0, statsAcc = 0;  // UI selections (0 = any/all)
     std::optional<Stats> stats;
     Async<Stats> statsJob;
+    // trends of the open game vs the user's usual (computed once per opened review)
+    Async<GameTrends> trendJob;
+    std::optional<GameTrends> trends;
+    bool trendsAsked = false;
+    void updateTrends();                    // starts / collects the job; call while the review is shown
+    std::vector<std::string> trendNotes();  // facts for Pip, empty until computed
     std::shared_ptr<std::atomic<bool>> statsCancel;
     bool statsStale = true;
     double statsAt = -100;
@@ -357,6 +363,7 @@ struct App::Impl {
     void drawPanel();
     void drawSummary();
     void drawKeyMoments();
+    void drawTrends();  // "Compared to your usual": opening / tactics / strategy
     std::string moveLabel(int n);
     void drawGraph(float w, float h);
     void drawReview();
