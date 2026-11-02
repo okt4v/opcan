@@ -8,6 +8,7 @@ void checkCoach();
 void checkPlay();
 void checkExplorer();
 void checkRobust();
+void checkTrain();
 int main() {
     checkCore();
     checkReview();
@@ -17,5 +18,6 @@ int main() {
     checkPlay();
     checkExplorer();
     checkRobust();
+    checkTrain();
     std::puts("all checks passed");
 }

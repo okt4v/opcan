@@ -58,7 +58,7 @@ const char* kGameCols =
     "id,profile_id,site,site_id,url,white,black,white_elo,black_elo,result,played_at,time_class,eco,opening,"
     "user_color,vs_bot,counts,favorite,tags,notes,review_depth,acc_white,acc_black,est_white,est_black,"
     "brill_white,brill_black,great_white,great_black";
-constexpr int kSchemaVersion = 2;  // PRAGMA user_version after all migrations
+constexpr int kSchemaVersion = 3;  // PRAGMA user_version after all migrations
 constexpr int kGameColN = 29;  // columns in kGameCols; extra selected columns start here
 
 GameRow readGame(Stmt& q) {
@@ -285,6 +285,15 @@ bool Store::open(const std::string& path) {
         if (!d->exec("COMMIT")) return false;
     }
     if (ver < 2 && !d->migrateV2()) return false;
+    if (ver < 3 && !d->exec("BEGIN;"
+                            "CREATE TABLE IF NOT EXISTS cards(id INTEGER PRIMARY KEY, profile_id INTEGER NOT NULL REFERENCES profiles(id) "
+                            "ON DELETE CASCADE, deck TEXT NOT NULL, key TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', "
+                            "fen TEXT NOT NULL, moves TEXT NOT NULL, color INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL "
+                            "DEFAULT '', created INTEGER NOT NULL DEFAULT 0, seen INTEGER NOT NULL DEFAULT 0, due INTEGER NOT "
+                            "NULL DEFAULT 0, interval REAL NOT NULL DEFAULT 0, ease REAL NOT NULL DEFAULT 2.5, reps INTEGER "
+                            "NOT NULL DEFAULT 0, lapses INTEGER NOT NULL DEFAULT 0, UNIQUE(profile_id, deck, key));"
+                            "PRAGMA user_version=3; COMMIT;"))
+        return d->exec("ROLLBACK"), false;
     Stmt q(d->db, "SELECT 1 FROM profiles WHERE guest=1");
     if (!q.row()) return d->exec("INSERT INTO profiles(name,avatar,guest) VALUES('Guest','preset:guest',1)");
     return true;
@@ -603,6 +612,72 @@ std::optional<ReviewSummary> Store::reviewSummary(int64_t gameId) {
         text = q.t(0);
     }
     return parseSummary(text);
+}
+
+namespace {
+std::string joinMoves(const std::vector<std::string>& v) {
+    std::string r;
+    for (auto& m : v) r += (r.empty() ? "" : " ") + m;
+    return r;
+}
+std::vector<std::string> splitMoves(const std::string& s) {
+    std::vector<std::string> r;
+    for (size_t i = 0; i < s.size();) {
+        size_t j = s.find(' ', i);
+        if (j == std::string::npos) j = s.size();
+        if (j > i) r.push_back(s.substr(i, j - i));
+        i = j + 1;
+    }
+    return r;
+}
+}  // namespace
+
+int Store::addCards(const std::vector<Card>& cards) {
+    std::lock_guard l(d->m);
+    int added = 0;
+    d->exec("BEGIN");
+    Stmt q(d->db, "INSERT OR IGNORE INTO cards(profile_id,deck,key,title,fen,moves,color,data,created,due) VALUES(?,?,?,?,?,?,?,?,?,?)");
+    for (auto& c : cards) {
+        sqlite3_reset(q.s), q.n = 0;
+        q.bind(c.profileId, c.deck, c.key, c.title, c.fen, joinMoves(c.moves), c.color, c.data, c.created, c.due).run();
+        added += sqlite3_changes(d->db);
+    }
+    d->exec("COMMIT");
+    d->noteErr();
+    return added;
+}
+
+std::vector<Card> Store::cards(int64_t profileId, const std::string& deckPrefix) {
+    std::lock_guard l(d->m);
+    std::vector<Card> r;
+    Stmt q(d->db, "SELECT id,profile_id,deck,key,title,fen,moves,color,data,created,seen,due,interval,ease,reps,lapses "
+                  "FROM cards WHERE profile_id=? AND deck LIKE ? ESCAPE '\\' ORDER BY id");
+    q.bind(profileId, likeEscape(deckPrefix) + "%");
+    while (q.row()) {
+        Card c;
+        c.id = q.i(0), c.profileId = q.i(1), c.deck = q.t(2), c.key = q.t(3), c.title = q.t(4), c.fen = q.t(5);
+        c.moves = splitMoves(q.t(6));
+        c.color = (int)q.i(7), c.data = q.t(8), c.created = q.i(9), c.seen = q.i(10), c.due = q.i(11);
+        c.interval = q.f(12), c.ease = q.f(13), c.reps = (int)q.i(14), c.lapses = (int)q.i(15);
+        r.push_back(std::move(c));
+    }
+    return r;
+}
+
+void Store::updateCard(const Card& c) {
+    std::lock_guard l(d->m);
+    Stmt q(d->db, "UPDATE cards SET seen=?,due=?,interval=?,ease=?,reps=?,lapses=? WHERE id=?");
+    q.bind(c.seen, c.due, c.interval, c.ease, c.reps, c.lapses, c.id).run();
+    d->noteErr();
+}
+
+void Store::deleteCards(int64_t profileId, const std::string& deck, const std::string& key) {
+    std::lock_guard l(d->m);
+    Stmt q(d->db, key.empty() ? "DELETE FROM cards WHERE profile_id=? AND deck=?"
+                              : "DELETE FROM cards WHERE profile_id=? AND deck=? AND key=?");
+    key.empty() ? (void)q.bind(profileId, deck) : (void)q.bind(profileId, deck, key);
+    q.run();
+    d->noteErr();
 }
 
 std::string Store::setting(const std::string& key, const std::string& def) {

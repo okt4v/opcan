@@ -269,6 +269,11 @@ void drawIcon(ImDrawList* dl, ImVec2 c, Icon i, ImU32 col) {
             dl->AddPolyline(p, 3, col, 1.8f);
             break;
         }
+        case Icon::Train:  // a target
+            dl->AddCircle(c, 7.5f, col, 0, 1.8f);
+            dl->AddCircle(c, 3.8f, col, 0, 1.6f);
+            dl->AddCircleFilled(c, 1.4f, col);
+            break;
         case Icon::Openings:  // a branching line
             dl->AddLine({c.x, c.y + 7}, {c.x, c.y - 1}, col, 1.8f);
             dl->AddLine({c.x, c.y - 1}, {c.x - 6, c.y - 5}, col, 1.8f);
@@ -284,7 +289,7 @@ App::Impl::~Impl() {
     // the stats thread uses the store and the book: stop it before they go away
     if (statsCancel) *statsCancel = true;
     // ...and the explorer thread reads the store too (not cancellable, but quick)
-    for (int i = 0; i < 400 && (statsJob.busy() || ex.job.busy() || trendJob.busy()); i++) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    for (int i = 0; i < 400 && (statsJob.busy() || ex.job.busy() || trendJob.busy() || tr.gen.busy() || tr.eval.busy()); i++) std::this_thread::sleep_for(std::chrono::milliseconds(5));
     for (auto& [k, t] : photos)
         if (t) {
             GLuint id = (GLuint)t;
@@ -402,6 +407,7 @@ void App::Impl::selectProfile(const Profile& p) {
     unreviewedAt = -100;
     syncer = std::make_unique<Syncer>();
     if (!p.accounts.empty()) startSync(false);
+    tr = TrainUi{};
     tourStep = !p.guest && store.setting("p" + std::to_string(p.id) + ".tour") == "1" ? 0 : -1;
 }
 

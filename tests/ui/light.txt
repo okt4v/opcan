@@ -39,4 +39,7 @@ wait 10
 shot light-analyze.png
 click 32 234
 wait 2s
+shot light-train.png
+click 32 284
+wait 2s
 shot light-stats.png

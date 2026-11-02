@@ -9,7 +9,7 @@ struct Step {
     const char* title;
     const char* text;
 };
-// nav: 0 library, 1 analyze, 2 stats, 3 settings, 4 openings, 5 profile
+// nav: 0 library, 1 analyze, 2 stats, 3 settings, 4 openings, 5 train, 6 profile
 constexpr Step kSteps[] = {
     {-1, "Hi, I'm Pip!",
      "I'm your chess coach. Let me show you around, it only takes a minute.\n\n"
@@ -38,7 +38,11 @@ constexpr Step kSteps[] = {
     {3, "Make it yours",
      "Board and piece themes, sounds, fonts, light or dark, keyboard shortcuts and engine settings. Press ? any "
      "time to see every shortcut."},
-    {5, "That's it!",
+    {5, "Train",
+     "Every mistake from your reviewed games becomes a puzzle, and you can build an opening repertoire or learn a "
+     "new opening line by line.\n\nThings come back just before you'd forget them: a few minutes a day goes a long "
+     "way."},
+    {6, "That's it!",
      "Click your avatar to switch profiles. You can replay this tour from the ? menu.\n\nNow go play some chess, "
      "and I'll be here when you want to go over your games."},
 };
@@ -63,6 +67,7 @@ void App::Impl::drawTour() {
         else if (st.nav == 1) view = View::Analyze;
         else if (st.nav == 2) view = View::Stats;
         else if (st.nav == 4) view = View::Openings;
+        else if (st.nav == 5) view = View::Train;
         else if (st.nav == 3 && view != View::Settings) openSettings();
     }
 

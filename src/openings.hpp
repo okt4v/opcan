@@ -21,6 +21,7 @@ public:
     // Deepest named opening along the game's mainline, nullptr if none.
     const Opening* of(const Game& g) const;
     size_t size() const { return list_.size(); }
+    const std::vector<Opening>& all() const { return list_; }
 
 private:
     std::vector<Opening> list_;

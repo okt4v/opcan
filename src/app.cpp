@@ -110,6 +110,7 @@ App::Impl::Impl() {
     if (page && std::string(page) == "openings" && prof && !prof->guest) view = View::Openings;
     if (page && std::string(page) == "editor" && prof) openPosEditor(std::getenv("OPCAN_FEN") ? std::getenv("OPCAN_FEN") : "", false);
     if (page && std::string(page) == "settings" && prof) view = View::Settings;
+    if (page && std::string(page) == "train" && prof && !prof->guest) view = View::Train;
     if (const char* t = std::getenv("OPCAN_SETTINGS_TAB")) settingsTab = std::atoi(t);  // dev hook
     if (const char* g = std::getenv("OPCAN_GAME"); g && prof) openStored(std::atoll(g));  // dev hook
 }
@@ -575,6 +576,7 @@ void App::Impl::frame() {
         else if (view == View::Stats) drawStats();
         else if (view == View::Openings) drawExplorer();
         else if (view == View::Editor) drawPosEditor();
+        else if (view == View::Train) drawTrain();
         else drawLibrary();
         ImGui::EndChild();
         drawLibraryModals();
@@ -654,16 +656,16 @@ void App::Impl::drawSidebar(float w) {
     struct Item {
         Icon icon;
         const char* label;
-        int act;  // 0 library, 1 analyze, 2 stats, 3 settings, 4 openings
+        int act;  // 0 library, 1 analyze, 2 stats, 3 settings, 4 openings, 5 train
     } items[] = {{Icon::Library, "Library", 0}, {Icon::Analyze, "Analyze", 1}, {Icon::Openings, "Openings", 4},
-                 {Icon::Stats, "Stats", 2}, {Icon::Settings, "Settings", 3}};
+                 {Icon::Train, "Train", 5}, {Icon::Stats, "Stats", 2}, {Icon::Settings, "Settings", 3}};
     for (auto& it : items) {
         ImGui::PushID(it.act);
         p = ImGui::GetCursorScreenPos();
-        bool disabled = (it.act == 2 || it.act == 4) && prof && prof->guest;
+        bool disabled = (it.act == 2 || it.act == 4 || it.act == 5) && prof && prof->guest;
         bool active = (it.act == 0 && activeView == View::Library) || (it.act == 1 && (activeView == View::Analyze || activeView == View::Editor)) ||
                       (it.act == 2 && activeView == View::Stats) || (it.act == 3 && activeView == View::Settings) ||
-                      (it.act == 4 && activeView == View::Openings);
+                      (it.act == 4 && activeView == View::Openings) || (it.act == 5 && activeView == View::Train);
         bool clicked = ImGui::InvisibleButton("nav", {iw, 36}) && !disabled;
         navRect[it.act] = {p.x, p.y, p.x + iw, p.y + 36};
         bool hov = ImGui::IsItemHovered();
@@ -681,7 +683,9 @@ void App::Impl::drawSidebar(float w) {
             ed.open = false;
             if (it.act == 3) openSettings();
             else {
-                view = it.act == 0 ? View::Library : it.act == 1 ? View::Analyze : it.act == 4 ? View::Openings : View::Stats;
+                view = it.act == 0 ? View::Library : it.act == 1 ? View::Analyze : it.act == 4 ? View::Openings
+                     : it.act == 5 ? View::Train : View::Stats;
+                if (it.act == 5) tr.stale = true, tr.puzzlesSynced = false;
                 if (it.act == 0) libDirty = true;
             }
         }
@@ -709,7 +713,7 @@ void App::Impl::drawSidebar(float w) {
     }
     ImGui::SetCursorScreenPos({wp.x + 12, y});
     p = ImGui::GetCursorScreenPos();
-    navRect[5] = {p.x, p.y, p.x + iw, p.y + 48};
+    navRect[6] = {p.x, p.y, p.x + iw, p.y + 48};
     if (ImGui::InvisibleButton("me", {iw, 48})) leaveProfile();
     bool hov = ImGui::IsItemHovered();
     if (hov) {

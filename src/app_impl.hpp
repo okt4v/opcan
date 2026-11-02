@@ -16,6 +16,7 @@
 #include "sync.hpp"
 #include "tablebase.hpp"
 #include "theme.hpp"
+#include "train.hpp"
 #include <algorithm>
 #include <atomic>
 #include <mutex>
@@ -143,8 +144,8 @@ void textCentered(ImDrawList* dl, ImVec2 c, ImU32 col, const char* s);
 std::string ellipsize(const std::string& s, float maxW);
 int segmented(const char* id, const char* const* labels, int n, int sel, float w, bool enabled = true);  // returns selection
 
-enum class View { Library, Analyze, Stats, Summary, Review, Settings, Openings, Editor };
-enum class Icon { Library, Analyze, Stats, Settings, Back, Openings };
+enum class View { Library, Analyze, Stats, Summary, Review, Settings, Openings, Editor, Train };
+enum class Icon { Library, Analyze, Stats, Settings, Back, Openings, Train };
 void drawIcon(ImDrawList* dl, ImVec2 c, Icon i, ImU32 col);
 
 struct AccRow {
@@ -202,6 +203,38 @@ struct ExplorerUi {
     std::string shown;  // the Library is filtered to the games at this line ("" = no position filter)
 };
 
+// Train page (train_ui.cpp): spaced-repetition sessions over puzzles from the user's mistakes,
+// repertoire lines and opening courses.
+struct TrainUi {
+    enum class Page { Home, Session, Repertoire, Courses } page = Page::Home;
+    std::vector<Card> all;  // every card of the profile (refreshed when stale)
+    bool stale = true;
+    Async<int> gen;         // background card generation (puzzles / repertoire), returns cards added
+    bool puzzlesSynced = false;
+    std::vector<Family> families;
+    char search[64] = "";
+    // session
+    std::vector<Card> queue;
+    size_t at = 0;
+    std::string title;
+    int good = 0, again = 0;
+    Card card;
+    std::vector<chess::Move> line;  // line cards: the moves; puzzles: {best}
+    chess::Board board;
+    int idx = 0, mistakes = 0;
+    bool hinted = false, revealed = false, demo = false, done = false, finished = false;
+    chess::Move last = chess::Move::NO_MOVE;
+    std::string msg, opening;
+    int mood = 0;           // Pip's face
+    double autoAt = 0, revertAt = 0;
+    chess::Board revertTo;
+    Async<std::optional<Score>> eval;
+    bool wasFlipped = false;
+    // repertoire editor
+    int repColor = 0;
+    std::vector<chess::Move> repLine;
+};
+
 // Board editor page (editor_ui.cpp).
 struct PosEditor {
     SetupPos pos;
@@ -253,6 +286,7 @@ struct App::Impl {
     std::unique_ptr<PlaySession> play;
     PlaySetup playSetup;
     ExplorerUi ex;
+    TrainUi tr;
     PosEditor pe;
     TbDownloader tbDl;
     std::shared_ptr<struct CoachState> cs;  // AI coach (coach_ui.cpp)
@@ -264,7 +298,7 @@ struct App::Impl {
     View view = View::Library, backView = View::Library;
     bool showHelp = false, quit = false, scrollToCur = false, infoOpen = false;
     int tourStep = -1;     // first-run tour (tour_ui.cpp), -1 = off
-    ImVec4 navRect[6]{};   // sidebar items (0 library, 1 analyze, 2 stats, 3 settings, 4 openings, 5 profile) for the tour
+    ImVec4 navRect[7]{};   // sidebar items (0 library, 1 analyze, 2 stats, 3 settings, 4 openings, 5 train, 6 profile)
     std::string paste;
     char tagInput[64] = "", infoNotes[2048] = "";
     int64_t infoNotesFor = 0;
@@ -382,6 +416,17 @@ struct App::Impl {
     void drawPicker();
     void drawHelp();
     void drawTour();
+    void drawTrain();
+    void trainHome();
+    void trainSession();
+    void trainRepertoire();
+    void trainCourses();
+    void trainStart(std::vector<Card> queue, const std::string& title);
+    void trainLoad();
+    void trainMove(chess::Move m);
+    void trainGrade(Grade g);
+    void trainNext();
+    void trainExit();
     bool dialogsOk() {  // file dialogs, or a hint why there are none
         if (!g_nfdOk) notify("File dialogs are unavailable: no desktop portal (xdg-desktop-portal) is running");
         return g_nfdOk;

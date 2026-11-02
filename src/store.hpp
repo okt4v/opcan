@@ -81,6 +81,21 @@ struct StatsGame {
     std::optional<ReviewSummary> summary;
 };
 
+// One spaced-repetition exercise (Train page). deck: "mistakes" (a puzzle from one of the user's reviewed
+// games), "rep:<color>" (a line of the user's repertoire), "course:<color>:<opening family>" (a book line).
+struct Card {
+    int64_t id = 0, profileId = 0;
+    std::string deck, key, title;  // key: unique within (profile, deck)
+    std::string fen;               // start position
+    std::vector<std::string> moves;  // UCI. puzzle: {the best move}; line: the whole line from fen
+    int color = 0;                 // the learner's side (0 white, 1 black)
+    std::string data;              // per kind JSON, e.g. a puzzle's game, played move and eval
+    int64_t created = 0, seen = 0;  // seen: first practiced (0 = new)
+    int64_t due = 0;               // unix s
+    double interval = 0, ease = 2.5;  // days
+    int reps = 0, lapses = 0;
+};
+
 // SQLite-backed library. All methods are thread-safe (one internal mutex).
 class Store {
 public:
@@ -123,6 +138,12 @@ public:
     void saveReview(int64_t gameId, int depth, const std::vector<PosEval>& evals, const ReviewResult& r);
     std::optional<std::vector<PosEval>> reviewEvals(int64_t gameId);
     std::optional<ReviewSummary> reviewSummary(int64_t gameId);
+
+    // Training cards. addCards skips keys the deck already has (progress is kept); returns how many were new.
+    int addCards(const std::vector<Card>& cards);
+    std::vector<Card> cards(int64_t profileId, const std::string& deckPrefix = "");  // oldest first
+    void updateCard(const Card& c);  // scheduling fields only
+    void deleteCards(int64_t profileId, const std::string& deck, const std::string& key = "");  // key "" = whole deck
 
     // Small key/value settings table (global).
     std::string setting(const std::string& key, const std::string& def = "");

@@ -1,0 +1,67 @@
+# train: daily review (puzzle: show move, solve, wrong move), Italian course demo + line with a wrong move, repertoire from games + editor, black session
+#needs-db
+#env OPCAN_PROFILE=2 OPCAN_PAGE=train
+wait 2s
+shot tr-home.png
+click 1322 139
+wait 20
+shot tr-puzzle.png
+click 1215 233
+wait 10
+shot tr-shown.png
+drag 477 782 857 402 10
+wait 10
+shot tr-solved.png
+key Enter
+wait 10
+shot tr-p2.png
+drag 287 687 287 592 10
+wait 3s
+shot tr-wrong.png
+key Escape
+wait 10
+click 340 616
+wait 10
+shot tr-courses.png
+click 1205 419
+wait 10
+shot tr-demo0.png
+key RightArrow
+wait 5
+key RightArrow
+wait 5
+key RightArrow
+wait 5
+shot tr-demo3.png
+key RightArrow
+wait 5
+key RightArrow
+wait 5
+key RightArrow
+wait 5
+key Enter
+wait 10
+drag 572 687 572 497 10
+wait 10
+shot tr-line-wrong.png
+drag 667 687 667 497 10
+wait 1s
+drag 857 782 762 592 10
+wait 1s
+drag 762 782 477 497 10
+wait 1s
+shot tr-line-done.png
+key Escape
+wait 10
+click 311 511
+wait 3s
+shot tr-home2.png
+click 405 458
+wait 10
+shot tr-rep.png
+shot tr-rep2.png
+click 1038 38
+wait 10
+click 897 458
+wait 2s
+shot tr-repblack.png
