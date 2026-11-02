@@ -332,6 +332,7 @@ void App::Impl::open(Game g, int64_t id) {
     board.flipped = userSide() == 1;  // the user's side is always at the bottom
     review.reset();
     reviewer.reset();
+    reviewErr.clear();
     computeSpent();
     cur = 0;
     auto ml = game->mainline();
@@ -528,7 +529,8 @@ void App::Impl::keys() {
 void App::Impl::frame() {
     if (reviewer && reviewer->finished() && !review) finishReview();
     if (reviewer && !reviewer->error().empty() && !reviewer->running() && !review) {
-        notify("Review failed: " + reviewer->error());
+        reviewErr = reviewer->error();
+        notify("Review failed: " + reviewErr);
         reviewer.reset();
     }
     if (prof) backgroundWork();
@@ -1026,6 +1028,22 @@ void App::Impl::drawPanel() {
 }
 
 void App::Impl::drawSummary() {
+    if (!review && !reviewErr.empty()) {  // failed: say so instead of "Analyzing 0%" forever
+        ImGui::Dummy({0, 20});
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
+        ImGui::TextWrapped("Review failed: %s", reviewErr.c_str());
+        ImGui::TextWrapped("Check the engine in Settings, or try again.");
+        ImGui::PopStyleColor();
+        ImGui::Dummy({0, 10});
+        if (accentButton("Retry", {-1, 32}) && !enginePath.empty()) {
+            reviewErr.clear();
+            bg.reset();
+            reviewer = std::make_unique<Reviewer>();
+            reviewer->start(*game, enginePath, set.reviewDepth, set.workers);
+        }
+        if (ImGui::Button("Skip to board", {-1, 32})) view = View::Review;
+        return;
+    }
     if (!review) {
         float pr = reviewer ? reviewer->progress() : 0;
         ImGui::Dummy({0, 20});

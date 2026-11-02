@@ -240,6 +240,7 @@ struct App::Impl {
     std::vector<Game> picker;      // multi-game PGN waiting for a choice
     int cur = 0;
     std::unique_ptr<Reviewer> reviewer;
+    std::string reviewErr;  // last foreground review failure, shown on the summary panel
     std::optional<ReviewResult> review;
     std::vector<double> wpWhite;            // per review line index
     std::unordered_map<int, int> spent;     // node -> seconds spent on the move
