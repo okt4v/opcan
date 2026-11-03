@@ -49,6 +49,21 @@ struct GameRow {
     int great(int side) const { return side ? greatBlack : greatWhite; }
 };
 
+// A tournament the user keeps (Tournaments page): its games are library games and/or bare results.
+struct Tournament {
+    int64_t id = 0, profileId = 0;
+    std::string name, place, start, end;  // dates as typed, e.g. "2026-10-03"
+    int64_t created = 0;
+};
+// One pairing. gameId 0: a result entered by hand (or its game was deleted from the library).
+struct TournamentEntry {
+    int64_t id = 0, tournamentId = 0, gameId = 0;
+    int round = 0;
+    std::string white, black, result;  // result "1-0" | "0-1" | "1/2-1/2" | "*"
+    int whiteElo = 0, blackElo = 0;
+    int userColor = -1;                // the user's side in this pairing, -1 not the user's
+};
+
 struct GameFilter {
     std::string search;     // matches white/black/opening/eco/tags/notes, case-insensitive
     std::string timeClass;  // "" = any
@@ -132,6 +147,14 @@ public:
     // game's countsInStats is always forced off.
     void updateGameMeta(const GameRow& g);
     void deleteGame(int64_t id);
+
+    // Tournaments: newest first. save* insert when id is 0 (and set it), else update.
+    std::vector<Tournament> tournaments(int64_t profileId);
+    void saveTournament(Tournament& t);
+    void deleteTournament(int64_t id);  // its entries too, never the library games
+    std::vector<TournamentEntry> tournamentEntries(int64_t tournamentId);  // by round, then id
+    void saveEntry(TournamentEntry& e);
+    void deleteEntry(int64_t id);
     std::vector<std::string> tags(int64_t profileId);
     std::vector<int64_t> unreviewed(int64_t profileId, int limit);  // newest first
 

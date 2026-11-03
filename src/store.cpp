@@ -58,7 +58,7 @@ const char* kGameCols =
     "id,profile_id,site,site_id,url,white,black,white_elo,black_elo,result,played_at,time_class,eco,opening,"
     "user_color,vs_bot,counts,favorite,tags,notes,review_depth,acc_white,acc_black,est_white,est_black,"
     "brill_white,brill_black,great_white,great_black";
-constexpr int kSchemaVersion = 3;  // PRAGMA user_version after all migrations
+constexpr int kSchemaVersion = 4;  // PRAGMA user_version after all migrations
 constexpr int kGameColN = 29;  // columns in kGameCols; extra selected columns start here
 
 GameRow readGame(Stmt& q) {
@@ -295,6 +295,18 @@ bool Store::open(const std::string& path) {
                             "NOT NULL DEFAULT 0, lapses INTEGER NOT NULL DEFAULT 0, UNIQUE(profile_id, deck, key));"
                             "PRAGMA user_version=3; COMMIT;"))
         return d->exec("ROLLBACK"), false;
+    if (ver < 4 && !d->exec("BEGIN;"
+                            "CREATE TABLE IF NOT EXISTS tournaments(id INTEGER PRIMARY KEY, profile_id INTEGER NOT NULL "
+                            "REFERENCES profiles(id) ON DELETE CASCADE, name TEXT NOT NULL DEFAULT '', place TEXT NOT NULL "
+                            "DEFAULT '', start TEXT NOT NULL DEFAULT '', end TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL DEFAULT 0);"
+                            "CREATE TABLE IF NOT EXISTS tournament_entries(id INTEGER PRIMARY KEY, tournament_id INTEGER NOT NULL "
+                            "REFERENCES tournaments(id) ON DELETE CASCADE, game_id INTEGER REFERENCES games(id) ON DELETE SET NULL, "
+                            "round INTEGER NOT NULL DEFAULT 0, white TEXT NOT NULL DEFAULT '', black TEXT NOT NULL DEFAULT '', "
+                            "result TEXT NOT NULL DEFAULT '*', white_elo INTEGER NOT NULL DEFAULT 0, black_elo INTEGER NOT NULL "
+                            "DEFAULT 0, user_color INTEGER NOT NULL DEFAULT -1);"
+                            "CREATE INDEX IF NOT EXISTS tournament_entries_t ON tournament_entries(tournament_id);"
+                            "PRAGMA user_version=4; COMMIT;"))
+        return d->exec("ROLLBACK"), false;
     Stmt q(d->db, "SELECT 1 FROM profiles WHERE guest=1");
     if (!q.row()) return d->exec("INSERT INTO profiles(name,avatar,guest) VALUES('Guest','preset:guest',1)");
     return true;
@@ -516,6 +528,72 @@ void Store::updateGameMeta(const GameRow& g) {
 void Store::deleteGame(int64_t id) {
     std::lock_guard l(d->m);
     Stmt q(d->db, "DELETE FROM games WHERE id=?");
+    q.bind(id).run();
+    d->noteErr();
+}
+
+std::vector<Tournament> Store::tournaments(int64_t profileId) {
+    std::lock_guard l(d->m);
+    Stmt q(d->db, "SELECT id,profile_id,name,place,start,end,created FROM tournaments WHERE profile_id=? ORDER BY created DESC, id DESC");
+    q.bind(profileId);
+    std::vector<Tournament> r;
+    while (q.row()) r.push_back({q.i(0), q.i(1), q.t(2), q.t(3), q.t(4), q.t(5), q.i(6)});
+    d->noteErr();
+    return r;
+}
+
+void Store::saveTournament(Tournament& t) {
+    std::lock_guard l(d->m);
+    if (t.id) {
+        Stmt q(d->db, "UPDATE tournaments SET name=?,place=?,start=?,end=? WHERE id=?");
+        q.bind(t.name, t.place, t.start, t.end, t.id).run();
+    } else {
+        Stmt q(d->db, "INSERT INTO tournaments(profile_id,name,place,start,end,created) VALUES(?,?,?,?,?,?)");
+        q.bind(t.profileId, t.name, t.place, t.start, t.end, t.created).run();
+        t.id = d->db ? sqlite3_last_insert_rowid(d->db) : 0;
+    }
+    d->noteErr();
+}
+
+void Store::deleteTournament(int64_t id) {
+    std::lock_guard l(d->m);
+    Stmt q(d->db, "DELETE FROM tournaments WHERE id=?");
+    q.bind(id).run();
+    d->noteErr();
+}
+
+std::vector<TournamentEntry> Store::tournamentEntries(int64_t tournamentId) {
+    std::lock_guard l(d->m);
+    Stmt q(d->db, "SELECT id,tournament_id,IFNULL(game_id,0),round,white,black,result,white_elo,black_elo,user_color "
+                  "FROM tournament_entries WHERE tournament_id=? ORDER BY round, id");
+    q.bind(tournamentId);
+    std::vector<TournamentEntry> r;
+    while (q.row())
+        r.push_back({q.i(0), q.i(1), q.i(2), (int)q.i(3), q.t(4), q.t(5), q.t(6), (int)q.i(7), (int)q.i(8), (int)q.i(9)});
+    d->noteErr();
+    return r;
+}
+
+void Store::saveEntry(TournamentEntry& e) {
+    std::lock_guard l(d->m);
+    // game_id 0 is stored as NULL (the foreign key)
+    std::string gid = e.gameId ? std::to_string(e.gameId) : "NULL";
+    if (e.id) {
+        Stmt q(d->db, "UPDATE tournament_entries SET game_id=" + gid + ",round=?,white=?,black=?,result=?,white_elo=?,"
+                      "black_elo=?,user_color=? WHERE id=?");
+        q.bind(e.round, e.white, e.black, e.result, e.whiteElo, e.blackElo, e.userColor, e.id).run();
+    } else {
+        Stmt q(d->db, "INSERT INTO tournament_entries(tournament_id,game_id,round,white,black,result,white_elo,black_elo,"
+                      "user_color) VALUES(?," + gid + ",?,?,?,?,?,?,?)");
+        q.bind(e.tournamentId, e.round, e.white, e.black, e.result, e.whiteElo, e.blackElo, e.userColor).run();
+        e.id = d->db ? sqlite3_last_insert_rowid(d->db) : 0;
+    }
+    d->noteErr();
+}
+
+void Store::deleteEntry(int64_t id) {
+    std::lock_guard l(d->m);
+    Stmt q(d->db, "DELETE FROM tournament_entries WHERE id=?");
     q.bind(id).run();
     d->noteErr();
 }

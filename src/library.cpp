@@ -279,6 +279,13 @@ void drawIcon(ImDrawList* dl, ImVec2 c, Icon i, ImU32 col) {
             dl->AddCircle(c, 3.8f, col, 0, 1.6f);
             dl->AddCircleFilled(c, 1.4f, col);
             break;
+        case Icon::Tournaments:  // a trophy
+            dl->AddRect({c.x - 6, c.y - 7}, {c.x + 6, c.y + 1}, col, 3, 0, 1.8f);
+            dl->AddLine({c.x, c.y + 1}, {c.x, c.y + 5}, col, 1.8f);
+            dl->AddLine({c.x - 5, c.y + 6.5f}, {c.x + 5, c.y + 6.5f}, col, 1.8f);
+            dl->AddLine({c.x - 6, c.y - 5}, {c.x - 9, c.y - 3}, col, 1.6f);
+            dl->AddLine({c.x + 6, c.y - 5}, {c.x + 9, c.y - 3}, col, 1.6f);
+            break;
         case Icon::Openings:  // a branching line
             dl->AddLine({c.x, c.y + 7}, {c.x, c.y - 1}, col, 1.8f);
             dl->AddLine({c.x, c.y - 1}, {c.x - 6, c.y - 5}, col, 1.8f);
@@ -413,6 +420,7 @@ void App::Impl::selectProfile(const Profile& p) {
     syncer = std::make_unique<Syncer>();
     if (!p.accounts.empty()) startSync(false);
     tr = TrainUi{};
+    tn = TourneyUi{};
     vs = VisionUi();
     tourStep = !p.guest && store.setting("p" + std::to_string(p.id) + ".tour") == "1" ? 0 : -1;
     tagEventGames();

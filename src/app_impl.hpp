@@ -15,11 +15,13 @@
 #include "store.hpp"
 #include "sync.hpp"
 #include "tablebase.hpp"
+#include "tournament.hpp"
 #include "theme.hpp"
 #include "train.hpp"
 #include "vision.hpp"
 #include <algorithm>
 #include <atomic>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <random>
@@ -146,8 +148,8 @@ void textCentered(ImDrawList* dl, ImVec2 c, ImU32 col, const char* s);
 std::string ellipsize(const std::string& s, float maxW);
 int segmented(const char* id, const char* const* labels, int n, int sel, float w, bool enabled = true);  // returns selection
 
-enum class View { Library, Analyze, Stats, Summary, Review, Settings, Openings, Editor, Train };
-enum class Icon { Library, Analyze, Stats, Settings, Back, Openings, Train };
+enum class View { Library, Analyze, Stats, Summary, Review, Settings, Openings, Editor, Train, Tournaments };
+enum class Icon { Library, Analyze, Stats, Settings, Back, Openings, Train, Tournaments };
 void drawIcon(ImDrawList* dl, ImVec2 c, Icon i, ImU32 col);
 
 struct AccRow {
@@ -273,6 +275,27 @@ struct TrainUi {
     std::vector<chess::Move> repLine;
 };
 
+// Tournaments page (tournament_ui.cpp).
+struct TourneyUi {
+    bool stale = true;
+    std::vector<Tournament> list;
+    std::map<int64_t, std::vector<TournamentEntry>> listEntries;
+    int64_t openId = 0;  // 0 = the list
+    Tournament cur;
+    std::vector<TournamentEntry> es;
+    char name[128] = "", place[128] = "", start[32] = "", end[32] = "";
+    bool focusName = false, mineOnly = false;
+    int tab = 0;  // scoreboard, games
+    // "Add games" from the library
+    char search[64] = "";
+    std::vector<GameRow> pickRows;
+    std::set<int64_t> pick;
+    bool pickStale = true;
+    // "Add a result"
+    int rRound = 1, rResult = 0;
+    char rWhite[64] = "", rBlack[64] = "";
+};
+
 // Board editor page (editor_ui.cpp).
 struct PosEditor {
     SetupPos pos;
@@ -325,6 +348,7 @@ struct App::Impl {
     PlaySetup playSetup;
     ExplorerUi ex;
     TrainUi tr;
+    TourneyUi tn;
     VisionUi vs;
     PosEditor pe;
     TbDownloader tbDl;
@@ -339,7 +363,7 @@ struct App::Impl {
     double splashAt = -1;  // opening animation start (main.cpp-free: first frame), -2 = done
     void drawSplash();
     int tourStep = -1;     // first-run tour (tour_ui.cpp), -1 = off
-    ImVec4 navRect[7]{};   // sidebar items (0 library, 1 analyze, 2 stats, 3 settings, 4 openings, 5 train, 6 profile)
+    ImVec4 navRect[8]{};   // sidebar items (0 library, 1 analyze, 2 stats, 3 settings, 4 openings, 5 train, 6 profile, 7 tournaments)
     std::string paste;
     char tagInput[64] = "", infoNotes[2048] = "";
     int64_t infoNotesFor = 0;
@@ -458,6 +482,20 @@ struct App::Impl {
     void drawHelp();
     void drawTour();
     void drawTrain();
+    // tournament_ui.cpp
+    void drawTournaments();
+    void tourneyList();
+    void tourneyDetail();
+    void tourneyScoreboard(const std::vector<Standing>& st);
+    void tourneyGames();
+    void tourneyModals();
+    void tourneyLoad();
+    void tourneyOpen(int64_t id);
+    int64_t tourneyCreate(const std::string& name);
+    void tourneyAddGame(int64_t gameId, int fallbackRound);
+    void tourneyAddPgn(const std::string& text);
+    void tourneyPgnDialog();
+    std::vector<std::string> tourneyYou();
     void trainHome();
     void trainSession();
     void trainRepertoire();

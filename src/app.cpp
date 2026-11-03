@@ -113,6 +113,7 @@ App::Impl::Impl() {
     if (page && std::string(page) == "editor" && prof) openPosEditor(std::getenv("OPCAN_FEN") ? std::getenv("OPCAN_FEN") : "", false);
     if (page && std::string(page) == "settings" && prof) view = View::Settings;
     if (page && std::string(page) == "train" && prof && !prof->guest) view = View::Train;
+    if (page && std::string(page) == "tournaments" && prof && !prof->guest) view = View::Tournaments;
     if (const char* t = std::getenv("OPCAN_SETTINGS_TAB")) settingsTab = std::atoi(t);  // dev hook
     if (const char* g = std::getenv("OPCAN_GAME"); g && prof) openStored(std::atoll(g));  // dev hook
 }
@@ -328,7 +329,7 @@ void App::Impl::open(Game g, int64_t id) {
     exitPlay();
     if (game) exitRetry();
     retrySolved.clear();
-    if (view == View::Library || view == View::Analyze || view == View::Stats) backView = view;
+    if (view == View::Library || view == View::Analyze || view == View::Stats || view == View::Tournaments) backView = view;
     game = std::move(g);
     gameId = id;
     meta = id ? store.game(id) : std::nullopt;
@@ -580,6 +581,7 @@ void App::Impl::frame() {
         else if (view == View::Openings) drawExplorer();
         else if (view == View::Editor) drawPosEditor();
         else if (view == View::Train) drawTrain();
+        else if (view == View::Tournaments) drawTournaments();
         else drawLibrary();
         ImGui::EndChild();
         drawLibraryModals();
@@ -710,16 +712,18 @@ void App::Impl::drawSidebar(float w) {
     struct Item {
         Icon icon;
         const char* label;
-        int act;  // 0 library, 1 analyze, 2 stats, 3 settings, 4 openings, 5 train
+        int act;  // 0 library, 1 analyze, 2 stats, 3 settings, 4 openings, 5 train, 7 tournaments (6: navRect's profile)
     } items[] = {{Icon::Library, "Library", 0}, {Icon::Analyze, "Analyze", 1}, {Icon::Openings, "Openings", 4},
-                 {Icon::Train, "Train", 5}, {Icon::Stats, "Stats", 2}, {Icon::Settings, "Settings", 3}};
+                 {Icon::Train, "Train", 5}, {Icon::Tournaments, "Tournaments", 7}, {Icon::Stats, "Stats", 2},
+                 {Icon::Settings, "Settings", 3}};
     for (auto& it : items) {
         ImGui::PushID(it.act);
         p = ImGui::GetCursorScreenPos();
-        bool disabled = (it.act == 2 || it.act == 4 || it.act == 5) && prof && prof->guest;
+        bool disabled = (it.act == 2 || it.act == 4 || it.act == 5 || it.act == 7) && prof && prof->guest;
         bool active = (it.act == 0 && activeView == View::Library) || (it.act == 1 && (activeView == View::Analyze || activeView == View::Editor)) ||
                       (it.act == 2 && activeView == View::Stats) || (it.act == 3 && activeView == View::Settings) ||
-                      (it.act == 4 && activeView == View::Openings) || (it.act == 5 && activeView == View::Train);
+                      (it.act == 4 && activeView == View::Openings) || (it.act == 5 && activeView == View::Train) ||
+                      (it.act == 7 && activeView == View::Tournaments);
         bool clicked = ImGui::InvisibleButton("nav", {iw, 36}) && !disabled;
         navRect[it.act] = {p.x, p.y, p.x + iw, p.y + 36};
         bool hov = ImGui::IsItemHovered();
@@ -738,8 +742,9 @@ void App::Impl::drawSidebar(float w) {
             if (it.act == 3) openSettings();
             else {
                 view = it.act == 0 ? View::Library : it.act == 1 ? View::Analyze : it.act == 4 ? View::Openings
-                     : it.act == 5 ? View::Train : View::Stats;
+                     : it.act == 5 ? View::Train : it.act == 7 ? View::Tournaments : View::Stats;
                 if (it.act == 5) tr.stale = true, tr.puzzlesSynced = false;
+                if (it.act == 7) tn.stale = true;
                 if (it.act == 0) libDirty = true;
             }
         }
@@ -1059,7 +1064,7 @@ void App::Impl::drawPanel() {
     if (play) return drawPlayPanel();
     auto* dl = ImGui::GetWindowDrawList();
     ImVec2 p = ImGui::GetCursorScreenPos();
-    const char* back = backView == View::Analyze ? "Analyze" : backView == View::Stats ? "Stats" : "Library";
+    const char* back = backView == View::Analyze ? "Analyze" : backView == View::Stats ? "Stats" : backView == View::Tournaments ? "Tournaments" : "Library";
     ImGui::PushFont(f.ui, 14);
     float bw = ImGui::CalcTextSize(back).x + 30;
     if (ImGui::InvisibleButton("back", {bw, 28})) view = backView, libDirty = true;
