@@ -697,12 +697,15 @@ void App::Impl::settingsUpdates(float) {
     }
     cardEnd();
 
-    cardBegin("versions", "Versions", kind == InstallKind::None ? "This copy can't replace itself: download a version from GitHub."
-                                                                 : "Install any version: newer ones update, older ones switch back.");
+    cardBegin("versions", "Versions", kind == InstallKind::None ? "This copy can't install other versions: get them from GitHub."
+                                                                 : "Install any version: newer ones update, older ones switch back. "
+                                                                   "opcan closes and the new version starts by itself.");
     if (u.check.busy()) ImGui::TextDisabled("Checking GitHub…");
     else if (!u.err.empty()) ImGui::TextDisabled("Couldn't check: %s", u.err.c_str());
     bool busy = u.install.busy();
-    if (busy) ImGui::TextDisabled("Downloading opcan %s…", u.installing.c_str());
+    if (busy)
+        ImGui::TextDisabled(kind == InstallKind::Nix ? "Building opcan %s with Nix (can take a while)…" : "Downloading opcan %s…",
+                            u.installing.c_str());
     if (!u.releases.empty() && ImGui::BeginTable("vers", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("v", ImGuiTableColumnFlags_WidthStretch, 2);
         ImGui::TableSetupColumn("d", ImGuiTableColumnFlags_WidthFixed, 96);
@@ -726,9 +729,9 @@ void App::Impl::settingsUpdates(float) {
             else if (r.prerelease) ImGui::TextDisabled("pre-release");
             ImGui::TableNextColumn();
             if (cmp != 0) {
-                bool has = assetFor(r, thisPlatform()) != nullptr;
-                if (kind == InstallKind::None || !has) {
-                    if (ImGui::Button("Download", {-FLT_MIN, 0})) openUrl(std::string(kReleasesPage) + "/tag/" + r.tag);
+                if (!installable(r)) {  // no package for this platform in that release, or no way to install here
+                    if (ImGui::Button("Get it", {-FLT_MIN, 0})) openUrl(std::string(kReleasesPage) + "/tag/" + r.tag);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Opens the release on GitHub: it has no package opcan can install here");
                 } else {
                     ImGui::BeginDisabled(busy);
                     if (ImGui::Button(cmp > 0 ? "Update" : "Switch to", {-FLT_MIN, 0})) {

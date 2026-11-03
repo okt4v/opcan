@@ -42,8 +42,8 @@ void App::Impl::updateFrame() {
             }
         std::string mode = store.setting("update.mode", "ask");
         if (u.startup && best && mode != "off" && store.setting("update.skip") != best->version) {
-            if (installKind() == InstallKind::None) notify("opcan " + best->version + " is out: see Settings > Updates");
-            else if (mode == "auto") updateInstall(*best, false);
+            if (!installable(*best)) notify("opcan " + best->version + " is out: see Settings > Updates");
+            else if (mode == "auto" && replacesInPlace(installKind())) updateInstall(*best, false);
             else u.offer = *best;
         }
         u.startup = false;
@@ -86,7 +86,8 @@ void App::Impl::drawUpdateDialog() {
         spinner(ImGui::GetWindowDrawList(), {ImGui::GetCursorScreenPos().x + 8, ImGui::GetCursorScreenPos().y + 10}, 6, theme::accent);
         ImGui::Dummy({20, 20});
         ImGui::SameLine();
-        ImGui::TextDisabled("Downloading… opcan restarts when it's installed.");
+        ImGui::TextDisabled(installKind() == InstallKind::Nix ? "Building with Nix (can take a while)… opcan restarts when it's ready."
+                                                              : "Downloading… opcan restarts when it's installed.");
     } else {
         if (accentButton("Install and restart", {180, 34})) updateInstall(r, true);
         ImGui::SameLine();

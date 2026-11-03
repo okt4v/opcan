@@ -27,21 +27,27 @@ int compareVersions(const std::string& a, const std::string& b);
 std::vector<Release> parseReleases(const std::string& json);
 std::vector<Release> fetchReleases(std::string* err);  // blocking
 
-// How this copy was installed, i.e. what the updater can replace.
+// How this copy was installed, i.e. how the updater installs another version.
 enum class InstallKind {
-    None,       // a dev build, a Nix / system package, a read-only or portable copy: updates are only announced
+    None,       // NixOS / a Nix package without the nix command: updates are only announced
     Installer,  // Windows: the NSIS installer's directory (has Uninstall.exe)
     AppBundle,  // macOS: opcan.app in a writable folder
     Tarball,    // Linux: the portable .tar.gz unpacked in a writable folder (bin/opcan + share/opcan)
+    Portable,   // Windows: the portable .zip unpacked in a writable folder
+    Separate,   // a dev build or a copy opcan can't write to: the release goes to a per-user location
+                // (Windows: the per-user installer, macOS: ~/Applications, Linux: ~/.local/opt/opcan) and starts from there
+    Nix,        // NixOS or a Nix package: `nix build github:okt4v/opcan/<tag>` and start the result
 };
 InstallKind installKind();
-const char* installKindText(InstallKind k);  // "Windows installer", ... ("can't update itself" for None)
+const char* installKindText(InstallKind k);  // "Windows installer", ...
+bool installable(const Release& r);          // the updater can install r on this copy (else: the release page)
+bool replacesInPlace(InstallKind k);         // the update replaces this copy (automatic updates are only for those)
 
 // This platform's package in r (nullptr if the release has none). For tests: the platform is passed in.
 const Release::Asset* assetFor(const Release& r, const std::string& platform);
 std::string thisPlatform();  // "windows-x86_64", "macos-arm64", "macos-x86_64", "linux-x86_64"
 
-// Downloads r's package and starts a helper that waits for opcan to exit, installs it and (relaunch) starts the new
+// Downloads (Nix: builds) r's package and starts a helper that waits for opcan to exit, installs it and (relaunch) starts the new
 // version. silent: no installer UI (Windows). Returns "" when the helper is running; the caller should quit
 // (now, or whenever the user does). Blocking (the download): run it off the UI thread.
 std::string prepareInstall(const Release& r, bool silent, bool relaunch);
