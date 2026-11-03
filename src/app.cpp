@@ -88,11 +88,12 @@ bool accentButton(const char* label, ImVec2 size) {
 
 App::Impl::Impl() {
     const char* db = std::getenv("OPCAN_DB");  // dev hook: alternative database (and data dir)
-    fs::path dbPath = db ? fs::path(db) : fs::path(App::configDir()) / "opcan.db";
-    dataDir = dbPath.parent_path().empty() ? "." : dbPath.parent_path().string();
+    fs::path dbFile = db ? fs::path(db) : fs::path(App::configDir()) / "opcan.db";
+    dbPath = dbFile.string();
+    dataDir = dbFile.parent_path().empty() ? "." : dbFile.parent_path().string();
     std::error_code ec;
     fs::create_directories(fs::path(dataDir) / "avatars", ec);
-    if (!store.open(dbPath.string())) storeErr = store.error().empty() ? "Could not open " + dbPath.string() : store.error();
+    if (!store.open(dbPath)) storeErr = store.error().empty() ? "Could not open " + dbPath : store.error();
     loadSettings();
     loadPrefs();
     applyPrefs();
@@ -321,10 +322,11 @@ void App::Impl::loadText(std::string_view text) {
 
 void App::Impl::openFileDialog() {
     nfdu8char_t* out = nullptr;
-    nfdu8filteritem_t filter[1] = {{"PGN", "pgn"}};
+    nfdu8filteritem_t filter[1] = {{"PGN or shared opcan file", "pgn,opcan"}};
     if (!dialogsOk() || NFD_OpenDialogU8(&out, filter, 1, nullptr) != NFD_OKAY) return;
     std::string p = out;
     NFD_FreePathU8(out);
+    if (fs::path(p).extension() == ".opcan") return openShared(p);
     std::ifstream in(p, std::ios::binary);
     std::stringstream ss;
     ss << in.rdbuf();
@@ -335,7 +337,8 @@ void App::Impl::open(Game g, int64_t id) {
     exitPlay();
     if (game) exitRetry();
     retrySolved.clear();
-    if (view == View::Library || view == View::Analyze || view == View::Stats || view == View::Tournaments) backView = view;
+    if (view == View::Library || view == View::Analyze || view == View::Stats || view == View::Tournaments || view == View::Friend)
+        backView = view;
     game = std::move(g);
     gameId = id;
     meta = id ? store.game(id) : std::nullopt;
@@ -609,6 +612,7 @@ void App::Impl::frame() {
         else if (view == View::Train) drawTrain();
         else if (view == View::Tournaments) drawTournaments();
         else if (view == View::Social) drawSocial();
+        else if (view == View::Friend) drawFriend();
         else drawLibrary();
         ImGui::EndChild();
         drawLibraryModals();
@@ -1093,7 +1097,8 @@ void App::Impl::drawPanel() {
     if (play) return drawPlayPanel();
     auto* dl = ImGui::GetWindowDrawList();
     ImVec2 p = ImGui::GetCursorScreenPos();
-    const char* back = backView == View::Analyze ? "Analyze" : backView == View::Stats ? "Stats" : backView == View::Tournaments ? "Tournaments" : "Library";
+    const char* back = backView == View::Analyze ? "Analyze" : backView == View::Stats ? "Stats" : backView == View::Tournaments ? "Tournaments"
+                     : backView == View::Friend ? "Shared" : "Library";
     ImGui::PushFont(f.ui, 14);
     float bw = ImGui::CalcTextSize(back).x + 30;
     if (ImGui::InvisibleButton("back", {bw, 28})) view = backView, libDirty = true;
@@ -1821,6 +1826,7 @@ bool App::animating() const {
 void App::dropFiles(const std::vector<std::string>& paths) {
     if (!d->prof) return d->notify("Pick a profile first");
     for (auto& p : paths) {
+        if (fs::path(p).extension() == ".opcan") return d->openShared(p);
         std::ifstream in(p, std::ios::binary);
         if (!in) continue;
         std::stringstream ss;

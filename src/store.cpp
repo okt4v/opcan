@@ -256,6 +256,8 @@ struct Store::Impl {
     }
 };
 
+int storeSchemaVersion() { return kSchemaVersion; }
+
 Store::Store() : d(std::make_unique<Impl>()) {}
 Store::~Store() {
     if (d->db) sqlite3_close(d->db);
@@ -522,6 +524,16 @@ void Store::updateGameMeta(const GameRow& g) {
     Stmt q(d->db, "UPDATE games SET favorite=?,tags=?,notes=?,user_color=?,counts=? AND NOT max(vs_bot,?),"
                   "vs_bot=max(vs_bot,?) WHERE id=?");
     q.bind(g.favorite, g.tags, g.notes, g.userColor, g.countsInStats, g.vsBot, g.vsBot, g.id).run();
+    d->noteErr();
+}
+
+void Store::clearReview(int64_t gameId) {
+    std::lock_guard l(d->m);
+    Stmt a(d->db, "DELETE FROM reviews WHERE game_id=?");
+    a.bind(gameId).run();
+    Stmt b(d->db, "UPDATE games SET review_depth=0,acc_white=0,acc_black=0,est_white=0,est_black=0,brill_white=0,"
+                  "brill_black=0,great_white=0,great_black=0 WHERE id=?");
+    b.bind(gameId).run();
     d->noteErr();
 }
 

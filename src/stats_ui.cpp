@@ -247,6 +247,12 @@ void App::Impl::drawStats() {
     ImGui::TextUnformatted("Stats");
     ImGui::PopFont();
     if (busy) spinner(dl, {p.x + W - 8, p.y + 16}, 6, theme::accent);
+    ImGui::SetCursorScreenPos({p.x + W - 150 - (busy ? 24 : 0), p.y});
+    if (ImGui::Button("Share my stats…", {150, 34})) shareStatsDialog();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("A file a friend opens in opcan. Their opcan rebuilds the numbers from your games and checks\n"
+                          "them on chess.com / lichess and with its engine, so they can't be faked.");
+    ImGui::SetCursorScreenPos({p.x, p.y + 34});
     ImGui::Dummy({0, 12});
 
     // filters (wrap when narrow)
@@ -351,6 +357,14 @@ void App::Impl::drawStats() {
         ImGui::SetScrollY((float)std::atof(sc)), scrolled = true;
     drawStatsCards(s, ImGui::GetContentRegionAvail().x - 4);
     ImGui::EndChild();
+}
+
+void App::Impl::drawStatsFor(const Stats& s, float W) {  // a friend's stats (friend_ui.cpp): no filters
+    F = &f;
+    int tc = statsTc, col = statsColor;
+    statsTc = statsColor = 0;
+    drawStatsCards(s, W);
+    statsTc = tc, statsColor = col;
 }
 
 void App::Impl::drawStatsCards(const Stats& s, float W) {
@@ -791,7 +805,7 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
                 textRight(dl, f.mono, 13, {xG + gw - 8, yy + 3}, theme::text, std::to_string(o.games));
                 wdlBar(dl, {xB, yy + 7}, bw, 10, o.wdl, o.name.c_str());
                 textRight(dl, f.mono, 13, {xA, yy + 3}, o.accN ? theme::text : theme::dim, o.accN ? fmt("%.1f", o.accSum / o.accN) : "–");
-                if (click) {
+                if (click && view != View::Friend) {  // a friend's openings aren't in this library
                     filter = GameFilter{};
                     std::snprintf(search, sizeof search, "%s", o.name.c_str());
                     filter.color = c;

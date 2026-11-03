@@ -3,6 +3,8 @@
 #include "app.hpp"
 #include "audio.hpp"
 #include "speech.hpp"
+#include "share.hpp"
+#include "verify.hpp"
 #include "board.hpp"
 #include "coach.hpp"
 #include "engine.hpp"
@@ -161,7 +163,7 @@ void rowsEnd();
 bool toggleSwitch(const char* id, bool* v);
 int seg(const char* id, const char* const* labels, int n, int sel, bool enabled = true);
 
-enum class View { Library, Analyze, Stats, Summary, Review, Settings, Openings, Editor, Train, Tournaments, Social };
+enum class View { Library, Analyze, Stats, Summary, Review, Settings, Openings, Editor, Train, Tournaments, Social, Friend };
 enum class Icon { Library, Analyze, Stats, Settings, Back, Openings, Train, Tournaments, Share };
 void drawIcon(ImDrawList* dl, ImVec2 c, Icon i, ImU32 col);
 
@@ -350,6 +352,20 @@ struct ShareUi {
     std::unique_ptr<Job> job;
 };
 
+// A friend's shared stats or game (friend_ui.cpp), with the checks that it's real.
+struct FriendUi {
+    std::unique_ptr<Shared> sh;
+    std::string file;
+    Async<Stats> statsJob;
+    std::optional<Stats> stats;
+    Async<std::pair<std::vector<GameCheck>, std::string>> onlineJob;  // checks, error
+    std::vector<GameCheck> checks;
+    std::string onlineErr;
+    Async<SpotCheck> spotJob;
+    std::optional<SpotCheck> spot;
+    std::shared_ptr<std::atomic<bool>> cancel;
+};
+
 // Board editor page (editor_ui.cpp).
 struct PosEditor {
     SetupPos pos;
@@ -371,7 +387,7 @@ struct PlaySetup {
 struct App::Impl {
     Fonts f;
     Store store;
-    std::string dataDir, storeErr;
+    std::string dataDir, dbPath, storeErr;
     Settings set;
     Prefs prefs;
     Openings book;
@@ -541,6 +557,14 @@ struct App::Impl {
     void drawTrain();
     // tournament_ui.cpp
     void drawTournaments();
+    // friend_ui.cpp
+    FriendUi fr;
+    void openShared(const std::string& path);  // a .opcan file: the Friend page
+    void drawFriend();
+    void openFriendGame(int64_t id, int ply = -1);
+    void shareStatsDialog();             // save this profile's stats as a .opcan file
+    void shareGameDialog();              // save the open game (with its review) as a .opcan file
+    void drawStatsFor(const Stats& s, float W);
     // social_ui.cpp
     ShareUi sh;
     void openShare(int node);  // Social page on this game, showing node

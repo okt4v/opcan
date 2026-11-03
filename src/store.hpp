@@ -112,6 +112,8 @@ struct Card {
     int reps = 0, lapses = 0;
 };
 
+int storeSchemaVersion();  // PRAGMA user_version this opcan writes
+
 // SQLite-backed library. All methods are thread-safe (one internal mutex).
 class Store {
 public:
@@ -160,6 +162,7 @@ public:
 
     // Also renames the game's opening to r.openingEco/openingName (our openings database) when known.
     void saveReview(int64_t gameId, int depth, const std::vector<PosEval>& evals, const ReviewResult& r);
+    void clearReview(int64_t gameId);  // back to not reviewed
     std::optional<std::vector<PosEval>> reviewEvals(int64_t gameId);
     std::optional<ReviewSummary> reviewSummary(int64_t gameId);
 

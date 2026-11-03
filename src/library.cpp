@@ -1393,6 +1393,7 @@ void App::Impl::saveMeta(const GameRow& g) {
 }
 
 void App::Impl::openStored(int64_t id, int ply) {
+    if (view == View::Friend && fr.sh) return openFriendGame(id, ply);  // clicks in a friend's stats
     auto row = store.game(id);
     if (!row) return notify("That game is gone");
     auto games = parsePgn(row->pgn);

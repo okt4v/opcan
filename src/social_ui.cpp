@@ -363,6 +363,18 @@ void App::Impl::drawSocial() {
     ImGui::PushFont(f.bold, 26);
     ImGui::TextUnformatted("Social");
     ImGui::PopFont();
+    {  // stats and files for friends, game or not
+        ImVec2 back = ImGui::GetCursorScreenPos();
+        float bx = p.x + W - (game ? 158 : 0) - 2 * 158;
+        ImGui::SetCursorScreenPos({bx, p.y});
+        if (ImGui::Button("Open a shared file…", {150, 34})) openFileDialog();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A friend's stats or game (.opcan)");
+        ImGui::SameLine(0, 8);
+        ImGui::BeginDisabled(!prof || prof->guest);
+        if (ImGui::Button("Share my stats…", {150, 34})) shareStatsDialog();
+        ImGui::EndDisabled();
+        ImGui::SetCursorScreenPos(back);
+    }
     if (!game) {
         ImGui::TextDisabled("Share images, GIFs and annotated PGN of your games.");
         ImGui::Dummy({0, 30});
@@ -486,6 +498,11 @@ void App::Impl::drawSocial() {
                 notify((o << sh.pgnText) ? "Saved " + fs::path(path).filename().string() : "Couldn't write " + path);
             }
         }
+        ImGui::Dummy({0, 8});
+        if (ImGui::Button("Send as an opcan file…", {ImGui::GetContentRegionAvail().x, 38})) shareGameDialog();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The game with its review, for a friend's opcan: it opens straight into the review,\n"
+                              "checked against the site and their engine.");
         ImGui::EndChild();
         ImGui::PopStyleColor();
         return;
