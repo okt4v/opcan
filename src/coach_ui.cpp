@@ -50,6 +50,7 @@ Mood moodOf(Cls c) {
     }
 }
 
+constexpr int kCardMsg = -2;  // richText / hover / pin index meaning Pip's card instead of a chat message
 ImU32 annotColor(int c, int a = 255) {
     ImU32 base = c == 1 ? theme::arrowThreat : c == 2 ? theme::arrowEngine : c == 3 ? theme::rgb(0xe8b23a) : theme::arrowBest;
     return alpha(base, std::min(a, (int)((base >> 24) & 255)));
@@ -108,6 +109,9 @@ struct CoachState {
     int hoverMsg = -1, hoverAnnot = -1, pinMsg = -1, pinAnnot = -1;
     std::vector<int> playQueue;
     double nextPlayAt = 0;
+    // Pip's card under the board: its text's board tags (arrows, squares, lines), for node cardNode
+    Parsed card;
+    int cardNode = -1;
 
     // Pip
     double blinkAt = 0;
@@ -466,6 +470,7 @@ void App::Impl::drawPip(ImDrawList* dl, ImVec2 c, float s, int moodI, bool talki
 
 void App::Impl::drawCoachCard() {
     auto& c = *cs;
+    if (c.hoverMsg == kCardMsg) c.hoverMsg = c.hoverAnnot = -1;
     auto* dl = ImGui::GetWindowDrawList();
     ImVec2 p = ImGui::GetCursorScreenPos();
     float w = ImGui::GetContentRegionAvail().x;
@@ -490,7 +495,7 @@ void App::Impl::drawCoachCard() {
             else if (auto* g = genFor(c, key)) {
                 auto v = g->job->view();
                 // only checked, finished sentences are shown while it streams
-                std::string out = parseTags(checkAnswer(stripThinking(v.text), g->facts, "", false).text, g->facts.fen).plain;
+                std::string out = checkAnswer(stripThinking(v.text), g->facts, "", false).text;  // tags kept: they become chips
                 if (!out.empty()) text = out, talking = true, dimText = false;
                 else typing = true;
             } else if (c.explainMode == CoachState::OnRequest) offerExplain = true;
@@ -506,11 +511,26 @@ void App::Impl::drawCoachCard() {
         text = reviewer && reviewer->running() ? "Analyzing..." : "Not reviewed";
     }
 
+    // a brilliant / great move: the engine line that makes it work, as a chip (arrows on the board; click plays it)
+    if (mr && (cls == Cls::Brilliant || cls == Cls::Great)) {
+        auto& pv = review->evals[lineIdx[cur]].pv;
+        if (!pv.empty()) {
+            text += cls == Cls::Brilliant ? "\nHow it pays off: [line" : "\nThe follow-up: [line";
+            for (size_t k = 0; k < pv.size() && k < 6; k++) text += " " + pv[k];
+            text += "]";
+        }
+    }
+    // the text's moves and tags become chips that show on the board
+    std::string fen = game->nodes[cur].fen;
+    if (c.cardNode != (mr ? cur : -1) && c.pinMsg == kCardMsg) c.pinMsg = c.pinAnnot = -1;
+    c.card = parseTags(autoTags(text, fen), fen);
+    c.cardNode = mr ? cur : -1;
+
     // layout: Pip on the left, a speech bubble on the right
     float pip = 72, padX = 10, bx = p.x + pip + 22, bw = w - (bx - p.x);
     float textW = bw - 28;
     ImGui::PushFont(f.ui, 14);
-    float textH = ImGui::CalcTextSize(text.c_str(), nullptr, false, textW).y;
+    float textH = richText(c.card, kCardMsg, textW, false, theme::text);
     ImGui::PopFont();
     if (typing) textH = 18;
     float headH = 24, footH = 22;
@@ -586,11 +606,7 @@ void App::Impl::drawCoachCard() {
         ImGui::Dummy({40, 18});
     } else {
         ImGui::PushFont(f.ui, 14);
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + textW);
-        ImGui::PushStyleColor(ImGuiCol_Text, dimText ? theme::dim : theme::text);
-        ImGui::TextUnformatted(text.c_str());
-        ImGui::PopStyleColor();
-        ImGui::PopTextWrapPos();
+        richText(c.card, kCardMsg, textW, true, dimText ? theme::dim : theme::text);
         ImGui::PopFont();
     }
     ImGui::EndGroup();
@@ -728,12 +744,14 @@ float App::Impl::richText(const Parsed& pr, int msgIdx, float width, bool draw, 
                 dl->AddText({a0.x + 14, a0.y + 2 + (lh - ImGui::GetFontSize()) / 2}, theme::text, a.label.c_str());
                 ImGui::PopFont();
                 if (click) {
-                    auto& m = c.msgs[msgIdx];
-                    if (m.node < (int)game->nodes.size() && cur != m.node) go(m.node);
-                    if (a.kind == Annot::Line) {
+                    bool card = msgIdx == kCardMsg;
+                    int node = card ? cur : c.msgs[msgIdx].node;
+                    std::string fen = card ? game->nodes[cur].fen : c.msgs[msgIdx].fen;
+                    if (node < (int)game->nodes.size() && cur != node) go(node);
+                    if (a.kind == Annot::Line) {  // play it on the board as a variation, move by move
                         c.playQueue.clear();
-                        int n = m.node;
-                        Board b(m.fen);
+                        int n = node;
+                        Board b(fen);
                         for (auto& u : a.uci) {
                             Move mv = uci::uciToMove(b, u);
                             n = game->addMove(n, mv);
@@ -888,7 +906,7 @@ void App::Impl::drawCoachChat(bool docked) {
     // messages
     float inputH = 40;
     ImGui::BeginChild("msgs", {0, -inputH - 8}, ImGuiChildFlags_None);
-    c.hoverMsg = c.hoverAnnot = -1;
+    if (c.hoverMsg != kCardMsg) c.hoverMsg = c.hoverAnnot = -1;  // the card resets its own
     float W = ImGui::GetContentRegionAvail().x;
     if (c.msgs.empty()) {
         ImGui::Dummy({0, 8});
@@ -985,41 +1003,57 @@ void App::Impl::drawCoachChat(bool docked) {
 }
 
 // Arrows for the board from the chat: the hovered chip, else the pinned one, else the latest answer's tags.
+static void addAnnot(const Annot& a, int strength, std::vector<Arrow>& out, std::vector<std::pair<int, ImU32>>& marks) {
+    if (a.kind == Annot::Square) {
+        marks.push_back({a.square, annotColor(a.color, strength)});
+        return;
+    }
+    for (size_t k = 0; k < a.uci.size() && k < 4; k++) {
+        auto& u = a.uci[k];
+        if (u.size() < 4) continue;
+        Arrow ar{Square(u.substr(0, 2)), Square(u.substr(2, 2)), 0};
+        if (std::any_of(out.begin(), out.end(), [&](const Arrow& o) { return o.from == ar.from && o.to == ar.to; })) continue;
+        int al = a.kind == Annot::Line ? std::max(70, strength - (int)k * 50) : strength;
+        ar.color = a.kind == Annot::Line && k % 2 ? annotColor(2, al) : annotColor(a.color, al);
+        out.push_back(ar);
+    }
+}
+
+// What the chat (or a hovered / pinned chip, the card's too) shows; these replace the review arrows.
 void App::Impl::coachAnnotations(std::vector<Arrow>& out, std::vector<std::pair<int, ImU32>>& marks) {
     auto& c = *cs;
-    if (!game || !c.chatOpen || !c.playQueue.empty()) return;
-    auto addAnnot = [&](const Annot& a, int strength) {
-        if (a.kind == Annot::Square) {
-            marks.push_back({a.square, annotColor(a.color, strength)});
-            return;
-        }
-        for (size_t k = 0; k < a.uci.size() && k < 4; k++) {
-            auto& u = a.uci[k];
-            if (u.size() < 4) continue;
-            int al = a.kind == Annot::Line ? std::max(70, strength - (int)k * 50) : strength;
-            ImU32 col = a.kind == Annot::Line && k % 2 ? annotColor(2, al) : annotColor(a.color, al);
-            out.push_back({Square(u.substr(0, 2)), Square(u.substr(2, 2)), col});
-        }
-    };
+    if (!game || !c.playQueue.empty()) return;
     auto parsed = [&](int i) {
+        if (i == kCardMsg) return c.card;
         auto& m = c.msgs[i];
         return parseTags(autoTags(shownText(m), m.fen), m.fen);
     };
-    auto at = [&](int i) { return i >= 0 && i < (int)c.msgs.size() && c.msgs[i].node == cur; };
+    auto at = [&](int i) {
+        if (i == kCardMsg) return c.cardNode == cur;
+        return c.chatOpen && i >= 0 && i < (int)c.msgs.size() && c.msgs[i].node == cur;
+    };
     if (at(c.hoverMsg)) {
         auto pr = parsed(c.hoverMsg);
-        if (c.hoverAnnot < (int)pr.annots.size()) return addAnnot(pr.annots[c.hoverAnnot], 230);
+        if (c.hoverAnnot < (int)pr.annots.size()) return addAnnot(pr.annots[c.hoverAnnot], 230, out, marks);
     }
     if (at(c.pinMsg)) {
         auto pr = parsed(c.pinMsg);
-        if (c.pinAnnot < (int)pr.annots.size()) return addAnnot(pr.annots[c.pinAnnot], 220);
+        if (c.pinAnnot < (int)pr.annots.size()) return addAnnot(pr.annots[c.pinAnnot], 220, out, marks);
     }
+    if (!c.chatOpen) return;
     for (int i = (int)c.msgs.size() - 1; i >= 0; i--) {
         if (c.msgs[i].user) continue;
         if (!at(i)) return;
-        for (auto& a : parsed(i).annots) addAnnot(a, 170);
+        for (auto& a : parsed(i).annots) addAnnot(a, 170, out, marks);
         return;
     }
+}
+
+// Pip's card: what it talks about is drawn next to the review arrows (lines fade move by move).
+void App::Impl::coachCardAnnotations(std::vector<Arrow>& out, std::vector<std::pair<int, ImU32>>& marks) {
+    auto& c = *cs;
+    if (!game || !c.playQueue.empty() || c.cardNode != cur) return;
+    for (auto& a : c.card.annots) addAnnot(a, 170, out, marks);
 }
 
 // ---------- settings ----------

@@ -636,6 +636,10 @@ void App::Impl::drawSplash() {
     dl->AddText(f.bold, 44, tp, alpha(theme::text, int(255 * rise * fade)), name);
     float lw = ts.x * line;
     dl->AddRectFilled({c.x - lw / 2, tp.y + ts.y + 8}, {c.x + lw / 2, tp.y + ts.y + 11}, alpha(theme::accent, int(255 * fade)), 2);
+    const char* tag = "Open Chess Analysis";  // what the name stands for, after the underline
+    float sub = clamp01((t - 0.75f) / 0.35f);
+    ImVec2 ss = f.ui->CalcTextSizeA(14, FLT_MAX, 0, tag);
+    dl->AddText(f.ui, 14, ImFloor(ImVec2(c.x - ss.x / 2, tp.y + ts.y + 22)), alpha(theme::dim, int(255 * sub * fade)), tag);
     ImGui::End();
 }
 
@@ -978,8 +982,10 @@ std::vector<Arrow> App::Impl::arrows() {
     }
     std::vector<Arrow> chat;
     board.marks.clear();
-    coachAnnotations(chat, board.marks);  // the chat's board tags replace the review arrows
-    return chat.empty() && board.marks.empty() ? out : chat;
+    coachAnnotations(chat, board.marks);  // the chat's board tags (and a hovered chip) replace the review arrows
+    if (!chat.empty() || !board.marks.empty()) return chat;
+    coachCardAnnotations(out, board.marks);  // Pip's card adds to them
+    return out;
 }
 
 void App::Impl::drawStrip(const Board& b, Color c, float w, float h) {

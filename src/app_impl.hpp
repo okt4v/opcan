@@ -563,6 +563,7 @@ struct App::Impl {
     void sendCoachQuestion();
     void drawCoachChat(bool docked);
     void coachAnnotations(std::vector<Arrow>& arrows, std::vector<std::pair<int, ImU32>>& marks);
+    void coachCardAnnotations(std::vector<Arrow>& arrows, std::vector<std::pair<int, ImU32>>& marks);
     void settingsCoach(float w);
 
     // settings_ui.cpp
