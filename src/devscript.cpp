@@ -17,6 +17,8 @@
 #include <deque>
 #include <fstream>
 #include <functional>
+#include <string_view>
+#include <cctype>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -31,7 +33,10 @@ int button(const std::string& s) { return s == "r" ? 1 : s == "m" ? 2 : 0; }
 
 ImGuiKey keyByName(const std::string& n) {
     for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; k++)
-        if (strcasecmp(ImGui::GetKeyName(ImGuiKey(k)), n.c_str()) == 0) return ImGuiKey(k);
+        if (std::ranges::equal(std::string_view(ImGui::GetKeyName(ImGuiKey(k))), n, [](char a, char b) {
+                return std::tolower((unsigned char)a) == std::tolower((unsigned char)b);
+            }))
+            return ImGuiKey(k);
     return ImGuiKey_None;
 }
 
