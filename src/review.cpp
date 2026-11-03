@@ -1,6 +1,7 @@
 #include "review.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <thread>
 
 using namespace chess;
@@ -382,4 +383,48 @@ std::string Reviewer::error() const {
     if (!impl_) return {};
     std::lock_guard l(impl_->mu);
     return impl_->err;
+}
+
+std::string annotatedPgn(const Game& src, const ReviewResult* rev, const PgnExportOpts& o) {
+    Game g = src;
+    for (auto& n : g.nodes) {
+        if (!o.clocks) n.clockSec = -1;
+        if (!o.comments) n.comment.clear();
+    }
+    if (!o.variations)
+        for (auto& n : g.nodes)
+            if (n.children.size() > 1) n.children.resize(1);  // orphaned side lines are never reached by pgn()
+    auto prepend = [](std::string& c, const std::string& s) { c = c.empty() ? s : s + " " + c; };
+    if (rev) {
+        g.headers["Annotator"] = "opcan";
+        for (size_t i = 0; i < rev->moves.size() && i + 1 < rev->line.size() && i + 1 < rev->evals.size(); i++) {
+            const MoveReview& m = rev->moves[i];
+            Node& n = g.nodes[m.node];
+            std::string note;
+            if (o.evals) {
+                const Score& s = rev->evals[i + 1].best;
+                bool whiteToMove = g.board(m.node).sideToMove() == Color::WHITE;
+                char buf[32];
+                if (s.mate) std::snprintf(buf, sizeof buf, "[%%eval #%d]", whiteToMove ? s.mate : -s.mate);
+                else if (!s.mated) std::snprintf(buf, sizeof buf, "[%%eval %.2f]", (whiteToMove ? s.cp : -s.cp) / 100.0);
+                else buf[0] = 0;
+                note = buf;
+            }
+            const char* nag = m.cls == Cls::Brilliant ? "$3" : m.cls == Cls::Great ? "$1" : m.cls == Cls::Inaccuracy ? "$6"
+                            : m.cls == Cls::Mistake || m.cls == Cls::Miss ? "$2" : m.cls == Cls::Blunder ? "$4" : nullptr;
+            if (o.nags && nag) n.san += std::string(" ") + nag;
+            if (o.notes && nag) {
+                std::string t = std::string(clsName(m.cls)) + ".";
+                bool bad = m.cls >= Cls::Inaccuracy && m.cls <= Cls::Blunder;
+                if (bad && !m.bestSan.empty()) t += " Best was " + m.bestSan + ".";
+                prepend(note, t);
+            }
+            if (!note.empty()) prepend(n.comment, note);
+        }
+        if (o.notes && !g.nodes.empty()) {
+            auto acc = [](double a) { char b[16]; std::snprintf(b, sizeof b, "%.1f%%", a); return a < 0 ? std::string("n/a") : std::string(b); };
+            prepend(g.nodes[0].comment, "Accuracy: White " + acc(rev->accuracy[0]) + ", Black " + acc(rev->accuracy[1]) + ".");
+        }
+    }
+    return g.pgn();
 }

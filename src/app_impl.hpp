@@ -2,6 +2,7 @@
 // Internals shared by app.cpp (shell, analysis + review screens) and library.cpp (profiles, library, background work).
 #include "app.hpp"
 #include "audio.hpp"
+#include "speech.hpp"
 #include "board.hpp"
 #include "coach.hpp"
 #include "engine.hpp"
@@ -78,7 +79,7 @@ std::string chordName(ImGuiKeyChord c);
 struct Prefs {
     theme::Look look;
     std::string pieces = "cburnett", uiFont = "Inter", monoFont = "JetBrains Mono";
-    float scale = 1;
+    float scale = 1, textScale = 1;  // whole-UI zoom; extra text-only zoom
     bool animate = true, evalAnim = true, legal = true, lastMove = true;
     int animSpeed = 1, coords = 1;  // speed: 0 fast, 1 normal, 2 slow; coords: 0 off, 1 inside, 2 outside
     bool sound = true, moveSounds = true, notifySound = true;
@@ -86,6 +87,7 @@ struct Prefs {
     std::string soundSet = "classic-wood";
     ImGuiKeyChord keys[kActCount][2] = {};
     bool docking = false;
+    bool typeMoves = false, speakMoves = false, readOut = false;  // accessibility: typed moves, move speech
     Prefs() {
         for (int i = 0; i < kActCount; i++) keys[i][0] = kActs[i].def[0], keys[i][1] = kActs[i].def[1];
     }
@@ -148,9 +150,19 @@ inline ImU32 alpha(ImU32 c, int a) { return (c & 0x00ffffff) | ((ImU32)a << 24);
 void textCentered(ImDrawList* dl, ImVec2 c, ImU32 col, const char* s);
 std::string ellipsize(const std::string& s, float maxW);
 int segmented(const char* id, const char* const* labels, int n, int sel, float w, bool enabled = true);  // returns selection
+// Settings-style cards with label/hint rows (settings_ui.cpp); setCardFonts() once per frame before use.
+struct Fonts;
+void setCardFonts(const Fonts* f);
+void cardBegin(const char* id, const char* title, const char* sub = nullptr, float w = 0);
+void cardEnd();
+bool rowsBegin(const char* id);
+void row(const char* label, const char* hint = nullptr);
+void rowsEnd();
+bool toggleSwitch(const char* id, bool* v);
+int seg(const char* id, const char* const* labels, int n, int sel, bool enabled = true);
 
-enum class View { Library, Analyze, Stats, Summary, Review, Settings, Openings, Editor, Train, Tournaments };
-enum class Icon { Library, Analyze, Stats, Settings, Back, Openings, Train, Tournaments };
+enum class View { Library, Analyze, Stats, Summary, Review, Settings, Openings, Editor, Train, Tournaments, Social };
+enum class Icon { Library, Analyze, Stats, Settings, Back, Openings, Train, Tournaments, Share };
 void drawIcon(ImDrawList* dl, ImVec2 c, Icon i, ImU32 col);
 
 struct AccRow {
@@ -314,6 +326,30 @@ struct TourneyUi {
     char rWhite[64] = "", rBlack[64] = "";
 };
 
+// Social page (social_ui.cpp): share cards (PNG), GIFs of a stretch of the game, annotated PGN.
+struct ShareUi {
+    int mode = 0;          // 0 image, 1 GIF, 2 PGN
+    int at = 0;            // image: line index shown
+    int from = 0, to = 0;  // GIF: line index range
+    bool badge = true, caption = true, coords = true, arrow = true, hold = true;
+    int size = 1, speed = 1;  // size: 480/720/1080 px wide; speed: slow/normal/fast
+    PgnExportOpts pgn;
+    std::string pgnText;
+    bool pgnStale = true;
+    const void* forGame = nullptr;  // game the page was set up for
+    BoardView preview, out;          // separate piece textures: the export rasterizes at its own size
+    double t0 = 0;                   // GIF preview start
+    // Offscreen render, built during the frame, drawn into a framebuffer after it (App::afterRender).
+    struct Job {
+        int w = 0, h = 0;
+        std::vector<std::unique_ptr<ImDrawList>> lists;  // one per frame
+        std::vector<int> delaysCs;
+        std::string path;
+        bool gif = false, copy = false;
+    };
+    std::unique_ptr<Job> job;
+};
+
 // Board editor page (editor_ui.cpp).
 struct PosEditor {
     SetupPos pos;
@@ -341,6 +377,7 @@ struct App::Impl {
     Openings book;
     BoardView board, preview;
     Audio audio;
+    Speech speech;
     std::string fontsLoaded, piecesLoaded;  // fontsLoaded: "ui|mono" of the fonts in f
     bool prefsDirty = false, layoutReset = false;
     std::string layoutToLoad;  // ini applied before the next frame
@@ -382,7 +419,7 @@ struct App::Impl {
     double splashAt = -1;  // opening animation start (main.cpp-free: first frame), -2 = done
     void drawSplash();
     int tourStep = -1;     // first-run tour (tour_ui.cpp), -1 = off
-    ImVec4 navRect[8]{};   // sidebar items (0 library, 1 analyze, 2 stats, 3 settings, 4 openings, 5 train, 6 profile, 7 tournaments)
+    ImVec4 navRect[9]{};   // sidebar items (0 library, 1 analyze, 2 stats, 3 settings, 4 openings, 5 train, 6 profile, 7 tournaments, 8 social)
     std::string paste;
     char tagInput[64] = "", infoNotes[2048] = "";
     int64_t infoNotesFor = 0;
@@ -451,7 +488,8 @@ struct App::Impl {
     void applyPrefs();
     void beforeFrame();  // font rebuild and layout load, outside NewFrame/Render
     bool act(Act a, bool repeat = false);
-    void moveSound(int node);
+    void moveSound(int node);  // also reads the move out (settings: speak / read out moves)
+    void moveFx(const chess::Board& before, chess::Move m);  // move sound + spoken move, per the settings
     std::string pieceDir(const std::string& set) const;
     std::string soundDir(const std::string& set) const;
     void openSettings();
@@ -503,6 +541,15 @@ struct App::Impl {
     void drawTrain();
     // tournament_ui.cpp
     void drawTournaments();
+    // social_ui.cpp
+    ShareUi sh;
+    void openShare(int node);  // Social page on this game, showing node
+    void drawSocial();
+    void shareCard(BoardView& bv, int i, float w);  // card for line index i at the cursor, w wide
+    float shareCardH(float w) const;
+    std::vector<int> shareLine() const;
+    void shareExport(bool gif, bool copy);
+    void afterRender();
     void tourneyList();
     void tourneyDetail();
     void tourneyScoreboard(const std::vector<Standing>& st);

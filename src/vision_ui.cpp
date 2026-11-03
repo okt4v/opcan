@@ -38,11 +38,6 @@ Board withPiece(char p, int sq) {  // p: FEN letter
     }
     return Board(fen + " w - - 0 1");
 }
-Sfx sfxOf(const Board& before, Move m) {
-    Board after = before;
-    after.makeMove(m);
-    return after.inCheck() ? Sfx::Check : m.typeOf() == Move::CASTLING ? Sfx::Castle : before.isCapture(m) ? Sfx::Capture : Sfx::Move;
-}
 Arrow arrowOf(Move m, ImU32 col) { return {m.from(), m.to(), col}; }
 const char* kindName(PieceType t) {
     static const char* n[] = {"pawn", "knight", "bishop", "rook", "queen", "king"};
@@ -228,7 +223,7 @@ void App::Impl::visionBlindEngine() {
         std::string san = uci::moveToSan(v.pos, m);
         v.pos.makeMove(m);
         v.uciMoves.push_back(*u), v.sans.push_back(san), v.last = m;
-        if (prefs.moveSounds) audio.play(sfxOf(before, m));
+        moveFx(before, m);
         v.end = gameEnd(v.pos);
         v.msg = "I play " + san + "." + (v.end ? " " + v.end->reason + "." : " Your move.");
         if (v.end) visionFinish();
@@ -335,7 +330,7 @@ void App::Impl::drawVision() {
                 if (mv != Move::NO_MOVE) {
                     if (mv == v.want) {
                         good(mv.to().index());
-                        if (prefs.moveSounds) audio.play(sfxOf(v.pos, mv));
+                        moveFx(v.pos, mv);
                         visionNext();
                     } else {
                         bad(mv.to().index(), v.want.to().index());
@@ -378,7 +373,7 @@ void App::Impl::drawVision() {
                     } else if (hit) {
                         v.found.push_back(mv);
                         good(mv.to().index());
-                        if (prefs.moveSounds) audio.play(sfxOf(v.pos, mv));
+                        moveFx(v.pos, mv);
                         int left = (int)(v.all.size() - v.found.size());
                         v.msg = left ? uci::moveToSan(v.pos, mv) + ". " + std::to_string(left) + " to go." : "All found!";
                         if (!left) v.nextAt = now + 1.0;
@@ -612,7 +607,7 @@ void App::Impl::drawVision() {
                         std::string san = uci::moveToSan(v.pos, m);
                         v.pos.makeMove(m);
                         v.uciMoves.push_back(uci::moveToUci(m)), v.sans.push_back(san), v.last = m;
-                        if (prefs.moveSounds) audio.play(sfxOf(before, m));
+                        moveFx(before, m);
                         v.end = gameEnd(v.pos);
                         v.msg = v.end ? v.end->reason + "." : "You play " + san + ". Thinking...";
                         v.mood = 0;

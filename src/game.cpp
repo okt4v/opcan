@@ -316,3 +316,32 @@ std::optional<Game> gameFromFen(std::string_view fen) {
     g.headers["FEN"] = root.fen;
     return g;
 }
+
+Move parseTypedMove(const Board& b, std::string_view text, std::string* err) {
+    // compare with the decorations stripped; castling as "oo"/"ooo" whatever the zeros or dashes
+    auto key = [](std::string_view s, bool fold) {
+        std::string k;
+        for (char c : s)
+            if (c == '0' || c == 'o' || c == 'O') k += 'o';
+            else if (std::isalnum((unsigned char)c) && c != 'x' && c != 'X') k += fold ? (char)std::tolower((unsigned char)c) : c;
+        return k;
+    };
+    std::string in = key(text, false), inFold = key(text, true);
+    Movelist ml;
+    movegen::legalmoves(ml, b);
+    Move exact = Move::NO_MOVE, folded = Move::NO_MOVE;
+    int nFolded = 0;
+    for (const Move& m : ml) {
+        std::string san = uci::moveToSan(b, m), u = uci::moveToUci(m);
+        if (in.empty()) break;
+        if (key(san, false) == in || u == inFold) exact = m;
+        bool f = key(san, true) == inFold;
+        if (!f && m.typeOf() == Move::PROMOTION && m.promotionType() == PieceType::QUEEN)  // "e8" / "e7e8" promote to a queen
+            f = key(san, true) == inFold + "q" || u == inFold + "q";
+        if (f && folded != m) folded = m, nFolded++;
+    }
+    if (exact != Move::NO_MOVE) return exact;
+    if (nFolded == 1) return folded;
+    if (err) *err = in.empty() ? "" : nFolded ? "Ambiguous: use a capital letter for pieces (Bc4)" : "Not a legal move";
+    return Move::NO_MOVE;
+}

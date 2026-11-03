@@ -114,6 +114,7 @@ App::Impl::Impl() {
     if (page && std::string(page) == "settings" && prof) view = View::Settings;
     if (page && std::string(page) == "train" && prof && !prof->guest) view = View::Train;
     if (page && std::string(page) == "tournaments" && prof && !prof->guest) view = View::Tournaments;
+    if (page && std::string(page) == "social" && prof) view = View::Social;
     if (const char* t = std::getenv("OPCAN_SETTINGS_TAB")) settingsTab = std::atoi(t);  // dev hook
     if (const char* g = std::getenv("OPCAN_GAME"); g && prof) openStored(std::atoll(g));  // dev hook
 }
@@ -172,12 +173,13 @@ template <class F>
 void visitPrefs(Prefs& p, F&& f) {
     f("theme", p.look.mode), f("tint", p.look.tint), f("accent", p.look.accent), f("board", p.look.board);
     f("boardLight", p.look.customLight), f("boardDark", p.look.customDark);
-    f("pieces", p.pieces), f("uiFont", p.uiFont), f("monoFont", p.monoFont), f("scale", p.scale);
+    f("pieces", p.pieces), f("uiFont", p.uiFont), f("monoFont", p.monoFont), f("scale", p.scale), f("textScale", p.textScale);
     f("animate", p.animate), f("animSpeed", p.animSpeed), f("evalAnim", p.evalAnim);
     f("coords", p.coords), f("legal", p.legal), f("lastMove", p.lastMove);
     f("sound", p.sound), f("moveSounds", p.moveSounds), f("notifySound", p.notifySound), f("volume", p.volume),
         f("soundSet", p.soundSet);
     f("docking", p.docking);
+    f("typeMoves", p.typeMoves), f("speakMoves", p.speakMoves), f("readOut", p.readOut);
 }
 }  // namespace
 
@@ -202,7 +204,8 @@ void App::Impl::loadPrefs() {
     for (int i = 0; i < kActCount; i++)
         if (auto s = get(std::string("key.") + kActs[i].id); !s.empty())
             std::sscanf(s.c_str(), "%d,%d", &p.keys[i][0], &p.keys[i][1]);
-    p.scale = std::clamp(p.scale, 0.8f, 1.5f);
+    p.scale = std::clamp(p.scale, 0.8f, 2.f);
+    p.textScale = std::clamp(p.textScale, 0.8f, 1.75f);
     if (p.soundSet == "sfx" && get("soundSetV").empty()) p.soundSet = "classic-wood";  // sfx was the old default
     p.animSpeed = std::clamp(p.animSpeed, 0, 2);
     prefs = p;
@@ -227,6 +230,7 @@ void App::Impl::applyPrefs() {
     if (auto dir = pieceDir(prefs.pieces); dir != piecesLoaded) {
         if (!board.load(dir)) board.load(dir = pieceDir("cburnett"));
         preview.load(dir);
+        sh.preview.load(dir), sh.out.load(dir);
         piecesLoaded = dir;
     }
     const float speeds[] = {0.08f, 0.14f, 0.24f};
@@ -238,6 +242,8 @@ void App::Impl::applyPrefs() {
     auto snd = soundDir(prefs.soundSet);
     audio.load(fs::is_directory(snd) ? snd : soundDir("classic-wood"));
     audio.setVolume(prefs.sound ? prefs.volume : 0);
+    BoardView::typeMoves = prefs.typeMoves;
+    ImGui::GetStyle().FontScaleMain = prefs.textScale;  // scales every PushFont size too
     auto& io = ImGui::GetIO();
     if (prefs.docking) io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     else io.ConfigFlags &= ~ImGuiConfigFlags_DockingEnable;
@@ -408,6 +414,15 @@ void App::Impl::go(int n) {
     animUntil = ImGui::GetTime() + 0.3;
 }
 void App::Impl::moveSound(int n) {
+    if (prefs.readOut || prefs.speakMoves) {
+        std::string t = spokenSan(game->nodes[n].san);
+        const MoveReview* mr = prefs.readOut && review ? review->forNode(n) : nullptr;
+        if (mr && mr->cls != Cls::None) {
+            t += ". " + std::string(clsName(mr->cls));
+            if (mr->cls >= Cls::Inaccuracy && mr->cls <= Cls::Blunder && !mr->bestSan.empty()) t += ". Best was " + spokenSan(mr->bestSan);
+        }
+        speech.say(t);
+    }
     if (!prefs.moveSounds) return;
     Board pb = game->board(game->nodes[n].parent), b = game->board(n);
     Movelist ml;
@@ -415,6 +430,17 @@ void App::Impl::moveSound(int n) {
     Move m = game->nodes[n].move;
     audio.play(ml.empty() ? Sfx::End : b.inCheck() ? Sfx::Check
                : m.typeOf() == Move::CASTLING ? Sfx::Castle : pb.isCapture(m) ? Sfx::Capture : Sfx::Move);
+}
+
+void App::Impl::moveFx(const Board& before, Move m) {
+    Board after = before;
+    after.makeMove(m);
+    Movelist ml;
+    movegen::legalmoves(ml, after);
+    if (prefs.moveSounds)
+        audio.play(ml.empty() ? Sfx::End : after.inCheck() ? Sfx::Check
+                   : m.typeOf() == Move::CASTLING ? Sfx::Castle : before.isCapture(m) ? Sfx::Capture : Sfx::Move);
+    if (prefs.speakMoves) speech.say(spokenSan(uci::moveToSan(before, m)));
 }
 
 void App::Impl::next() {
@@ -582,6 +608,7 @@ void App::Impl::frame() {
         else if (view == View::Editor) drawPosEditor();
         else if (view == View::Train) drawTrain();
         else if (view == View::Tournaments) drawTournaments();
+        else if (view == View::Social) drawSocial();
         else drawLibrary();
         ImGui::EndChild();
         drawLibraryModals();
@@ -713,10 +740,10 @@ void App::Impl::drawSidebar(float w) {
     struct Item {
         Icon icon;
         const char* label;
-        int act;  // 0 library, 1 analyze, 2 stats, 3 settings, 4 openings, 5 train, 7 tournaments (6: navRect's profile)
+        int act;  // 0 library, 1 analyze, 2 stats, 3 settings, 4 openings, 5 train, 7 tournaments, 8 social (6: navRect's profile)
     } items[] = {{Icon::Library, "Library", 0}, {Icon::Analyze, "Analyze", 1}, {Icon::Openings, "Openings", 4},
                  {Icon::Train, "Train", 5}, {Icon::Tournaments, "Tournaments", 7}, {Icon::Stats, "Stats", 2},
-                 {Icon::Settings, "Settings", 3}};
+                 {Icon::Share, "Social", 8}, {Icon::Settings, "Settings", 3}};
     for (auto& it : items) {
         ImGui::PushID(it.act);
         p = ImGui::GetCursorScreenPos();
@@ -724,7 +751,7 @@ void App::Impl::drawSidebar(float w) {
         bool active = (it.act == 0 && activeView == View::Library) || (it.act == 1 && (activeView == View::Analyze || activeView == View::Editor)) ||
                       (it.act == 2 && activeView == View::Stats) || (it.act == 3 && activeView == View::Settings) ||
                       (it.act == 4 && activeView == View::Openings) || (it.act == 5 && activeView == View::Train) ||
-                      (it.act == 7 && activeView == View::Tournaments);
+                      (it.act == 7 && activeView == View::Tournaments) || (it.act == 8 && activeView == View::Social);
         bool clicked = ImGui::InvisibleButton("nav", {iw, 36}) && !disabled;
         navRect[it.act] = {p.x, p.y, p.x + iw, p.y + 36};
         bool hov = ImGui::IsItemHovered();
@@ -741,6 +768,7 @@ void App::Impl::drawSidebar(float w) {
         if (clicked) {
             ed.open = false;
             if (it.act == 3) openSettings();
+            else if (it.act == 8) openShare(game ? cur : -1);
             else {
                 view = it.act == 0 ? View::Library : it.act == 1 ? View::Analyze : it.act == 4 ? View::Openings
                      : it.act == 5 ? View::Train : it.act == 7 ? View::Tournaments : View::Stats;
@@ -1076,8 +1104,11 @@ void App::Impl::drawPanel() {
     ImGui::PopFont();
     float right = ImGui::GetWindowContentRegionMax().x;
     ImGui::SameLine();
-    float pw = ImGui::CalcTextSize("Play vs engine").x + 20, ew = ImGui::CalcTextSize("Edit").x + 20;
-    ImGui::SetCursorPosX(right - 28 - 6 - pw - 6 - ew);
+    float pw = ImGui::CalcTextSize("Play vs engine").x + 20, ew = ImGui::CalcTextSize("Edit").x + 20, sw = ImGui::CalcTextSize("Share").x + 20;
+    ImGui::SetCursorPosX(right - 28 - 6 - pw - 6 - ew - 6 - sw);
+    if (ImGui::Button("Share", {sw, 28})) openShare(cur);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Image, GIF or annotated PGN of this game");
+    ImGui::SameLine(0, 6);
     if (ImGui::Button("Edit", {ew, 28})) openPosEditor((retry.on ? retry.board : game->board(cur)).getFen(), board.flipped);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Edit position: set up a new position from this one");
     ImGui::SameLine(0, 6);
@@ -1781,6 +1812,7 @@ float App::uiScale() const { return d->prefs.scale; }
 const Fonts& App::fonts() const { return d->f; }
 App::~App() = default;
 void App::frame() { d->frame(); }
+void App::afterRender() { d->afterRender(); }
 bool App::wantsQuit() const { return d->quit; }
 bool App::animating() const {
     return ImGui::GetTime() < d->animUntil || std::abs(d->evalShown - d->evalTarget) > 0.05f;

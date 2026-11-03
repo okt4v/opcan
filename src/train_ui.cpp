@@ -42,11 +42,6 @@ Arrow arrowOf(Move m, ImU32 col) {
     std::string u = uci::moveToUci(m);
     return {Square(u.substr(0, 2)), Square(u.substr(2, 2)), col};
 }
-Sfx sfxOf(const Board& before, Move m) {
-    Board after = before;
-    after.makeMove(m);
-    return after.inCheck() ? Sfx::Check : m.typeOf() == Move::CASTLING ? Sfx::Castle : before.isCapture(m) ? Sfx::Capture : Sfx::Move;
-}
 std::string sanOf(const Board& b, Move m) { return uci::moveToSan(b, m); }
 }  // namespace
 
@@ -378,7 +373,7 @@ void App::Impl::trainWrong(const Board& before, Move m, Cls c) {
     tr.wrong = m;
     tr.badge = c;
     tr.revertAt = ImGui::GetTime() + 0.7;
-    if (prefs.moveSounds) audio.play(sfxOf(before, m));
+    moveFx(before, m);
 }
 
 void App::Impl::trainMove(Move m) {
@@ -387,7 +382,7 @@ void App::Impl::trainMove(Move m) {
     if (!isLine(c)) {  // puzzle: the best move, or one the engine rates just as good
         auto finish = [&] {
             tr.board.makeMove(m), tr.last = m;
-            if (prefs.moveSounds) audio.play(sfxOf(before, m));
+            moveFx(before, m);
             Grade g = tr.revealed ? Grade::Again : tr.mistakes || tr.hinted ? Grade::Hard : Grade::Good;
             trainGrade(g);
             json d = json::parse(c.data, nullptr, false);
@@ -423,7 +418,7 @@ void App::Impl::trainMove(Move m) {
     Move want = tr.line[tr.idx];
     if (m == want) {
         tr.board.makeMove(m), tr.last = m, tr.idx++;
-        if (prefs.moveSounds) audio.play(sfxOf(before, m));
+        moveFx(before, m);
         board.marks.clear();
         if (tr.idx >= (int)tr.line.size()) {
             Grade g = tr.revealed || tr.mistakes >= 2 ? Grade::Again : tr.mistakes || tr.hinted ? Grade::Hard : Grade::Good;
@@ -467,7 +462,7 @@ void App::Impl::trainSession() {
             tr.board = before;
             Grade g = tr.revealed ? Grade::Again : tr.mistakes || tr.hinted ? Grade::Hard : Grade::Good;
             tr.board.makeMove(m);
-            if (prefs.moveSounds) audio.play(sfxOf(before, m));
+            moveFx(before, m);
             trainGrade(g);
             tr.msg = sanOf(before, m) + " works too! The engine's first choice was " + sanOf(before, tr.line[0]) + ".";
         } else {
@@ -493,7 +488,7 @@ void App::Impl::trainSession() {
             Move m = tr.line[tr.idx++];
             tr.board.makeMove(m), tr.last = m;
             tr.badge = Cls::None;  // the signal belonged to the learner's move
-            if (prefs.moveSounds) audio.play(sfxOf(before, m));
+            moveFx(before, m);
             if (tr.idx >= (int)tr.line.size()) {
                 Grade g = tr.revealed || tr.mistakes >= 2 ? Grade::Again : tr.mistakes || tr.hinted ? Grade::Hard : Grade::Good;
                 trainGrade(g);
@@ -612,7 +607,7 @@ void App::Impl::trainSession() {
             std::string next = "Next: " + sanOf(b, tr.line[tr.idx]);
             if (accentButton(next.c_str(), {pw, 38}) || ImGui::IsKeyPressed(ImGuiKey_RightArrow, false)) {
                 Move m = tr.line[tr.idx++];
-                if (prefs.moveSounds) audio.play(sfxOf(tr.board, m));
+                moveFx(tr.board, m);
                 tr.board.makeMove(m), tr.last = m;
             }
         } else if (accentButton("Now you try", {pw, 38}) || ImGui::IsKeyPressed(ImGuiKey_Enter, false)) {
@@ -682,7 +677,7 @@ void App::Impl::trainRepertoire() {
     ImGui::SetCursorPos(origin);
     Move mv = board.draw(b, size, tr.repLine.empty() ? Move::NO_MOVE : tr.repLine.back(), Cls::None, arrows);
     if (mv != Move::NO_MOVE) {
-        if (prefs.moveSounds) audio.play(sfxOf(b, mv));
+        moveFx(b, mv);
         tr.repLine.push_back(mv);
     }
 

@@ -127,6 +127,7 @@ int main(int argc, char** argv) {
         glClearColor(bg.x, bg.y, bg.z, 1);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        app->afterRender();
         auto shotNow = devscript::takeShot();
         if (shot && glfwGetTime() > shotAt) shotNow = shot;
         if (!shotNow.empty()) {

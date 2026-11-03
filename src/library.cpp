@@ -286,6 +286,11 @@ void drawIcon(ImDrawList* dl, ImVec2 c, Icon i, ImU32 col) {
             dl->AddLine({c.x - 6, c.y - 5}, {c.x - 9, c.y - 3}, col, 1.6f);
             dl->AddLine({c.x + 6, c.y - 5}, {c.x + 9, c.y - 3}, col, 1.6f);
             break;
+        case Icon::Share:  // three linked dots
+            dl->AddLine({c.x - 5, c.y}, {c.x + 5, c.y - 6}, col, 1.6f);
+            dl->AddLine({c.x - 5, c.y}, {c.x + 5, c.y + 6}, col, 1.6f);
+            for (ImVec2 d : {ImVec2{c.x - 5, c.y}, ImVec2{c.x + 5, c.y - 6}, ImVec2{c.x + 5, c.y + 6}}) dl->AddCircleFilled(d, 2.8f, col);
+            break;
         case Icon::Openings:  // a branching line
             dl->AddLine({c.x, c.y + 7}, {c.x, c.y - 1}, col, 1.8f);
             dl->AddLine({c.x, c.y - 1}, {c.x - 6, c.y - 5}, col, 1.8f);

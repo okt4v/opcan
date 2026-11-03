@@ -176,6 +176,12 @@ struct BoardView::Impl {
 
     std::map<int, GLuint> extra;  // piece * 4096 + px -> texture
 
+    int rFrom = -1;  // right-button press square while drawing
+    ImU32 rCol = 0;
+    bool typing = false, typeFocus = false;
+    char typed[24] = {};
+    std::string typeErr;
+
     ~Impl() {
         if (texPx) glDeleteTextures(12, tex);
         for (auto& [k, t] : extra) glDeleteTextures(1, &t);
@@ -309,6 +315,7 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
                 }
             }
         }
+        if (!keepDrawn) drawnMarks.clear(), drawnArrows.clear();
         s.prev = b;
         s.prevHash = h;
         s.havePrev = true;
@@ -382,6 +389,30 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
         return i >= 0 && i < 4 ? i : -1;
     };
 
+    // right-click drawing (chess.com style), interactive or not
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) drawnMarks.clear(), drawnArrows.clear();
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !s.promo && premoves.empty()) {
+        s.rFrom = hoverSq;
+        s.rCol = io.KeyShift ? IM_COL32(92, 184, 92, 205) : io.KeyCtrl ? IM_COL32(72, 150, 230, 205)
+               : io.KeyAlt ? IM_COL32(235, 200, 50, 205) : IM_COL32(245, 150, 40, 205);
+    }
+    if (s.rFrom >= 0 && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+        int to = sqAt(mouse);
+        if (to == s.rFrom) {
+            auto it = std::find_if(drawnMarks.begin(), drawnMarks.end(), [&](auto& m) { return m.first == to; });
+            bool same = it != drawnMarks.end() && it->second == s.rCol;
+            if (it != drawnMarks.end()) drawnMarks.erase(it);
+            if (!same) drawnMarks.push_back({to, s.rCol});
+        } else if (to >= 0) {
+            auto it = std::find_if(drawnArrows.begin(), drawnArrows.end(),
+                                   [&](const Arrow& a) { return a.from.index() == s.rFrom && a.to.index() == to; });
+            bool same = it != drawnArrows.end() && it->color == s.rCol;
+            if (it != drawnArrows.end()) drawnArrows.erase(it);
+            if (!same) drawnArrows.push_back({Square(s.rFrom), Square(to), s.rCol});
+        }
+        s.rFrom = -1;
+    }
+
     if (!interactive) {
         s.selected = s.dragFrom = -1;
         s.dragging = s.promo = false;
@@ -449,6 +480,8 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
         dl->AddRectFilled(sqPos(sq), sqPos(sq) + ImVec2(q, q), (col & 0x00ffffff) | (((col >> 24) * 110 / 255) << 24));
         dl->AddRect(sqPos(sq) + ImVec2(1.5f, 1.5f), sqPos(sq) + ImVec2(q - 1.5f, q - 1.5f), col, 0, 0, std::max(2.0f, q * 0.05f));
     }
+    for (auto [sq, col] : drawnMarks)
+        if (sq >= 0 && sq < 64) dl->AddRectFilled(sqPos(sq), sqPos(sq) + ImVec2(q, q), withAlpha(col, 0.75f));
     if (coords == 1) {
         ImFont* f = ImGui::GetFont();
         float fs = std::max(9.0f, size / 40), pad = q * 0.06f;
@@ -512,8 +545,12 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
         drawPiece(p, ImFloor(pos), faded ? 0.35f : 1.0f);
     }
 
-    // Arrows.
-    for (const Arrow& a : arrows) {
+    // Arrows: the caller's, the user's, and the one being drawn.
+    std::vector<Arrow> all = arrows;
+    all.insert(all.end(), drawnArrows.begin(), drawnArrows.end());
+    if (s.rFrom >= 0 && ImGui::IsMouseDown(ImGuiMouseButton_Right) && hoverSq >= 0 && hoverSq != s.rFrom)
+        all.push_back({Square(s.rFrom), Square(hoverSq), s.rCol});
+    for (const Arrow& a : all) {
         int f0 = a.from.index() & 7, r0 = a.from.index() >> 3, f1 = a.to.index() & 7, r1 = a.to.index() >> 3;
         if (a.from == a.to) continue;
         ImVec2 A = sqPos(a.from.index()) + ImVec2(q, q) * 0.5f, B = sqPos(a.to.index()) + ImVec2(q, q) * 0.5f;
@@ -564,6 +601,37 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
 
     // Dragged piece on top of everything.
     if (s.dragging && s.dragFrom >= 0) drawPiece(pieceAt(s.dragFrom), ImFloor(mouse - ImVec2(q, q) * 0.5f));
+
+    // Typed move box, over the bottom of the board.
+    if (!typeMoves || !interactive) s.typing = false;
+    else if (!s.typing && !io.WantTextInput && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup) &&
+             (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)))
+        s.typing = s.typeFocus = true, s.typed[0] = 0, s.typeErr.clear();
+    if (s.typing) {
+        ImVec2 back = ImGui::GetCursorScreenPos();
+        float w = std::min(8 * q - 16, std::max(240.f, 4 * q)), fh = ImGui::GetFrameHeight();
+        ImVec2 p0(o.x + (8 * q - w) / 2, o.y + 8 * q - fh - 12 - (s.typeErr.empty() ? 0 : ImGui::GetTextLineHeight() + 4));
+        dl->AddRectFilled(p0 - ImVec2(8, 8), ImVec2(p0.x + w + 8, o.y + 8 * q - 4), IM_COL32(0, 0, 0, 170), 8);
+        if (!s.typeErr.empty()) {
+            dl->AddText(p0, theme::loss, s.typeErr.c_str());
+            p0.y += ImGui::GetTextLineHeight() + 4;
+        }
+        ImGui::SetCursorScreenPos(p0);
+        ImGui::SetNextItemWidth(w);
+        if (s.typeFocus) ImGui::SetKeyboardFocusHere(), s.typeFocus = false;
+        bool enter = ImGui::InputTextWithHint("##typedMove", "Type a move: e4, Nf3, O-O  (Esc closes)", s.typed, sizeof s.typed,
+                                              ImGuiInputTextFlags_EnterReturnsTrue);
+        if (enter) {
+            if (!s.typed[0]) s.typing = false;
+            else if (pre || s.promo) s.typeErr = "Wait for your turn", s.typeFocus = true;
+            else if (Move m = parseTypedMove(b, s.typed, &s.typeErr); m != Move::NO_MOVE)
+                result = m, s.typed[0] = 0, s.typeErr.clear(), s.typeFocus = true, s.selected = -1;
+            else s.typeFocus = true;
+        } else if (ImGui::IsItemDeactivated()) {
+            s.typing = false;  // Esc or a click elsewhere
+        }
+        ImGui::SetCursorScreenPos(back);
+    }
 
     return result;
 }

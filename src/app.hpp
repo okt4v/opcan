@@ -16,6 +16,7 @@ public:
     ~App();
     void beforeFrame();  // call before ImGui::NewFrame (font and layout changes)
     void frame();
+    void afterRender();  // after the frame is rendered: offscreen exports (Social page)
     float uiScale() const;
     const Fonts& fonts() const;
     void dropFiles(const std::vector<std::string>& paths);

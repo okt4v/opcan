@@ -116,6 +116,7 @@ void App::Impl::retryMove(Move m) {
     int parent = game->nodes[retry.node].parent;
     Board before = game->board(parent);
     retry.san = uci::moveToSan(before, m);
+    if (prefs.speakMoves) speech.say(spokenSan(retry.san));
     retry.board = before;
     retry.board.makeMove(m);
     retry.shown = m;
@@ -254,6 +255,7 @@ void App::Impl::drawRetryCard() {
                 retry.revertAt = 0;
                 retry.phase = P::Solution;
                 if (prefs.moveSounds) audio.play(Sfx::Move);
+                if (prefs.speakMoves || prefs.readOut) speech.say("Solution: " + spokenSan(retry.san));
             }
         }
         ImGui::EndDisabled();
@@ -356,6 +358,7 @@ void App::Impl::playMove(Move m) {
     auto& s = *play;
     Board before = s.board;
     s.sans.push_back(uci::moveToSan(before, m));
+    if (prefs.speakMoves) speech.say(spokenSan(s.sans.back()));
     s.board.makeMove(m);
     s.moves.push_back(m);
     int mover = (int)before.sideToMove();

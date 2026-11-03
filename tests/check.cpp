@@ -12,6 +12,9 @@ void checkTrain();
 void checkVision();
 void checkTournament();
 void checkUpdate();
+void checkShare();
+void checkGif();
+void checkSpeech();
 int main() {
     checkCore();
     checkReview();
@@ -25,5 +28,8 @@ int main() {
     checkVision();
     checkTournament();
     checkUpdate();
+    checkShare();
+    checkGif();
+    checkSpeech();
     std::puts("all checks passed");
 }

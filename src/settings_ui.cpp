@@ -35,7 +35,11 @@ std::vector<std::pair<std::string, bool>> listSets(const std::string& bundled, c
     return out;
 }
 
-void cardBegin(const char* id, const char* title, const char* sub = nullptr, float w = 0) {
+}  // namespace
+
+void setCardFonts(const Fonts* f) { F = f; }
+
+void cardBegin(const char* id, const char* title, const char* sub, float w) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {20, 16});
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::panel);
@@ -72,7 +76,7 @@ bool rowsBegin(const char* id) {
     ImGui::TableSetupColumn("c", ImGuiTableColumnFlags_WidthFixed, cw);
     return true;
 }
-void row(const char* label, const char* hint = nullptr) {
+void row(const char* label, const char* hint) {
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 16);
@@ -113,9 +117,11 @@ bool toggleSwitch(const char* id, bool* v) {
 }
 
 // Right-aligned segmented control filling the column.
-int seg(const char* id, const char* const* labels, int n, int sel, bool enabled = true) {
+int seg(const char* id, const char* const* labels, int n, int sel, bool enabled) {
     return segmented(id, labels, n, sel, ImGui::GetContentRegionAvail().x, enabled);
 }
+
+namespace {
 
 // Grid of selectable tiles; draw(i, min, max) paints tile i. Returns the clicked index or -1.
 template <class D>
@@ -385,11 +391,18 @@ void App::Impl::settingsAppearance(float) {
         combo("##ui", kUiFonts, prefs.uiFont);
         row("Monospace font", "Clocks, engine lines and numbers.");
         combo("##mono", kMonoFonts, prefs.monoFont);
-        row("Interface scale");
-        static int pct = 100;
-        if (!ImGui::IsAnyItemActive()) pct = (int)std::lround(prefs.scale * 100);
-        ImGui::SliderInt("##scale", &pct, 80, 150, "%d%%");
-        if (ImGui::IsItemDeactivatedAfterEdit()) prefs.scale = std::round(pct / 5.f) * 0.05f, changed = true;
+        // applied on release: rescaling mid-drag would move the slider under the cursor
+        auto pctSlider = [&](const char* id, float& v, int lo, int hi) {
+            static int pct[2];
+            int& p = pct[&v == &prefs.scale];
+            if (!ImGui::IsAnyItemActive()) p = (int)std::lround(v * 100);
+            ImGui::SliderInt(id, &p, lo, hi, "%d%%");
+            if (ImGui::IsItemDeactivatedAfterEdit()) v = std::round(p / 5.f) * 0.05f, changed = true;
+        };
+        row("Interface scale", "Zooms everything: board, panels, buttons and text.");
+        pctSlider("##scale", prefs.scale, 80, 200);
+        row("Text size", "Makes text larger without zooming the rest of the interface.");
+        pctSlider("##textScale", prefs.textScale, 80, 175);
         rowsEnd();
     }
     cardEnd();
@@ -411,6 +424,8 @@ void App::Impl::settingsBoard(float) {
         if (toggleSwitch("best", &set.bestArrow)) saveSettings();
         row("Threat arrow", "The opponent's best reply after a mistake.");
         if (toggleSwitch("threat", &set.threatArrow)) saveSettings();
+        row("Type moves", "Press Enter on a board, type a move (e4, Nf3, e2e4) and press Enter to play it.");
+        changed |= toggleSwitch("typeMoves", &prefs.typeMoves);
         rowsEnd();
     }
     cardEnd();
@@ -448,6 +463,22 @@ void App::Impl::settingsSound(float) {
         rowsEnd();
     }
     cardEnd();
+
+    cardBegin("speech", "Speech", "Uses your system's voice (speech-dispatcher or espeak on Linux).");
+    if (rowsBegin("rows")) {
+        row("Speak moves", "Says each move out loud as it is played: games against the engine, puzzles and drills.");
+        changed |= toggleSwitch("speak", &prefs.speakMoves);
+        row("Read out moves", "Reads each move and its classification as you step through a game.");
+        changed |= toggleSwitch("readOut", &prefs.readOut);
+        if (prefs.speakMoves || prefs.readOut) {
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
+            if (!speech.available()) ImGui::TextWrapped("No voice found. Install speech-dispatcher or espeak-ng.");
+            ImGui::PopStyleColor();
+        }
+        rowsEnd();
+    }
+    cardEnd();
+    if (changed) applyPrefs(), prefsDirty = true, changed = false;
 
     std::string userDir = dataDir + "/sounds";
     cardBegin("sets", "Sound set", "Click a set to hear it. Add your own: Move, Capture, Check, Castle, Checkmate, GenericNotify "

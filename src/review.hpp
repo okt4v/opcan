@@ -77,3 +77,10 @@ private:
     struct Impl;
     std::shared_ptr<Impl> impl_;
 };
+
+// Annotated PGN for sharing: classification NAGs ($3 !!, $1 !, $6 ?!, $2 ?, $4 ??), notes like "Mistake. Best was Nf3.",
+// [%eval] (White's view) and [%clk] as each option says; rev may be null (then only clocks/comments apply).
+struct PgnExportOpts {
+    bool nags = true, notes = true, evals = true, clocks = true, comments = true, variations = true;
+};
+std::string annotatedPgn(const Game& g, const ReviewResult* rev, const PgnExportOpts& o);

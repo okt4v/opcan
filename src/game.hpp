@@ -48,3 +48,6 @@ std::string withTag(const std::string& tags, const std::string& t);
 bool loadFen(chess::Board& b, std::string_view fen);
 // Single position game. nullopt if the FEN is invalid.
 std::optional<Game> gameFromFen(std::string_view fen);
+// A move typed by the user: SAN or UCI, any case, with or without x + # = - ("nf3", "Nxe5", "e2e4", "e8q", "oo").
+// NO_MOVE if it matches no legal move or several; err (if given) then says why.
+chess::Move parseTypedMove(const chess::Board& b, std::string_view text, std::string* err = nullptr);
