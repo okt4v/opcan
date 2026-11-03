@@ -720,8 +720,12 @@ void App::Impl::settingsUpdates(float) {
             ImGui::PushFont(cmp == 0 ? F->bold : F->ui, 0);
             ImGui::TextUnformatted(r.name.empty() ? ("opcan " + r.version).c_str() : r.name.c_str());
             ImGui::PopFont();
-            if (ImGui::IsItemHovered() && !r.notes.empty())
-                ImGui::SetTooltip("%s", r.notes.size() > 800 ? (r.notes.substr(0, 800) + "…").c_str() : r.notes.c_str());
+            if (ImGui::IsItemHovered() && !r.notes.empty()) {
+                std::string t;
+                for (auto& l : plainNotes(r.notes)) t += l.text + "\n";
+                if (t.size() > 800) t = t.substr(0, 800) + "…";
+                if (!t.empty()) ImGui::SetTooltip("%s", t.c_str());
+            }
             ImGui::TableNextColumn();
             ImGui::TextDisabled("%s", r.published.c_str());
             ImGui::TableNextColumn();

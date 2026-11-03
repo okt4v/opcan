@@ -125,6 +125,51 @@ std::vector<Release> fetchReleases(std::string* err) {
     return r;
 }
 
+std::vector<NoteLine> plainNotes(const std::string& md) {
+    std::vector<NoteLine> out;
+    bool skip = false;
+    size_t a = 0;
+    while (a <= md.size()) {
+        size_t b = md.find('\n', a);
+        if (b == std::string::npos) b = md.size();
+        std::string l = md.substr(a, b - a);
+        a = b + 1;
+        if (!l.empty() && l.back() == '\r') l.pop_back();
+        size_t i = l.find_first_not_of(" \t");
+        l = i == std::string::npos ? "" : l.substr(i);
+        bool heading = !l.empty() && l[0] == '#';
+        if (heading) {
+            l = l.substr(std::min(l.size(), l.find_first_not_of('#')));
+            l = l.substr(std::min(l.size(), l.find_first_not_of(' ')));
+            std::string low = l;
+            for (auto& c : low) c = (char)std::tolower((unsigned char)c);
+            skip = low.rfind("download", 0) == 0 || low.rfind("install", 0) == 0;  // the release page's table
+        }
+        if (skip || (!l.empty() && l[0] == '|')) continue;
+        if (l.rfind("- ", 0) == 0 || l.rfind("* ", 0) == 0) l = "• " + l.substr(2);
+        std::string t;  // [text](url) -> text, drop ** and `
+        for (size_t k = 0; k < l.size(); k++) {
+            if (l[k] == '[') {
+                size_t close = l.find("](", k), end = close == std::string::npos ? close : l.find(')', close);
+                if (end != std::string::npos) {
+                    t += l.substr(k + 1, close - k - 1);
+                    k = end;
+                    continue;
+                }
+            }
+            if (l[k] == '`' || (l[k] == '*' && k + 1 < l.size() && l[k + 1] == '*')) {
+                k += l[k] == '*';
+                continue;
+            }
+            t += l[k];
+        }
+        if (t.empty() && (out.empty() || out.back().text.empty() || out.back().heading)) continue;  // no stray blank lines
+        out.push_back({heading, t});
+    }
+    while (!out.empty() && out.back().text.empty()) out.pop_back();
+    return out;
+}
+
 std::string thisPlatform() {
 #if defined(_WIN32)
     return "windows-x86_64";

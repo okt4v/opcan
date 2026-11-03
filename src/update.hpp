@@ -23,6 +23,15 @@ const char* appVersion();  // this build's version, from the release tag (local 
 // release, and pre-release tags compare as text. A leading "v" is ignored.
 int compareVersions(const std::string& a, const std::string& b);
 
+// Release notes (GitHub markdown) as plain lines for the app: the Download section and tables are dropped (opcan
+// installs by itself), links keep their text, **bold** / `code` lose their marks, list items get a bullet.
+// heading: the line was a markdown heading.
+struct NoteLine {
+    bool heading = false;
+    std::string text;
+};
+std::vector<NoteLine> plainNotes(const std::string& markdown);
+
 // GitHub's /releases JSON; drafts and releases with a tag that isn't a version are skipped. Newest version first.
 std::vector<Release> parseReleases(const std::string& json);
 std::vector<Release> fetchReleases(std::string* err);  // blocking

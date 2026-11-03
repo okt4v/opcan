@@ -11,6 +11,15 @@
     } while (0)
 
 void checkUpdate() {
+    {
+        auto n = plainNotes("## What's new\r\n\n- **Typed moves**: see [the docs](https://x)\n- `Share` page\n\n"
+                            "## Download\n\n| System | File |\n|---|---|\n| Linux | [a.tgz](https://x/a.tgz) |\n");
+        CHECK(n.size() == 3);
+        CHECK(n[0].heading && n[0].text == "What's new");
+        CHECK(!n[1].heading && n[1].text == "• Typed moves: see the docs");
+        CHECK(n[2].text == "• Share page");
+        CHECK(plainNotes("## Download\n| a | b |\n").empty());
+    }
     CHECK(compareVersions("0.2.0", "0.1.9") == 1 && compareVersions("v0.10.0", "0.9.9") == 1);
     CHECK(compareVersions("1.0", "1.0.0") == 0 && compareVersions("1.0.0", "v1.0.0") == 0);
     CHECK(compareVersions("1.0.0-beta.1", "1.0.0") == -1 && compareVersions("1.0.0", "1.0.0-rc.1") == 1);

@@ -69,11 +69,20 @@ void App::Impl::drawUpdateDialog() {
     ImGui::Text("opcan %s", r.version.c_str());
     ImGui::PopFont();
     ImGui::TextDisabled("You have %s%s%s", appVersion(), r.published.empty() ? "" : "  ·  released ", r.published.c_str());
-    if (!r.notes.empty()) {
+    if (auto notes = plainNotes(r.notes); !notes.empty()) {
         ImGui::Dummy({0, 4});
-        ImGui::BeginChild("notes", {500, std::min(220.f, ImGui::CalcTextSize(r.notes.c_str(), nullptr, false, 480).y + 16)},
-                          ImGuiChildFlags_Borders);
-        ImGui::TextWrapped("%s", r.notes.c_str());
+        float h = 16;
+        for (auto& l : notes) h += l.text.empty() ? 8 : ImGui::CalcTextSize(l.text.c_str(), nullptr, false, 460).y + 4;
+        ImGui::BeginChild("notes", {500, std::min(220.f, h)}, ImGuiChildFlags_Borders);
+        for (auto& l : notes) {
+            if (l.text.empty()) {
+                ImGui::Dummy({0, 4});
+                continue;
+            }
+            if (l.heading) ImGui::PushFont(f.bold, 0);
+            ImGui::TextWrapped("%s", l.text.c_str());
+            if (l.heading) ImGui::PopFont();
+        }
         ImGui::EndChild();
     }
     ImGui::Dummy({0, 6});
