@@ -30,7 +30,8 @@ static std::string get(const fs::path& p) {
 
 void checkBackup() {
     fs::path root = fs::temp_directory_path() / "opcan_check_backup";
-    fs::remove_all(root);
+    std::error_code ec;
+    fs::remove_all(root, ec);
     fs::path a = root / "a", b = root / "b", bak = (root / "x.opcanbackup");
     fs::create_directories(a), fs::create_directories(b);
     std::string png("\x89PNG\0\x01\xff", 7), svg = "<svg/>";
@@ -89,5 +90,5 @@ void checkBackup() {
     sqlite3_exec(db, "CREATE TABLE t(x)", nullptr, nullptr, nullptr);
     sqlite3_close(db);
     CHECK(!inspectBackup((root / "other.db").string()).empty());
-    fs::remove_all(root);
+    fs::remove_all(root, ec);  // best effort: Windows keeps the still-open s locked
 }

@@ -61,7 +61,7 @@ std::string thousands(int64_t n) {
 bool safePath(const std::string& p) {
     fs::path r = u8(p);
     if (p.empty() || r.has_root_path() || r.is_absolute()) return false;
-    for (auto& c : r)
+    for (const auto& c : r)
         if (c == ".." || c == ".") return false;
     std::string first = str(*r.begin());
     for (const char* d : kDirs)
