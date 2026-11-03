@@ -591,6 +591,7 @@ void App::Impl::frame() {
     drawHelp();
     if (prof && tourStep >= 0) drawTour();
     drawToast();
+    if (splashAt == -2) updateFrame();  // after the opening animation
     ImGui::End();
     drawSplash();
 }

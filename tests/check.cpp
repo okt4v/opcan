@@ -11,6 +11,7 @@ void checkRobust();
 void checkTrain();
 void checkVision();
 void checkTournament();
+void checkUpdate();
 int main() {
     checkCore();
     checkReview();
@@ -23,5 +24,6 @@ int main() {
     checkTrain();
     checkVision();
     checkTournament();
+    checkUpdate();
     std::puts("all checks passed");
 }

@@ -81,3 +81,18 @@ User data (settings, game database, custom pieces/sounds, AI models):
 | Linux | `$XDG_CONFIG_HOME/opcan` (default `~/.config/opcan`) |
 | Windows | `%APPDATA%\opcan` |
 | macOS | `~/Library/Application Support/opcan` |
+
+## Releases and updates
+
+Push a version tag and GitHub Actions (`.github/workflows/release.yml`) builds Windows, macOS (arm64 and
+x86_64) and Linux packages, runs the self-checks and publishes them as a GitHub Release:
+
+    git tag v0.2.0 && git push origin v0.2.0      # a tag with "-" (v0.3.0-beta.1) is a pre-release
+
+The tag is the version (`-DOPCAN_VERSION=v0.2.0`); local builds report `<project version>-dev`.
+
+opcan checks the releases when it starts (Settings > Updates): ask before installing (default), install
+automatically when opcan closes, or stay on the current version; any listed version can be installed, older
+ones included. It replaces itself when it was installed with the Windows installer, as a macOS app in a
+writable folder, or from the portable Linux tarball. Nix, system packages and dev builds only announce
+new versions.

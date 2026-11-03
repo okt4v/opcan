@@ -1,5 +1,7 @@
 # Builds installers for Windows (NSIS + zip), macOS (.dmg, arm64 and x86_64) and Linux (.tar.gz),
 # runs the self-checks, and uploads the packages as artifacts. Runs on version tags (v*) or by hand.
+# A tag also publishes a GitHub Release with the packages (the in-app updater reads those): tags with a
+# "-" (v0.3.0-beta.1) are pre-releases. Release: bump nothing, just `git tag v0.2.0 && git push origin v0.2.0`.
 name: release
 on:
   push:
@@ -17,6 +19,9 @@ jobs:
           - { name: macos-x86_64, os: macos-15-intel, arch: x86_64 }
           - { name: linux-x86_64, os: ubuntu-24.04 }
     runs-on: ${{ matrix.os }}
+    env:
+      # the tag (v0.2.0) on tag builds; hand-run builds are <project version>-dev
+      OPCAN_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -42,13 +47,13 @@ jobs:
 
       - name: Configure (Windows, MSVC)
         if: runner.os == 'Windows'
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DOPCAN_VULKAN=OFF -DOPCAN_STOCKFISH_PATH="${{ github.workspace }}/packaging/stockfish/stockfish.exe"
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DOPCAN_VERSION="${{ env.OPCAN_VERSION }}" -DOPCAN_VULKAN=OFF -DOPCAN_STOCKFISH_PATH="${{ github.workspace }}/packaging/stockfish/stockfish.exe"
       - name: Configure (macOS)
         if: runner.os == 'macOS'
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DOPCAN_STOCKFISH_PATH="$PWD/packaging/stockfish/stockfish"
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DOPCAN_VERSION="$OPCAN_VERSION" -DOPCAN_STOCKFISH_PATH="$PWD/packaging/stockfish/stockfish"
       - name: Configure (Linux)
         if: runner.os == 'Linux'
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DOPCAN_VULKAN=OFF -DOPCAN_STOCKFISH_PATH="$PWD/packaging/stockfish/stockfish"
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DOPCAN_VERSION="$OPCAN_VERSION" -DOPCAN_VULKAN=OFF -DOPCAN_STOCKFISH_PATH="$PWD/packaging/stockfish/stockfish"
 
       - name: Build
         run: cmake --build build --config Release --parallel
@@ -71,3 +76,20 @@ jobs:
             build/opcan-*.dmg
             build/opcan-*.tar.gz
           if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true

@@ -16,6 +16,7 @@
 #include "sync.hpp"
 #include "tablebase.hpp"
 #include "tournament.hpp"
+#include "update.hpp"
 #include "theme.hpp"
 #include "train.hpp"
 #include "vision.hpp"
@@ -275,6 +276,23 @@ struct TrainUi {
     std::vector<chess::Move> repLine;
 };
 
+// Updates (update_ui.cpp): settings live in the store (app-wide): update.mode ask|auto|off, update.pre, update.skip.
+struct UpdateUi {
+    struct Checked {
+        std::vector<Release> releases;
+        std::string err;
+    };
+    Async<Checked> check;
+    bool started = false, checked = false, startup = true;  // startup: this check may offer / auto-install
+    std::vector<Release> releases;
+    std::string err;
+    std::optional<Release> offer;  // "Update available" dialog
+    Async<std::string> install;    // "" = the helper is waiting for opcan to exit
+    std::string installing;        // version being downloaded
+    bool quitWhenReady = false;    // install now (vs. on the next exit, automatic mode)
+    bool stayAfter = false;        // switching to an older version: stop offering updates
+};
+
 // Tournaments page (tournament_ui.cpp).
 struct TourneyUi {
     bool stale = true;
@@ -349,6 +367,7 @@ struct App::Impl {
     ExplorerUi ex;
     TrainUi tr;
     TourneyUi tn;
+    UpdateUi up;
     VisionUi vs;
     PosEditor pe;
     TbDownloader tbDl;
@@ -615,5 +634,12 @@ struct App::Impl {
     void settingsKeys(float w);
     void settingsLayout(float w);
     void settingsProfile(float w);
+    void settingsUpdates(float w);
+    // update_ui.cpp
+    void updateFrame();
+    void updateCheck(bool startup);
+    void updateInstall(const Release& r, bool now);
+    void drawUpdateDialog();
+    bool updateEligible(const Release& r);
     void drawPreview(float size);
 };

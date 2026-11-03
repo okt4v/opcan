@@ -2,7 +2,19 @@ cmake_minimum_required(VERSION 3.24)
 if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
   set(CMAKE_OSX_DEPLOYMENT_TARGET 11.0 CACHE STRING "Minimum macOS version")  # keep in sync with packaging/Info.plist.in
 endif()
-project(opcan VERSION 0.1.0 LANGUAGES C CXX)
+# OPCAN_VERSION: the release tag without "v" (CI passes it); local builds are <project version>-dev
+set(OPCAN_VERSION "" CACHE STRING "Version baked into the app, e.g. 0.2.0 or 0.3.0-beta.1")
+string(REGEX REPLACE "^v" "" OPCAN_VERSION "${OPCAN_VERSION}")  # a tag name works too
+set(_opcan_numeric 0.1.0)
+if(OPCAN_VERSION MATCHES "^([0-9]+\\.[0-9]+\\.[0-9]+)")
+  set(_opcan_numeric ${CMAKE_MATCH_1})
+endif()
+project(opcan VERSION ${_opcan_numeric} LANGUAGES C CXX)
+if(NOT OPCAN_VERSION)
+  set(OPCAN_VERSION_STRING ${PROJECT_VERSION}-dev)
+else()
+  set(OPCAN_VERSION_STRING ${OPCAN_VERSION})
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -88,15 +100,16 @@ target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/
 target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
 
 # core = everything but the window; shared by the app and the self-checks
-add_library(opcan_core STATIC src/tournament.cpp src/engine.cpp src/review.cpp src/game.cpp src/openings.cpp src/store.cpp src/stats.cpp src/sync.cpp src/coach.cpp src/play.cpp src/tablebase.cpp src/explorer.cpp src/setup.cpp src/train.cpp src/vision.cpp)
+add_library(opcan_core STATIC src/update.cpp src/tournament.cpp src/engine.cpp src/review.cpp src/game.cpp src/openings.cpp src/store.cpp src/stats.cpp src/sync.cpp src/coach.cpp src/play.cpp src/tablebase.cpp src/explorer.cpp src/setup.cpp src/train.cpp src/vision.cpp)
+target_compile_definitions(opcan_core PRIVATE OPCAN_VERSION="${OPCAN_VERSION_STRING}")
 target_include_directories(opcan_core PUBLIC src ${chesslib_SOURCE_DIR}/include ${subprocess_SOURCE_DIR})
 target_link_libraries(opcan_core PUBLIC Threads::Threads sqlite3 llama nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
 
-add_executable(opcan src/main.cpp src/devscript.cpp src/app.cpp src/library.cpp src/coach_ui.cpp src/play_ui.cpp src/stats_ui.cpp src/explorer_ui.cpp src/editor_ui.cpp src/settings_ui.cpp src/tour_ui.cpp src/train_ui.cpp src/vision_ui.cpp src/tournament_ui.cpp src/board.cpp src/theme.cpp src/audio.cpp)
+add_executable(opcan src/main.cpp src/devscript.cpp src/app.cpp src/library.cpp src/coach_ui.cpp src/play_ui.cpp src/stats_ui.cpp src/explorer_ui.cpp src/editor_ui.cpp src/settings_ui.cpp src/tour_ui.cpp src/train_ui.cpp src/vision_ui.cpp src/tournament_ui.cpp src/update_ui.cpp src/board.cpp src/theme.cpp src/audio.cpp)
 target_link_libraries(opcan PRIVATE opcan_core imgui lunasvg::lunasvg nfd::nfd opcan_miniaudio)
 target_include_directories(opcan PRIVATE ${stb_SOURCE_DIR})
 
-add_executable(opcan_check tests/check.cpp tests/check_core.cpp tests/check_review.cpp tests/check_store.cpp tests/check_stats.cpp tests/check_coach.cpp tests/check_play.cpp tests/check_explorer.cpp tests/check_robust.cpp tests/check_train.cpp tests/check_vision.cpp tests/check_tournament.cpp)
+add_executable(opcan_check tests/check.cpp tests/check_core.cpp tests/check_review.cpp tests/check_store.cpp tests/check_stats.cpp tests/check_coach.cpp tests/check_play.cpp tests/check_explorer.cpp tests/check_robust.cpp tests/check_train.cpp tests/check_vision.cpp tests/check_tournament.cpp tests/check_update.cpp)
 target_link_libraries(opcan_check PRIVATE opcan_core)
 target_compile_definitions(opcan_check PRIVATE OPCAN_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 # dev tool: AI coach accuracy harness (tests/coach_eval.cpp); not built by default

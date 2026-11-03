@@ -10,7 +10,7 @@ using namespace chess;
 
 namespace {
 
-const char* kTabs[] = {"Appearance", "Board & animation", "Sound", "Engine & analysis", "Keyboard", "Layout", "Profile", "AI coach"};  // AI coach = kCoachTab
+const char* kTabs[] = {"Appearance", "Board & animation", "Sound", "Engine & analysis", "Keyboard", "Layout", "Profile", "AI coach", "Updates"};  // AI coach = kCoachTab
 constexpr int kTabCount = sizeof kTabs / sizeof kTabs[0];
 const Fonts* F = nullptr;
 
@@ -217,6 +217,7 @@ void App::Impl::drawSettings() {
         case 4: settingsKeys(cw); break;
         case 5: settingsLayout(cw); break;
         case kCoachTab: settingsCoach(cw); break;
+        case 8: settingsUpdates(cw); break;
         default: settingsProfile(cw); break;
     }
     ImGui::EndChild();
@@ -638,6 +639,79 @@ void App::Impl::settingsLayout(float) {
         ImGui::EndDisabled();
         rowsEnd();
     }
+    cardEnd();
+}
+
+void App::Impl::settingsUpdates(float) {
+    auto& u = up;
+    if (!u.started) updateCheck(false);
+    InstallKind kind = installKind();
+    std::string mode = store.setting("update.mode", "ask");
+    cardBegin("updates", "Updates", "opcan checks GitHub for a new release when it starts.");
+    if (rowsBegin("rows")) {
+        std::string ver = std::string("opcan ") + appVersion();
+        row(ver.c_str(), installKindText(kind));
+        if (ImGui::Button(u.check.busy() ? "Checking…" : "Check now", {-FLT_MIN, 0}) && !u.check.busy()) updateCheck(false);
+        row("When there's a new version", mode == "auto" ? "It downloads in the background and installs when you close opcan."
+                                         : mode == "off" ? "No checks: you stay on this version until you pick another below."
+                                                         : "opcan asks before installing.");
+        static const char* kModes[] = {"Ask me", "Automatic", "Stay"};
+        int sel = mode == "auto" ? 1 : mode == "off" ? 2 : 0;
+        int ns = segmented("umode", kModes, 3, sel, ImGui::GetContentRegionAvail().x);
+        if (ns != sel) store.setSetting("update.mode", ns == 1 ? "auto" : ns == 2 ? "off" : "ask");
+        row("Pre-releases", "Offer beta versions too.");
+        bool pre = store.setting("update.pre", "0") == "1";
+        if (toggleSwitch("pre", &pre)) store.setSetting("update.pre", pre ? "1" : "0");
+        rowsEnd();
+    }
+    cardEnd();
+
+    cardBegin("versions", "Versions", kind == InstallKind::None ? "This copy can't replace itself: download a version from GitHub."
+                                                                 : "Install any version: newer ones update, older ones switch back.");
+    if (u.check.busy()) ImGui::TextDisabled("Checking GitHub…");
+    else if (!u.err.empty()) ImGui::TextDisabled("Couldn't check: %s", u.err.c_str());
+    bool busy = u.install.busy();
+    if (busy) ImGui::TextDisabled("Downloading opcan %s…", u.installing.c_str());
+    if (!u.releases.empty() && ImGui::BeginTable("vers", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("v", ImGuiTableColumnFlags_WidthStretch, 2);
+        ImGui::TableSetupColumn("d", ImGuiTableColumnFlags_WidthFixed, 96);
+        ImGui::TableSetupColumn("tag", ImGuiTableColumnFlags_WidthFixed, 100);
+        ImGui::TableSetupColumn("b", ImGuiTableColumnFlags_WidthFixed, 110);
+        for (auto& r : u.releases) {
+            ImGui::PushID(r.tag.c_str());
+            ImGui::TableNextRow(0, 30);
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            int cmp = compareVersions(r.version, appVersion());
+            ImGui::PushFont(cmp == 0 ? F->bold : F->ui, 0);
+            ImGui::TextUnformatted(r.name.empty() ? ("opcan " + r.version).c_str() : r.name.c_str());
+            ImGui::PopFont();
+            if (ImGui::IsItemHovered() && !r.notes.empty())
+                ImGui::SetTooltip("%s", r.notes.size() > 800 ? (r.notes.substr(0, 800) + "…").c_str() : r.notes.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextDisabled("%s", r.published.c_str());
+            ImGui::TableNextColumn();
+            if (cmp == 0) ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(theme::accent), "installed");
+            else if (r.prerelease) ImGui::TextDisabled("pre-release");
+            ImGui::TableNextColumn();
+            if (cmp != 0) {
+                bool has = assetFor(r, thisPlatform()) != nullptr;
+                if (kind == InstallKind::None || !has) {
+                    if (ImGui::Button("Download", {-FLT_MIN, 0})) openUrl(std::string(kReleasesPage) + "/tag/" + r.tag);
+                } else {
+                    ImGui::BeginDisabled(busy);
+                    if (ImGui::Button(cmp > 0 ? "Update" : "Switch to", {-FLT_MIN, 0})) {
+                        u.stayAfter = cmp < 0;  // going back: don't offer the newer one again right away
+                        updateInstall(r, true);
+                    }
+                    ImGui::EndDisabled();
+                }
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    if (ImGui::SmallButton("All releases on GitHub")) openUrl(kReleasesPage);
     cardEnd();
 }
 
