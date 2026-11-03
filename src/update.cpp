@@ -136,8 +136,8 @@ std::string thisPlatform() {
 #endif
 }
 
-// Package names (packaging.cmake): opcan-<v>-windows-amd64.exe (installer) / .zip, opcan-<v>-darwin-<arch>.dmg,
-// opcan-<v>-linux-x86_64.tar.gz
+// Release downloads (release.yml): opcan-<v>-windows-setup.exe / -windows-portable.zip, -macos-apple-silicon.dmg,
+// -macos-intel.dmg, -linux-x86_64.tar.gz; CPack's own names (windows-amd64, darwin-<arch>) match too
 const Release::Asset* assetFor(const Release& r, const std::string& platform) {
     auto low = [](std::string s) {
         for (auto& c : s) c = (char)std::tolower((unsigned char)c);
@@ -147,7 +147,8 @@ const Release::Asset* assetFor(const Release& r, const std::string& platform) {
     for (auto& a : r.assets) {
         std::string n = low(a.name);
         bool win = n.find("win") != std::string::npos && ends(n, ".exe");
-        bool arm = n.find("arm64") != std::string::npos || n.find("aarch64") != std::string::npos;
+        bool arm = n.find("arm64") != std::string::npos || n.find("aarch64") != std::string::npos ||
+                   n.find("apple-silicon") != std::string::npos;
         bool mac = (n.find("darwin") != std::string::npos || n.find("macos") != std::string::npos) && ends(n, ".dmg");
         bool lin = n.find("linux") != std::string::npos && ends(n, ".tar.gz") && !arm;
         if ((platform == "windows-x86_64" && win) || (platform == "macos-arm64" && mac && arm) ||

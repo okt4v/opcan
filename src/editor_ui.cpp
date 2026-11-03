@@ -194,7 +194,7 @@ void App::Impl::drawPosEditor() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {16, 14});
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::panel);
-    ImGui::BeginChild("edPanel", {panelW, wide ? 0 : 0}, ImGuiChildFlags_AlwaysUseWindowPadding | (wide ? 0 : ImGuiChildFlags_AutoResizeY));
+    ImGui::BeginChild("edPanel", {panelW, 0}, ImGuiChildFlags_AlwaysUseWindowPadding | (wide ? 0 : ImGuiChildFlags_AutoResizeY));
     ImGui::PopStyleColor();
     ImGui::PopStyleVar(2);
     float w = ImGui::GetContentRegionAvail().x;

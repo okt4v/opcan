@@ -38,6 +38,14 @@ void checkUpdate() {
     CHECK(assetFor(rs[1], "macos-x86_64")->url == "https://x/i.dmg");
     CHECK(assetFor(rs[1], "linux-x86_64")->url == "https://x/l.tgz" && assetFor(rs[1], "linux-x86_64")->size == 6);
     CHECK(!assetFor(rs[0], "linux-x86_64"));
+    Release named;  // the release workflow's names
+    for (const char* n : {"opcan-0.2.0-windows-setup.exe", "opcan-0.2.0-windows-portable.zip", "opcan-0.2.0-macos-apple-silicon.dmg",
+                          "opcan-0.2.0-macos-intel.dmg", "opcan-0.2.0-linux-x86_64.tar.gz"})
+        named.assets.push_back({n, n, 1});
+    CHECK(assetFor(named, "windows-x86_64")->name == "opcan-0.2.0-windows-setup.exe");
+    CHECK(assetFor(named, "macos-arm64")->name == "opcan-0.2.0-macos-apple-silicon.dmg");
+    CHECK(assetFor(named, "macos-x86_64")->name == "opcan-0.2.0-macos-intel.dmg");
+    CHECK(assetFor(named, "linux-x86_64")->name == "opcan-0.2.0-linux-x86_64.tar.gz");
     CHECK(parseReleases("not json").empty() && parseReleases("{}").empty());
     CHECK(std::string(appVersion()).size() > 0);
     std::puts("update checks passed");

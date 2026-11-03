@@ -45,9 +45,10 @@ jobs:
         shell: bash
         run: echo "${{ github.workspace }}/packaging/stockfish" >> "$GITHUB_PATH"
 
+      # no -G: the newest installed Visual Studio (the runner images move to new versions)
       - name: Configure (Windows, MSVC)
         if: runner.os == 'Windows'
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DOPCAN_VERSION="${{ env.OPCAN_VERSION }}" -DOPCAN_VULKAN=OFF -DOPCAN_STOCKFISH_PATH="${{ github.workspace }}/packaging/stockfish/stockfish.exe"
+        run: cmake -S . -B build -A x64 -DOPCAN_VERSION="${{ env.OPCAN_VERSION }}" -DOPCAN_VULKAN=OFF -DOPCAN_STOCKFISH_PATH="${{ github.workspace }}/packaging/stockfish/stockfish.exe"
       - name: Configure (macOS)
         if: runner.os == 'macOS'
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DOPCAN_VERSION="$OPCAN_VERSION" -DOPCAN_STOCKFISH_PATH="$PWD/packaging/stockfish/stockfish"
@@ -88,8 +89,40 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # one plainly named download per platform (the in-app updater matches these names too)
+      - name: Name the downloads
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          mkdir out
+          for f in dist/*; do
+            case "$f" in
+              *windows*.exe) n="opcan-$v-windows-setup.exe" ;;
+              *windows*.zip) n="opcan-$v-windows-portable.zip" ;;
+              *darwin-arm64*.dmg) n="opcan-$v-macos-apple-silicon.dmg" ;;
+              *darwin-x86_64*.dmg) n="opcan-$v-macos-intel.dmg" ;;
+              *linux*.tar.gz) n="opcan-$v-linux-x86_64.tar.gz" ;;
+              *) echo "unexpected package: $f"; exit 1 ;;
+            esac
+            mv "$f" "out/$n"
+          done
+          ls -l out
+          cat > notes.md <<EOF
+          ## Download
+
+          | System | File |
+          |---|---|
+          | Windows 10/11 | [opcan-$v-windows-setup.exe](https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/opcan-$v-windows-setup.exe) (installer), or the portable [.zip](https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/opcan-$v-windows-portable.zip) |
+          | macOS, Apple silicon (M1 and later) | [opcan-$v-macos-apple-silicon.dmg](https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/opcan-$v-macos-apple-silicon.dmg) |
+          | macOS, Intel | [opcan-$v-macos-intel.dmg](https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/opcan-$v-macos-intel.dmg) |
+          | Linux x86_64 | [opcan-$v-linux-x86_64.tar.gz](https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/opcan-$v-linux-x86_64.tar.gz) (portable: unpack and run bin/opcan), or Nix: \`nix run github:$GITHUB_REPOSITORY\` |
+
+          The apps aren't signed: on Windows click "More info > Run anyway", on macOS right-click the app > Open the first time.
+          opcan updates itself from here (Settings > Updates).
+          EOF
+          sed -i 's/^          //' notes.md
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: out/*
+          body_path: notes.md
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
