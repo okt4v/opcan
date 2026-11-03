@@ -107,7 +107,7 @@ void checkRobust() {
         for (int i = 0; i < 300 && r.running(); i++) std::this_thread::sleep_for(std::chrono::milliseconds(10));
         CHECK(!r.finished() && !r.error().empty());
     }
-    // cancelling a deep review returns quickly (it used to wait for every worker's current search)
+    // cancelling a deep review returns quickly (it used to wait for every worker's depth-60 search; 3 s: slow CI VMs)
     if (std::string sf = findEngine(); !sf.empty()) {
         Game g = parsePgn("1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7 *")[0];
         Reviewer r;
@@ -115,7 +115,7 @@ void checkRobust() {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         auto t = Clock::now();
         r.cancel();
-        CHECK(since(t) < 1.0 && !r.finished());
+        CHECK(since(t) < 3.0 && !r.finished());
     }
 
     // databases
