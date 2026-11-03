@@ -26,6 +26,7 @@ namespace {
 double since(Clock::time_point t) { return std::chrono::duration<double>(Clock::now() - t).count(); }
 
 // A fake UCI engine that handshakes, then dies on the first "go" after printing a shallow info line.
+#ifndef _WIN32  // the fake engines are sh scripts
 std::string dyingEngine() {
     fs::path p = fs::temp_directory_path() / "opcan_check_dying_engine.sh";
     std::ofstream(p) << "#!/bin/sh\n"
@@ -39,6 +40,7 @@ std::string dyingEngine() {
     fs::permissions(p, fs::perms::owner_all);
     return p.string();
 }
+#endif
 
 void execSql(const fs::path& db, const char* sql) {
     sqlite3* h = nullptr;
@@ -54,6 +56,7 @@ void rmDb(const fs::path& p) {
 void checkRobust() {
     const std::string start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
+#ifndef _WIN32  // fake engines are sh scripts (Windows runs the same code paths with the real engine)
     // engine dies mid-search: analyse() must not return the shallow partial line as a result
     {
         UciProcess e;
@@ -92,6 +95,7 @@ void checkRobust() {
         CHECK(since(t) < 5);
         engineStartTimeoutSec = 30;
     }
+#endif
     // missing engine binary
     {
         UciProcess e;
@@ -180,6 +184,8 @@ void checkRobust() {
         CHECK(s.profile(p.id)->accounts[0].newest == 0);  // a cancelled sync isn't recorded as done
     }
     rmDb(db);
+#ifndef _WIN32
     fs::remove(dyingEngine());
+#endif
     std::puts("robustness checks passed");
 }
