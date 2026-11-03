@@ -65,6 +65,12 @@ if(MINGW)
   set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 endif()
 FetchContent_Declare(llama GIT_REPOSITORY https://github.com/ggml-org/llama.cpp GIT_TAG b11850 GIT_SHALLOW ON)  # b11850+: builds with GCC 14 (std::find include)
+# lunasvg's plutovg does find_library(MATH_LIBRARY m): on Windows that caches MATH_LIBRARY-NOTFOUND, which ggml
+# then links (it only checks DEFINED). Windows has no libm anyway.
+if(WIN32 AND NOT MATH_LIBRARY)
+  unset(MATH_LIBRARY CACHE)
+  unset(MATH_LIBRARY)
+endif()
 FetchContent_MakeAvailable(llama)
 
 add_library(sqlite3 STATIC ${sqlite_SOURCE_DIR}/sqlite3.c)
