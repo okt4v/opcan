@@ -41,6 +41,11 @@ std::string trim(std::string s) {
     return s;
 }
 
+std::string lowerStr(std::string s) {
+    for (auto& c : s) c = (char)std::tolower((unsigned char)c);
+    return s;
+}
+
 std::vector<std::string> splitTags(const std::string& s) {
     std::vector<std::string> out;
     size_t i = 0;
@@ -410,6 +415,24 @@ void App::Impl::selectProfile(const Profile& p) {
     tr = TrainUi{};
     vs = VisionUi();
     tourStep = !p.guest && store.setting("p" + std::to_string(p.id) + ".tour") == "1" ? 0 : -1;
+    tagEventGames();
+}
+
+// Once per profile: games stored before event tags existed get theirs ("tournament", "team match").
+void App::Impl::tagEventGames() {
+    std::string key = "p" + std::to_string(prof->id) + ".eventTags";
+    if (prof->guest || store.setting(key) == "1") return;
+    GameFilter all;
+    all.limit = 1 << 30;
+    for (auto& r : store.games(prof->id, all)) {
+        auto row = store.game(r.id);
+        auto gs = row ? parsePgn(row->pgn) : std::vector<Game>{};
+        if (gs.empty()) continue;
+        std::string t = row->tags;
+        for (auto& x : eventTags(gs[0])) t = withTag(t, x);
+        if (t != row->tags) row->tags = t, store.updateGameMeta(*row);
+    }
+    store.setSetting(key, "1");
 }
 
 void App::Impl::leaveProfile() {
@@ -1060,7 +1083,10 @@ void App::Impl::drawLibrary() {
     if (toggle("Favorites", filter.favoritesOnly, true)) filter.favoritesOnly = !filter.favoritesOnly, libDirty = true;
     place(ImGui::CalcTextSize("Bots").x + 24);
     if (toggle("Bots", showBots)) showBots = !showBots, libDirty = true;
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Include games against bots and coaches");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Include games against bots and coaches (they never count in stats)");
+    place(ImGui::CalcTextSize("Imported").x + 24);
+    if (toggle("Imported", filter.includeImports)) filter.includeImports = !filter.includeImports, libDirty = true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Include games you pasted or opened from a PGN file");
     place(ImGui::CalcTextSize("Brilliant").x + 42);
     if (toggle("Brilliant", filter.brilliantOnly, false, Cls::Brilliant)) filter.brilliantOnly = !filter.brilliantOnly, libDirty = true;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Games where you played a brilliant move");
@@ -1388,9 +1414,13 @@ int64_t App::Impl::importGame(const Game& g, bool vsBot) {
             r.url = u;
             break;
         }
-    r.userColor = -1;
-    r.vsBot = vsBot || isBotGame(g);  // same rule as synced games
+    r.userColor = -1;  // a linked account's name says which side the user was; counting stays the user's call
+    for (auto& a : prof->accounts)
+        for (int c = 0; c < 2 && r.userColor < 0; c++)
+            if (lowerStr(c ? r.black : r.white) == lowerStr(a.username) && !a.username.empty()) r.userColor = c;
+    r.vsBot = vsBot || isBotGame(g, r.userColor);  // same rule as synced games
     r.countsInStats = false;
+    for (auto& t : eventTags(g)) r.tags = withTag(r.tags, t);
     int64_t id = store.upsertGame(r);
     libDirty = true;
     unreviewedAt = -100;
@@ -1455,10 +1485,13 @@ void App::Impl::drawGameInfo(float h) {
     ImGui::Dummy({0, 2});
     ImGui::BeginDisabled(g.userColor < 0 || prof->guest || g.vsBot);
     bool counts = g.countsInStats && !g.vsBot;
-    if (ImGui::Checkbox("Count in stats", &counts)) g.countsInStats = counts, saveMeta(g);
+    bool imported = g.site == "import";
+    if (ImGui::Checkbox(imported ? "This is my game: count it in stats" : "Count in stats", &counts)) g.countsInStats = counts, saveMeta(g);
     ImGui::EndDisabled();
-    if (g.vsBot && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("Games against bots and coaches never count");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("%s", g.vsBot ? "Games against bots and coaches never count"
+                               : g.userColor < 0 ? "Pick the side you played above first"
+                               : imported ? "Imported games only count once you say they're yours" : "Include this game in your stats");
     ImGui::Dummy({0, 2});
 
     // tags as chips + an input

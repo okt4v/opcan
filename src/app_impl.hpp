@@ -501,6 +501,7 @@ struct App::Impl {
     void drawRowMenu(GameRow& g);
     void drawLibraryModals();
     void saveMeta(const GameRow& g);
+    void tagEventGames();
     void openStored(int64_t id, int ply = -1);  // ply >= 0: open the review at that mainline ply
     int64_t importGame(const Game& g, bool vsBot = false);  // vsBot: never counts in stats
     void drawGameInfo(float h);

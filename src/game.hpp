@@ -39,6 +39,11 @@ std::vector<Game> parsePgn(std::string_view text);
 // Looks at [Event], player names (the opponent's when userColor is 0/1, else both), lichess
 // [WhiteTitle "BOT"], [WhiteIsComp "Yes"] and non-standard [Variant].
 bool isBotGame(const Game& g, int userColor = -1);
+// Tags a game gets on import / sync from its headers: "tournament" ([Tournament], an Event naming a tournament,
+// arena or swiss, or a numbered [Round] as in over-the-board events), "team match" (chess.com [Match]).
+std::vector<std::string> eventTags(const Game& g);
+// tags (comma separated) plus t, unless it's already there (case-insensitive)
+std::string withTag(const std::string& tags, const std::string& t);
 // Board::setFen for untrusted text: false (b unspecified) unless it parses with exactly one king per side.
 bool loadFen(chess::Board& b, std::string_view fen);
 // Single position game. nullopt if the FEN is invalid.

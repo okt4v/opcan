@@ -179,6 +179,7 @@ struct Store::Impl {
         if (!f.tag.empty()) sql += " AND (','||tags||',') LIKE ? ESCAPE '\\'", arg("%," + likeEscape(f.tag) + ",%");
         if (f.favoritesOnly) sql += " AND favorite=1";
         if (!f.includeBots) sql += " AND vs_bot=0";
+        if (!f.includeImports) sql += " AND site!='import'";
         if (f.countedOnly) sql += " AND counts=1 AND vs_bot=0";
         // the user's side, or either side for games the user didn't play
         auto sideHas = [&](const char* w, const char* b) {

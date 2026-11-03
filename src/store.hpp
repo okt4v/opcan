@@ -58,6 +58,7 @@ struct GameFilter {
     std::string tag;        // "" = any
     bool favoritesOnly = false;
     bool includeBots = true;
+    bool includeImports = true;  // pasted / opened PGNs (site "import")
     bool countedOnly = false;
     bool brilliantOnly = false;  // the user's side (either side when userColor < 0) played a Brilliant move
     bool greatOnly = false;      // ...a Great move

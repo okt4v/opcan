@@ -94,6 +94,22 @@ void checkCore() {
                           "[Variant \"Chess960\"]\r\n\r\n1. e4 e5 *\r\n");
     CHECK(multi.size() == 2 && multi[0].mainline().size() == 4 && multi[0].nodes[0].children.size() == 2);
     CHECK(isBotGame(multi[1]));  // non-standard variant: never counts
+    {  // event tags
+        auto tagsOf = [](const char* headers) {
+            auto gs = parsePgn(std::string(headers) + "\n1. e4 e5 *");
+            return gs.empty() ? std::vector<std::string>{"?"} : eventTags(gs[0]);
+        };
+        using V = std::vector<std::string>;
+        CHECK(tagsOf("[Event \"Live Chess\"]\n[Round \"-\"]").empty());
+        CHECK(tagsOf("[Event \"Rated Blitz game\"]\n[Round \"1\"]").empty());
+        CHECK(tagsOf("[Event \"Hourly Blitz Arena\"]") == V{"tournament"});
+        CHECK(tagsOf("[Event \"Live Chess\"]\n[Tournament \"https://www.chess.com/tournament/live/x\"]") == V{"tournament"});
+        CHECK(tagsOf("[Event \"Tata Steel Masters\"]\n[Round \"5\"]") == V{"tournament"});
+        CHECK(tagsOf("[Event \"?\"]\n[Round \"3\"]").empty());
+        CHECK(tagsOf("[Event \"Live Chess\"]\n[Match \"https://www.chess.com/club/matches/1\"]") == V{"team match"});
+        CHECK(withTag("", "tournament") == "tournament" && withTag("a,Tournament", "tournament") == "a,Tournament" &&
+              withTag("a", "b") == "a,b");
+    }
     // fuzz regression: a header value with a quote (or an odd key) exported unparseable PGN, and imports
     // store g.pgn(): the game then vanished from the library
     auto q = parsePgn("[Site \"Chess.co\\\"]09\"]\n[Rookt\"]Result \"0-1\"]\n\n1. d4 g6 *");

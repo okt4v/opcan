@@ -41,6 +41,28 @@ bool botName(const std::string& name) {
 }
 }  // namespace
 
+std::vector<std::string> eventTags(const Game& g) {
+    std::vector<std::string> r;
+    auto ev = words(g.header("Event"));
+    std::string round = g.header("Round");
+    // a numbered round only with a named event: "Rated Blitz game", "Live Chess", "Casual game" and "?" aren't events
+    bool numberedRound = !round.empty() && std::isdigit((unsigned char)round[0]) && !ev.empty() && !has(ev, "casual") &&
+                         !has(ev, "live") && !has(ev, "rated") && !has(ev, "game") && !has(ev, "analysis");
+    if (!g.header("Tournament").empty() || has(ev, "tournament") || has(ev, "arena") || has(ev, "swiss") || numberedRound)
+        r.push_back("tournament");
+    if (!g.header("Match").empty()) r.push_back("team match");
+    return r;
+}
+
+std::string withTag(const std::string& tags, const std::string& t) {
+    auto low = [](std::string s) {
+        for (auto& c : s) c = (char)std::tolower((unsigned char)c);
+        return s;
+    };
+    if (("," + low(tags) + ",").find("," + low(t) + ",") != std::string::npos) return tags;
+    return tags.empty() ? t : tags + "," + t;
+}
+
 bool isBotGame(const Game& g, int userColor) {
     auto ev = words(g.header("Event"));
     for (const char* w : {"bot", "bots", "computer", "coach", "odds"})

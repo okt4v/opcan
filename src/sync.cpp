@@ -188,6 +188,9 @@ std::vector<GameRow> parseChessComMonth(const std::string& body, const Account& 
         // "Play vs Coach" (Coach-Magnus), "Play vs Bot", "vs Computer"
         g.vsBot = isBotGame(*pg, g.userColor);
         g.countsInStats = g.userColor >= 0 && !g.vsBot;
+        for (auto& t : eventTags(*pg)) g.tags = withTag(g.tags, t);
+        if (!str(x, "tournament").empty()) g.tags = withTag(g.tags, "tournament");
+        if (!str(x, "match").empty()) g.tags = withTag(g.tags, "team match");
         out.push_back(std::move(g));
     }
     return out;
@@ -233,6 +236,8 @@ std::vector<GameRow> parseLichessGames(const std::string& body, const Account& a
         if (!pg) continue;
         g.vsBot = (g.userColor >= 0 ? bot[1 - g.userColor] : bot[0] || bot[1]) || isBotGame(*pg, g.userColor);
         g.countsInStats = g.userColor >= 0 && !g.vsBot;
+        for (auto& t : eventTags(*pg)) g.tags = withTag(g.tags, t);
+        if (x.contains("tournament") || x.contains("swiss")) g.tags = withTag(g.tags, "tournament");
         out.push_back(std::move(g));
     }
     return out;
