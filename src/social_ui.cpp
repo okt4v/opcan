@@ -149,7 +149,8 @@ void App::Impl::openShare(int node) {
 }
 
 float App::Impl::shareCardH(float w) const {
-    return sh.caption ? std::round(w * 0.09f) + (w - 2 * std::round(w * 0.035f)) + std::round(w * 0.13f) : w;
+    // player bar above, board, player bar below, move caption
+    return sh.caption ? 2 * std::round(w * 0.08f) + (w - 2 * std::round(w * 0.035f)) + std::round(w * 0.12f) : w;
 }
 
 // The share card: player bar, board, and a caption with the move, its classification and the eval.
@@ -166,23 +167,32 @@ void App::Impl::shareCard(BoardView& bv, int i, float w) {
 
     auto* dl = ImGui::GetWindowDrawList();
     ImVec2 o = ImFloor(ImGui::GetCursorScreenPos());
-    float h = shareCardH(w), m = sh.caption ? std::round(w * 0.035f) : 0, top = sh.caption ? std::round(w * 0.09f) : 0;
+    float h = shareCardH(w), m = sh.caption ? std::round(w * 0.035f) : 0, top = sh.caption ? std::round(w * 0.08f) : 0;
     float bs = w - 2 * m;
     if (sh.caption) {
         dl->AddRectFilled(o, o + ImVec2(w, h), theme::panel);
-        auto player = [&](const char* side) {
-            std::string n = g.header(side), elo = g.header(std::string(side) + "Elo");
-            return (n.empty() || n == "?" ? std::string(side) : n) + (elo.empty() || elo == "?" ? "" : " (" + elo + ")");
-        };
-        std::string names = player("White") + "  vs  " + player("Black");
+        // each player's name and rating on their side of the board: White under White, Black over Black
         float fs = w * 0.034f;
-        ImVec2 ts = f.bold->CalcTextSizeA(fs, FLT_MAX, 0, "opcan");
-        float tw = w - 3 * m - ts.x;
-        if (f.bold->CalcTextSizeA(fs, FLT_MAX, 0, names.c_str()).x > tw)  // ellipsize at this size
-            while (names.size() > 4 && f.bold->CalcTextSizeA(fs, FLT_MAX, 0, (names + "…").c_str()).x > tw) names.pop_back();
-        if (names.size() > 4 && names.back() != ')') names += "…";
-        dl->AddText(f.bold, fs, ImFloor(o + ImVec2(m, (top - fs) / 2 + m * 0.2f)), theme::text, names.c_str());
-        dl->AddText(f.mono, fs * 0.9f, ImFloor(o + ImVec2(w - m - ts.x, (top - fs) / 2 + m * 0.2f)), theme::dim, "opcan");
+        auto player = [&](bool white, float y, float maxW) {
+            const char* side = white ? "White" : "Black";
+            std::string n = g.header(side), elo = g.header(std::string(side) + "Elo");
+            if (n.empty() || n == "?") n = side;
+            if (elo == "?") elo.clear();
+            elo = elo.empty() ? "" : "  " + elo;
+            maxW -= f.ui->CalcTextSizeA(fs, FLT_MAX, 0, elo.c_str()).x;
+            if (f.bold->CalcTextSizeA(fs, FLT_MAX, 0, n.c_str()).x > maxW) {
+                while (n.size() > 1 && f.bold->CalcTextSizeA(fs, FLT_MAX, 0, (n + "…").c_str()).x > maxW) n.pop_back();
+                n += "…";
+            }
+            ImVec2 p = ImFloor(ImVec2(o.x + m, y - fs / 2));
+            dl->AddText(f.bold, fs, p, theme::text, n.c_str());
+            dl->AddText(f.ui, fs, {p.x + f.bold->CalcTextSizeA(fs, FLT_MAX, 0, n.c_str()).x, p.y}, theme::dim, elo.c_str());
+        };
+        ImVec2 ts = f.mono->CalcTextSizeA(fs * 0.9f, FLT_MAX, 0, "opcan");
+        float topY = o.y + top / 2 + m * 0.25f, botY = o.y + top + bs + top / 2 - m * 0.1f;
+        player(board.flipped, topY, w - 3 * m - ts.x);
+        player(!board.flipped, botY, w - 2 * m);
+        dl->AddText(f.mono, fs * 0.9f, ImFloor(ImVec2(o.x + w - m - ts.x, topY - ts.y / 2)), theme::dim, "opcan");
     }
 
     // board
@@ -198,7 +208,8 @@ void App::Impl::shareCard(BoardView& bv, int i, float w) {
     bv.draw(b, bs, last, sh.badge ? cls : Cls::None, arrows);
 
     if (sh.caption) {
-        float y0 = o.y + top + bs, ch = h - top - bs, cy = y0 + ch / 2, x = o.x + m;
+        float y0 = o.y + 2 * top + bs, ch = h - 2 * top - bs, cy = y0 + ch / 2, x = o.x + m;
+        dl->AddLine({o.x + m, y0}, {o.x + w - m, y0}, theme::line, std::max(1.f, w / 720));
         float fs = w * 0.045f;
         if (!node) {
             dl->AddText(f.bold, fs, ImFloor(ImVec2(x, cy - fs / 2)), theme::text, "Starting position");
