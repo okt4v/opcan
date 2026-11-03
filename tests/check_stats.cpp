@@ -28,7 +28,38 @@ int64_t addGame(Store& s, int64_t pid, const std::string& id, int userColor, con
 }
 }  // namespace
 
+void checkOpcanRating() {
+    // two sites, two scales: lichess runs 200 above the engine estimates, chess.com matches them
+    std::vector<GameRow> rows;
+    auto row = [&](const char* site, int uc, const char* res, int me, int opp, int est, int64_t t) {
+        GameRow r;
+        r.id = (int64_t)rows.size() + 1, r.site = site, r.userColor = uc, r.result = res, r.timeClass = "blitz", r.playedAt = t;
+        (uc ? r.blackElo : r.whiteElo) = me, (uc ? r.whiteElo : r.blackElo) = opp;
+        r.reviewDepth = 14, r.estWhite = est, r.estBlack = est;
+        r.pgn = "1. e4 e5 2. Nf3 Nc6 *";
+        rows.push_back(r);
+    };
+    for (int i = 0; i < 6; i++) row("lichess", 0, "1/2-1/2", 1700, 1700, 1500, i);
+    for (int i = 0; i < 6; i++) row("chess.com", 1, "1/2-1/2", 1500, 1500, 1500, 10 + i);
+    auto g = opcanRatings(rows);
+    CHECK(g.size() == 12);
+    CHECK(g[0].before == 1500 && g[0].opp == 1500);  // lichess 1700 = opcan 1500
+    for (auto& x : g) CHECK(x.after == 1500 && x.perf == 1500);  // draws vs equals: no change across sites
+    rows.clear();
+    row("chess.com", 0, "1-0", 1500, 1500, 0, 0);  // unreviewed: offset 0
+    row("chess.com", 0, "1-0", 1500, 1500, 0, 1);
+    row("chess.com", 0, "*", 1500, 1500, 0, 2);     // unfinished: unrated
+    rows.back().timeClass = "blitz";
+    row("chess.com", 0, "0-1", 1500, 1500, 0, 3);
+    rows.back().pgn = "1. e4 *";                     // aborted: unrated
+    g = opcanRatings(rows);
+    CHECK(g.size() == 2);
+    CHECK(g[0].after == 1520 && g[0].perf == 1900);  // K 40, expected 0.5
+    CHECK(g[1].before == 1520 && g[1].after > 1520 && g[1].after < 1540);
+}
+
 void checkStats() {
+    checkOpcanRating();
     fs::path path = fs::temp_directory_path() / "opcan_check_stats.db";
     for (const char* ext : {"", "-wal", "-shm"}) fs::remove(path.string() + ext);
     Store s;

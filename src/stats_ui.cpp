@@ -377,9 +377,15 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
             rt.subCol = d > 0 ? theme::win : d < 0 ? theme::loss : theme::dim;
         }
         tiles.push_back(rt);
+        Tile ot{"opcan rating", s.opcanRating ? std::to_string(s.opcanRating) : "–", "No rated games"};
+        if (s.opcanRating) {
+            ot.label = std::string(kTcName[s.ratingClass]) + " opcan rating";
+            ot.sub = "Performance " + std::to_string(s.performance) + " over " + std::to_string(s.perfGames) + (s.perfGames == 1 ? " game" : " games");
+        }
+        tiles.push_back(ot);
         tiles.push_back({"Blunders per game", s.blundersPerGame >= 0 ? fmt("%.2f", s.blundersPerGame) : "–",
                          s.analyzed ? "in analyzed games" : "No analyzed games yet"});
-        int per = W >= 720 ? 5 : W >= 480 ? 3 : 2;
+        int per = W >= 860 ? 6 : W >= 480 ? 3 : 2;
         float tw = (W - kGap * (per - 1)) / per, th = 88;
         for (size_t i = 0; i < tiles.size(); i++) {
             int col = (int)i % per, row = (int)i / per;
@@ -406,14 +412,16 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
     const char* noAnalysis = "No analyzed games yet";
     const char* noAnalysisSub = "Background analysis fills this in as it reviews your games";
 
-    // rating per time class
-    cards.push_back({"Rating", "Your rating after each game, per time control", 232, [&](ImVec2 p, float w, float h) {
+    // rating per time class: the sites' own, and opcan's one scale across sites
+    auto ratingCard = [&](const char* title, const char* sub, const std::vector<Stats::RatingPoint>* series) {
+    cards.push_back({title, sub, 232, [&, series](ImVec2 p, float w, float h) {
+        auto& ratings = series;
         std::vector<std::tuple<ImU32, std::string, bool>> items;
         double lo = 1e9, hi = -1e9, t0 = 1e18, t1 = -1e18;
         for (int k = 0; k < kTimeClassCount; k++) {
-            if (s.ratings[k].empty()) continue;
-            items.push_back({theme::series[kTcSlot[k]], std::string(kTcName[k]) + "  " + std::to_string(s.ratings[k].back().rating), true});
-            for (auto& r : s.ratings[k]) lo = std::min(lo, (double)r.rating), hi = std::max(hi, (double)r.rating),
+            if (ratings[k].empty()) continue;
+            items.push_back({theme::series[kTcSlot[k]], std::string(kTcName[k]) + "  " + std::to_string(ratings[k].back().rating), true});
+            for (auto& r : ratings[k]) lo = std::min(lo, (double)r.rating), hi = std::max(hi, (double)r.rating),
                                          t0 = std::min(t0, (double)r.t), t1 = std::max(t1, (double)r.t);
         }
         if (items.empty()) return emptyNote(dl, p, w, h, "No rated games", "Games without ratings (e.g. imports) aren't plotted");
@@ -427,7 +435,7 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
         int bk = -1, bi = -1;
         dl->PushClipRect({pl.a.x - 6, pl.a.y - 6}, {pl.b.x + 6, pl.b.y + 6}, true);
         for (int k = 0; k < kTimeClassCount; k++) {
-            auto& rs = s.ratings[k];
+            auto& rs = ratings[k];
             if (rs.empty()) continue;
             ImU32 col = theme::series[kTcSlot[k]];
             std::vector<ImVec2> pts;
@@ -444,7 +452,7 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
         ImGui::SetCursorScreenPos(pl.a);
         ImGui::InvisibleButton("plot", {pl.b.x - pl.a.x, pl.b.y - pl.a.y});
         if (ImGui::IsItemHovered() && bk >= 0) {
-            auto& r = s.ratings[bk][bi];
+            auto& r = ratings[bk][bi];
             ImVec2 c{pl.X((double)r.t), pl.Y(r.rating)};
             dl->AddLine({c.x, pl.a.y}, {c.x, pl.b.y}, alpha(theme::hi, 50));
             ring(dl, c, theme::series[kTcSlot[bk]]);
@@ -455,6 +463,9 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
             if (ImGui::IsItemClicked()) openStored(r.gameId);
         }
     }});
+    };
+    ratingCard("Rating", "Your rating after each game, per time control", s.ratings);
+    ratingCard("opcan rating", "One rating across chess.com, lichess and imports, per time control", s.opcan);
 
     // accuracy trend
     cards.push_back({"Accuracy", "Each analyzed game in order, and the 10-game average", 232, [&](ImVec2 p, float w, float h) {

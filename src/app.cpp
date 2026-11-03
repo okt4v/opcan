@@ -1187,6 +1187,28 @@ void App::Impl::drawSummary() {
             else ImGui::TextDisabled("–");
             ImGui::PopFont();
         }
+        if (int u = userSide(); trends && trends->rating && u >= 0) {  // opcan rating: the user's change, the opponent's on the same scale
+            auto& gr = *trends->rating;
+            ImGui::TableNextRow(0, 26);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted("opcan rating");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("One rating across chess.com, lichess and your imports.\nPerformance this game: %d", gr.perf);
+            for (int side = 0; side < 2; side++) {
+                ImGui::TableSetColumnIndex(side ? 3 : 1);
+                ImGui::PushFont(f.bold, 15);
+                if (side != u) ImGui::Text("%d", gr.opp);
+                else {
+                    int d = gr.after - gr.before;
+                    ImGui::Text("%d", gr.after);
+                    ImGui::SameLine(0, 4);
+                    ImGui::PushStyleColor(ImGuiCol_Text, d > 0 ? theme::win : d < 0 ? theme::loss : theme::dim);
+                    ImGui::Text("%s%d", d > 0 ? "+" : "", d);
+                    ImGui::PopStyleColor();
+                }
+                ImGui::PopFont();
+            }
+        }
         for (int ph = 0; ph < 3; ph++) {
             ImGui::TableNextRow(0, 26);
             ImGui::TableNextColumn();
@@ -1230,7 +1252,7 @@ void App::Impl::drawSummary() {
 void App::Impl::updateTrends() {
     if (auto t = trendJob.take()) trends = std::move(*t);
     int u = userSide();
-    if (trendsAsked || !review || !prof || u < 0 || review->accuracy[u] < 0) return;
+    if (trendsAsked || !review || !prof || u < 0) return;  // short games still get their opcan rating
     trendsAsked = true;
     std::vector<uint8_t> cls;
     for (auto& m : review->moves) cls.push_back((uint8_t)m.cls);

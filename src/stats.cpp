@@ -1,4 +1,5 @@
 #include "stats.hpp"
+#include "explorer.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -117,9 +118,77 @@ int64_t periodStart(int64_t key, bool weekly) {
 
 }  // namespace
 
+std::vector<GameRating> opcanRatings(const std::vector<GameRow>& rows) {
+    auto tcOf = [](const std::string& t) {
+        for (int k = 0; k < kTimeClassCount; k++)
+            if (t == kTimeClasses[k]) return k;
+        return -1;
+    };
+    auto median = [](std::vector<int> v) {
+        std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+        return v[v.size() / 2];
+    };
+    // site -> engine scale offsets, per (site, time class)
+    std::map<std::string, std::vector<int>> pools;
+    std::vector<int> all;
+    for (auto& r : rows) {
+        if (r.reviewDepth <= 0) continue;
+        for (int side = 0; side < 2; side++) {
+            int site = side ? r.blackElo : r.whiteElo, est = side ? r.estBlack : r.estWhite;
+            if (site <= 0 || est <= 0) continue;
+            pools[r.site + "/" + r.timeClass].push_back(est - site);
+            all.push_back(est - site);
+        }
+    }
+    constexpr size_t kMinSamples = 5;
+    int fallback = all.size() >= kMinSamples ? median(all) : 0;
+    std::map<std::string, int> offset;
+    for (auto& [k, v] : pools) offset[k] = v.size() >= kMinSamples ? median(v) : fallback;
+    auto scaled = [&](const GameRow& r, int side) {
+        int site = side ? r.blackElo : r.whiteElo, est = side ? r.estBlack : r.estWhite;
+        if (site > 0) {
+            auto it = offset.find(r.site + "/" + r.timeClass);
+            return std::max(100, site + (it == offset.end() ? fallback : it->second));
+        }
+        return est;  // 0 when unknown too
+    };
+
+    std::vector<GameRating> out;
+    int rating[kTimeClassCount] = {}, played[kTimeClassCount] = {};
+    for (auto& r : rows) {
+        int uc = r.userColor, tc = tcOf(r.timeClass);
+        if (uc < 0 || uc > 1 || tc < 0) continue;
+        double score = r.result == "1/2-1/2" ? 0.5 : r.result == "1-0" ? (uc == 0) : r.result == "0-1" ? (uc == 1) : -1;
+        if (score < 0) continue;
+        int opp = scaled(r, 1 - uc);
+        if (opp <= 0) continue;
+        Board b;
+        if ((int)pgnMainline(r.pgn, kMinPliesForStats, b).size() < kMinPliesForStats) continue;  // aborted
+        if (!played[tc]) {
+            int me = scaled(r, uc);
+            rating[tc] = me > 0 ? me : opp;
+        }
+        GameRating g;
+        g.gameId = r.id, g.t = r.playedAt, g.tc = tc, g.before = rating[tc], g.opp = opp, g.score = score;
+        g.perf = opp + (score == 1 ? 400 : score == 0 ? -400 : 0);
+        double diff = std::clamp(opp - rating[tc], -400, 400);
+        double expected = 1 / (1 + std::pow(10.0, diff / 400));
+        double k = played[tc] < 20 ? 40 : 20;
+        rating[tc] = std::max(100, (int)std::lround(rating[tc] + k * (score - expected)));
+        played[tc]++;
+        g.after = rating[tc];
+        out.push_back(g);
+    }
+    return out;
+}
+
 Stats computeStats(Store& store, int64_t profileId, const StatsFilter& f, const Openings& book,
                    const std::atomic<bool>* cancel, bool renameOpenings) {
     Stats s;
+    std::map<int64_t, GameRating> opcan;  // over every counted game: the filter mustn't change the history
+    for (auto& g : opcanRatings(store.countedRows(profileId, {}))) opcan[g.gameId] = g;
+    double perfSum[kTimeClassCount] = {};
+    int perfN[kTimeClassCount] = {};
     GameFilter gf;
     gf.timeClass = f.timeClass, gf.color = f.color, gf.site = f.site, gf.since = f.since, gf.until = f.until;
     auto games = store.statsGames(profileId, gf);
@@ -162,6 +231,11 @@ Stats computeStats(Store& store, int64_t profileId, const StatsFilter& f, const 
         for (int k = 0; k < kTimeClassCount; k++)
             if (row.timeClass == kTimeClasses[k]) tc = k;
         if (tc >= 0 && myElo > 0) s.ratings[tc].push_back({row.playedAt, row.id, myElo});
+        if (auto it = opcan.find(row.id); it != opcan.end()) {
+            auto& gr = it->second;
+            s.opcan[gr.tc].push_back({row.playedAt, row.id, gr.after});
+            perfSum[gr.tc] += gr.perf, perfN[gr.tc]++;
+        }
         if (myElo > 0 && oppElo > 0 && oc >= 0) s.buckets[ratingBucket(oppElo - myElo)].wdl[oc]++;
         // lichess "Time forfeit", chess.com "X won on time"
         if (g && oc == 2 && lower(g->header("Termination")).find("time") != std::string::npos) s.lostOnTime++;
@@ -281,6 +355,14 @@ Stats computeStats(Store& store, int64_t profileId, const StatsFilter& f, const 
             if (!s.ratings[k].empty() && (s.ratingClass < 0 || s.ratings[k].size() > s.ratings[s.ratingClass].size()))
                 s.ratingClass = k;
     if (s.ratingClass >= 0 && !s.ratings[s.ratingClass].empty()) s.currentRating = s.ratings[s.ratingClass].back().rating;
+    if (s.ratingClass < 0)  // only unrated-on-site games: pick the class from the opcan series
+        for (int k = 0; k < kTimeClassCount; k++)
+            if (!s.opcan[k].empty() && (s.ratingClass < 0 || s.opcan[k].size() > s.opcan[s.ratingClass].size())) s.ratingClass = k;
+    if (int k = s.ratingClass; k >= 0 && perfN[k]) {
+        s.opcanRating = s.opcan[k].back().rating;
+        s.perfGames = perfN[k];
+        s.performance = (int)std::lround(perfSum[k] / perfN[k]);  // linear tournament performance
+    }
 
     // mistakes over time: weeks for short spans, else months; from the first to the last analyzed game
     if (!analyzed.empty()) {
@@ -347,6 +429,12 @@ GameMetrics gameMetrics(const Game& g, const std::vector<PosEval>& evals, const 
 GameTrends computeTrends(Store& store, int64_t profileId, int64_t excludeGameId, const GameMetrics& game) {
     GameTrends t;
     auto games = store.statsGames(profileId, GameFilter{});  // oldest first
+    if (excludeGameId) {
+        std::vector<GameRow> rows;
+        for (auto& g : games) rows.push_back(g.row);
+        for (auto& g : opcanRatings(rows))
+            if (g.gameId == excludeGameId) t.rating = g;
+    }
     std::vector<double> xs[3];
     int used = 0;
     for (auto it = games.rbegin(); it != games.rend() && used < kTrendGames; ++it) {

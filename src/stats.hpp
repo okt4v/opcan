@@ -26,6 +26,24 @@ constexpr int kTimeClassCount = 5;
 constexpr int kRatingBuckets = 6;
 int ratingBucket(int diff);
 
+// opcan rating: one Elo per time class over every counted game, whatever the site, so chess.com and lichess
+// games land on one scale. Opponents' site ratings are moved onto it by a per (site, time class) offset: the
+// median of (engine-estimated game rating - site rating) over that pool's reviewed games (both sides; 5+
+// samples, else the median over all pools, else 0). Without a site rating, the opponent's estimate that game.
+// FIDE-style: K 40 for the first 20 games of a time class, then 20; rating gap capped at 400 for the
+// expectation. Starts from the user's own scaled site rating in their first game (else their estimate, else
+// the opponent's). Games without a time class or a result aren't rated.
+struct GameRating {
+    int64_t gameId = 0, t = 0;
+    int tc = -1;                 // index into kTimeClasses
+    int before = 0, after = 0;   // the user's opcan rating
+    int opp = 0;                 // the opponent's, on the opcan scale
+    int perf = 0;                // this game's performance: opp +400 win, opp draw, opp -400 loss
+    double score = 0;            // 1 / 0.5 / 0
+};
+// rows oldest first, as from Store::countedRows; aborted games (< kMinPliesForStats) are skipped
+std::vector<GameRating> opcanRatings(const std::vector<GameRow>& rows);
+
 struct Stats {
     // counted games in the filter (never bot games, never aborted ones: < kMinPliesForStats plies), of which
     // reviewed with a user accuracy (the user made >= kMinMovesForAccuracy moves)
@@ -41,6 +59,9 @@ struct Stats {
 
     struct RatingPoint { int64_t t, gameId; int rating; };
     std::vector<RatingPoint> ratings[kTimeClassCount];  // oldest first
+    std::vector<RatingPoint> opcan[kTimeClassCount];    // opcan rating after each game in the filter, oldest first
+    int opcanRating = 0;        // newest opcan rating in ratingClass (0 = none)
+    int performance = 0, perfGames = 0;  // tournament-style performance over the filter's ratingClass games
 
     struct OpeningStat {
         std::string name;  // family: name before ':'
@@ -112,7 +133,10 @@ struct Trend {
     int n = 0;                     // compared games with a score
     int verdict = -2;              // 1 better than usual, 0 as usual (within half a std dev, min 3 points), -1 worse, -2 unknown
 };
-struct GameTrends { Trend t[3]; };
+struct GameTrends {
+    Trend t[3];
+    std::optional<GameRating> rating;  // the game's opcan rating change (computed alongside: same game list)
+};
 GameTrends computeTrends(Store& store, int64_t profileId, int64_t excludeGameId, const GameMetrics& game);
 // "You played the opening like you usually do." ("" when unknown)
 std::string trendSentence(TrendArea a, const Trend& t);
