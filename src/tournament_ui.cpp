@@ -5,6 +5,7 @@
 #include <nfd.h>
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <fstream>

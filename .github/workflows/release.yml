@@ -5,6 +5,7 @@
 name: release
 on:
   push:
+    branches: [main]  # build + self-checks on every push; only tags publish a release
     tags: ["v*"]
   workflow_dispatch:
 

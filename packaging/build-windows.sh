@@ -12,7 +12,7 @@ if [ -z "${OPCAN_WIN_SHELL:-}" ]; then
 fi
 
 build=${BUILD_DIR:-build-win}
-version=$(sed -n 's/^project(opcan VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+version=$(sed -n 's/^set(_opcan_numeric \([0-9.]*\)).*/\1/p' CMakeLists.txt)
 [ -n "$version" ] || { echo "no version in CMakeLists.txt" >&2; exit 1; }
 
 # Stockfish: packaging/stockfish-win/{stockfish.exe,stockfish-COPYING.txt,stockfish-AUTHORS.txt}

@@ -9,7 +9,7 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
-version=$(sed -n 's/^project(opcan VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+version=$(sed -n 's/^set(_opcan_numeric \([0-9.]*\)).*/\1/p' CMakeLists.txt)
 host=$(uname -s)
 targets=("$@")
 if [ ${#targets[@]} -eq 0 ]; then

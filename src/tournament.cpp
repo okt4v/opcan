@@ -1,6 +1,7 @@
 #include "tournament.hpp"
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cmath>
 #include <map>
 
