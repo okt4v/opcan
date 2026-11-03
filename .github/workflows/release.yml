@@ -46,6 +46,13 @@ jobs:
         shell: bash
         run: echo "${{ github.workspace }}/packaging/stockfish" >> "$GITHUB_PATH"
 
+      # the installer builder (no longer preinstalled on windows-latest)
+      - name: NSIS (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Append
       # no -G: the newest installed Visual Studio (the runner images move to new versions)
       - name: Configure (Windows, MSVC)
         if: runner.os == 'Windows'
