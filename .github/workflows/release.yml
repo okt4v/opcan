@@ -93,10 +93,25 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # tags and history for the changelog
+          path: src
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      # "What's new": commit subjects since the previous release tag (CI / test-only commits left out); the in-app
+      # update dialog shows this section
+      - name: Changelog
+        run: |
+          cd src
+          prev=$(git describe --tags --abbrev=0 --match 'v*' "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          range=${prev:+$prev..}$GITHUB_REF_NAME
+          { echo "## What's new"; echo
+            git log --no-merges --pretty='- %s' "$range" | grep -vE '^- (CI|Tests?)[:(]' | head -n 60 || true
+            echo; } > ../changes.md
+          cat ../changes.md
       # one plainly named download per platform (the in-app updater matches these names too)
       - name: Name the downloads
         run: |
@@ -128,9 +143,10 @@ jobs:
           opcan updates itself from here (Settings > Updates).
           EOF
           sed -i 's/^          //' notes.md
+          cat changes.md notes.md > body.md
       - uses: softprops/action-gh-release@v2
         with:
           files: out/*
-          body_path: notes.md
+          body_path: body.md
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true

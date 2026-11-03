@@ -84,6 +84,12 @@ void App::Impl::drawUpdateDialog() {
             if (l.heading) ImGui::PopFont();
         }
         ImGui::EndChild();
+    } else {
+        ImGui::Dummy({0, 2});
+        ImGui::TextDisabled("This release has no notes.");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("See the changes on GitHub"))
+            openUrl("https://github.com/okt4v/opcan/commits/" + r.tag);
     }
     ImGui::Dummy({0, 6});
     bool busy = u.install.busy();
