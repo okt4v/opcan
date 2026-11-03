@@ -1,5 +1,7 @@
 #include "app_impl.hpp"
+#include "devscript.hpp"
 #include <imgui_internal.h>
+#include <algorithm>
 #include <nfd.h>
 #include <cmath>
 #include <cstdlib>
@@ -587,6 +589,53 @@ void App::Impl::frame() {
     drawHelp();
     if (prof && tourStep >= 0) drawTour();
     drawToast();
+    ImGui::End();
+    drawSplash();
+}
+
+// Opening animation: a knight drops in, the name rises under it, then everything fades into the app.
+// A click, Esc, Enter or Space skips straight to the fade.
+void App::Impl::drawSplash() {
+    if (splashAt == -2) return;
+    double now = ImGui::GetTime();
+    if (splashAt < 0) {
+        if ((devscript::active() || std::getenv("OPCAN_SHOT")) && !std::getenv("OPCAN_SPLASH"))  // screenshot checks stay deterministic
+            return void(splashAt = -2);                                                    // (OPCAN_SPLASH=1 to shoot it)
+        splashAt = now;
+    }
+    const float kFade = 1.3f, kEnd = 1.7f;
+    float t = float(now - splashAt);
+    if (t < kFade && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Escape) ||
+                      ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_Space)))
+        splashAt = now - kFade, t = kFade;
+    if (t >= kEnd) return void(splashAt = -2);
+    animUntil = now + 0.1;
+    auto clamp01 = [](float x) { return std::clamp(x, 0.f, 1.f); };
+    auto easeOut = [](float x) { return 1 - (1 - x) * (1 - x) * (1 - x); };
+    float fade = 1 - clamp01((t - kFade) / (kEnd - kFade));
+    float drop = easeOut(clamp01(t / 0.5f)), rise = easeOut(clamp01((t - 0.3f) / 0.4f)), line = easeOut(clamp01((t - 0.55f) / 0.4f));
+
+    // a plain window over everything, so clicks don't reach the page underneath
+    auto* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->Pos);
+    ImGui::SetNextWindowSize(vp->Size);
+    ImGui::SetNextWindowFocus();
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, alpha(theme::bg, int(255 * fade)));
+    ImGui::Begin("##splash", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleColor();
+    auto* dl = ImGui::GetWindowDrawList();
+    ImVec2 c(vp->Pos.x + vp->Size.x / 2, vp->Pos.y + vp->Size.y / 2);
+    float px = 112 * (0.8f + 0.2f * drop);
+    ImVec2 kc(c.x, c.y - 40 - 24 * (1 - drop));
+    int ka = int(255 * drop * fade);
+    dl->AddImage(board.pieceTexture(chess::Piece::WHITEKNIGHT, 128), {kc.x - px / 2, kc.y - px / 2}, {kc.x + px / 2, kc.y + px / 2}, {0, 0}, {1, 1},
+                 IM_COL32(255, 255, 255, ka));
+    const char* name = "opcan";
+    ImVec2 ts = f.bold->CalcTextSizeA(44, FLT_MAX, 0, name);
+    ImVec2 tp = ImFloor(ImVec2(c.x - ts.x / 2, c.y + 36 + 10 * (1 - rise)));
+    dl->AddText(f.bold, 44, tp, alpha(theme::text, int(255 * rise * fade)), name);
+    float lw = ts.x * line;
+    dl->AddRectFilled({c.x - lw / 2, tp.y + ts.y + 8}, {c.x + lw / 2, tp.y + ts.y + 11}, alpha(theme::accent, int(255 * fade)), 2);
     ImGui::End();
 }
 

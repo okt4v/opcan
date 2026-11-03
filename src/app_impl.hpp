@@ -262,8 +262,10 @@ struct TrainUi {
     chess::Move last = chess::Move::NO_MOVE;
     std::string msg, opening;
     int mood = 0;           // Pip's face
-    double autoAt = 0, revertAt = 0;
+    double autoAt = 0, revertAt = 0;  // revertAt: a wrong move is shown (on revertTo) until then
     chess::Board revertTo;
+    chess::Move wrong = chess::Move::NO_MOVE;  // the move being checked or flashed as wrong
+    Cls badge = Cls::None;  // right/wrong signal on the last shown move
     Async<std::optional<Score>> eval;
     bool wasFlipped = false;
     // repertoire editor
@@ -334,6 +336,8 @@ struct App::Impl {
     std::string evalText = "0.0";
     View view = View::Library, backView = View::Library;
     bool showHelp = false, quit = false, scrollToCur = false, infoOpen = false;
+    double splashAt = -1;  // opening animation start (main.cpp-free: first frame), -2 = done
+    void drawSplash();
     int tourStep = -1;     // first-run tour (tour_ui.cpp), -1 = off
     ImVec4 navRect[7]{};   // sidebar items (0 library, 1 analyze, 2 stats, 3 settings, 4 openings, 5 train, 6 profile)
     std::string paste;
@@ -462,6 +466,7 @@ struct App::Impl {
     void trainLoad();
     void trainMove(chess::Move m);
     void trainGrade(Grade g);
+    void trainWrong(const chess::Board& before, chess::Move m, Cls c);
     void trainNext();
     void trainExit();
     void visionTiles(float W);

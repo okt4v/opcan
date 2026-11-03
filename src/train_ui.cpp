@@ -334,7 +334,8 @@ void App::Impl::trainNext() {
     tr.board = Board(c.fen);
     tr.idx = tr.mistakes = 0;
     tr.hinted = tr.revealed = tr.done = false;
-    tr.last = Move::NO_MOVE;
+    tr.last = tr.wrong = Move::NO_MOVE;
+    tr.badge = Cls::None, tr.revertAt = 0;
     tr.autoAt = ImGui::GetTime() + 0.6;
     board.flipped = c.color == 1;
     if (!isLine(c)) {
@@ -366,7 +367,18 @@ void App::Impl::trainGrade(Grade g) {
     }
     tr.done = true;
     tr.mood = g == Grade::Again ? 3 : g == Grade::Hard ? 0 : 1;
+    tr.badge = g == Grade::Good ? Cls::Best : g == Grade::Hard ? Cls::Good : Cls::None;
     if (prefs.moveSounds && g != Grade::Again) audio.play(Sfx::Success);
+}
+
+// Shows a wrong move briefly with a red badge, then puts the position back.
+void App::Impl::trainWrong(const Board& before, Move m, Cls c) {
+    tr.revertTo = before;
+    tr.revertTo.makeMove(m);
+    tr.wrong = m;
+    tr.badge = c;
+    tr.revertAt = ImGui::GetTime() + 0.7;
+    if (prefs.moveSounds) audio.play(sfxOf(before, m));
 }
 
 void App::Impl::trainMove(Move m) {
@@ -387,6 +399,7 @@ void App::Impl::trainMove(Move m) {
         if (!tr.line.empty() && m == tr.line[0]) return finish();
         if (enginePath.empty()) {
             tr.mistakes++;
+            trainWrong(before, m, Cls::Blunder);
             tr.msg = "Not that one. Try again, or ask for a hint.";
             tr.mood = 3;
             return;
@@ -401,7 +414,7 @@ void App::Impl::trainMove(Move m) {
             return lines[0].score;
         });
         tr.revertTo = after;  // the move being checked
-        tr.last = m;
+        tr.wrong = m;
         tr.msg = "Let me check " + sanOf(before, m) + "...";
         return;
     }
@@ -419,6 +432,7 @@ void App::Impl::trainMove(Move m) {
                                                                          : "Done. We'll go through this line again soon.";
         } else {
             tr.autoAt = ImGui::GetTime() + 0.45;
+            tr.badge = Cls::Good;
             tr.msg = "Good.";
             tr.mood = 1;
         }
@@ -427,11 +441,13 @@ void App::Impl::trainMove(Move m) {
     std::string u = uci::moveToUci(m);
     auto theory = theoryMoves(inDeck(tr.all, c.deck), tr.board);
     if (std::find(theory.begin(), theory.end(), u) != theory.end()) {
+        trainWrong(before, m, Cls::Inaccuracy);
         tr.msg = sanOf(before, m) + " is also in your lines, but this one goes differently. Try again.";
         tr.mood = 2;
         return;
     }
     tr.mistakes++;
+    trainWrong(before, m, Cls::Blunder);
     tr.msg = sanOf(before, m) + " isn't the line. The right move is shown on the board.";
     tr.mood = 3;
     tr.revealed = tr.revealed || tr.mistakes >= 2;
@@ -447,7 +463,7 @@ void App::Impl::trainSession() {
         Score best{d.is_object() ? d.value("cp", 0) : 0, d.is_object() ? d.value("mate", 0) : 0, d.is_object() && d.value("mated", false)};
         Board before(c.fen);
         if (*r && retryAccepted(best, **r)) {
-            Move m = tr.last;
+            Move m = tr.wrong;
             tr.board = before;
             Grade g = tr.revealed ? Grade::Again : tr.mistakes || tr.hinted ? Grade::Hard : Grade::Good;
             tr.board.makeMove(m);
@@ -456,23 +472,32 @@ void App::Impl::trainSession() {
             tr.msg = sanOf(before, m) + " works too! The engine's first choice was " + sanOf(before, tr.line[0]) + ".";
         } else {
             tr.mistakes++;
-            tr.last = Move::NO_MOVE;
+            if (*r) {  // flash it like the other wrong moves; revertTo already holds it
+                tr.badge = Cls::Blunder;
+                tr.revertAt = now + 0.7;
+            }
             tr.msg = *r ? "That's not it. Try again, or ask for a hint." : "The engine isn't available to check that move.";
             tr.mood = 3;
         }
+    }
+    if (tr.revertAt > 0) {
+        animUntil = now + 0.1;
+        if (now >= tr.revertAt) tr.revertAt = 0, tr.badge = Cls::None;
     }
     // the other side's moves in a line
     if (!tr.finished && isLine(c) && !tr.demo && !tr.done && tr.idx < (int)tr.line.size() &&
         (int)tr.board.sideToMove() != c.color) {
         animUntil = now + 0.1;
-        if (now >= tr.autoAt) {
+        if (now >= tr.autoAt && tr.revertAt == 0) {
             Board before = tr.board;
             Move m = tr.line[tr.idx++];
             tr.board.makeMove(m), tr.last = m;
+            tr.badge = Cls::None;  // the signal belonged to the learner's move
             if (prefs.moveSounds) audio.play(sfxOf(before, m));
             if (tr.idx >= (int)tr.line.size()) {
                 Grade g = tr.revealed || tr.mistakes >= 2 ? Grade::Again : tr.mistakes || tr.hinted ? Grade::Hard : Grade::Good;
                 trainGrade(g);
+                tr.badge = Cls::None;
                 tr.msg = g == Grade::Good ? "Perfect, you know this line." : "Done. This line comes back a bit sooner.";
             }
         }
@@ -492,9 +517,15 @@ void App::Impl::trainSession() {
         else if (learnerTurn && (tr.revealed || (isLine(c) && tr.mistakes))) arrows.push_back(arrowOf(tr.line[tr.idx], theme::arrowBest));
     }
     ImGui::SetCursorPos({origin.x, origin.y + std::max(0.f, (avail.y - size) / 2)});
-    board.interactive = !tr.finished && !tr.done && !tr.demo && !tr.eval.busy() && (int)tr.board.sideToMove() == c.color;
-    const Board shown = tr.finished ? Board(kStartFen) : tr.eval.busy() ? tr.revertTo : tr.board;  // the move being checked
-    Move mv = board.draw(shown, size, tr.last, Cls::None, arrows);
+    bool flashing = tr.eval.busy() || tr.revertAt > 0;  // a move being checked, or a wrong one shown briefly
+    board.interactive = !tr.finished && !tr.done && !tr.demo && !flashing && (int)tr.board.sideToMove() == c.color;
+    const Board shown = tr.finished ? Board(kStartFen) : flashing ? tr.revertTo : tr.board;
+    Move shownLast = tr.finished ? Move::NO_MOVE : flashing ? tr.wrong : tr.last;
+    auto keepMarks = board.marks;
+    if (tr.badge != Cls::None && shownLast != Move::NO_MOVE)  // tint the square in the signal's color
+        board.marks.push_back({shownLast.to().index(), alpha(theme::cls(tr.badge), 200)});
+    Move mv = board.draw(shown, size, shownLast, tr.finished ? Cls::None : tr.badge, arrows);
+    board.marks = keepMarks;
     board.interactive = true;
     if (mv != Move::NO_MOVE) trainMove(mv);
 
@@ -585,7 +616,7 @@ void App::Impl::trainSession() {
                 tr.board.makeMove(m), tr.last = m;
             }
         } else if (accentButton("Now you try", {pw, 38}) || ImGui::IsKeyPressed(ImGuiKey_Enter, false)) {
-            tr.demo = false, tr.board = Board(c.fen), tr.idx = 0, tr.last = Move::NO_MOVE;
+            tr.demo = false, tr.board = Board(c.fen), tr.idx = 0, tr.last = Move::NO_MOVE, tr.badge = Cls::None;
             tr.autoAt = now + 0.6;
             tr.msg = std::string("Your turn. Play the line as ") + colorWord(c.color) + ".";
             tr.mood = 0;
