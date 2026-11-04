@@ -464,10 +464,17 @@ void App::Impl::drawPlayBoard(ImVec2 avail) {
         float av = stripH - 12, yy = p.y + 6;
         dl->AddRectFilled({p.x, yy}, {p.x + av, yy + av}, white ? theme::evalWhite : theme::evalBlack, 6);
         if (white) dl->AddRect({p.x, yy}, {p.x + av, yy + av}, theme::edge, 6);
-        const std::string& name = white ? s.white : s.black;
+        std::string name = white ? s.white : s.black;
+        float clockW = 0;
+        if (s.baseMs) {
+            ImGui::PushFont(f.mono, 16);
+            clockW = ImGui::CalcTextSize("00:00.0").x + 20;
+            ImGui::PopFont();
+        }
         ImGui::PushFont(f.bold, 15);
         std::string ini = name.substr(0, 1);  // initial in the avatar square, like the review strips
         dl->AddText({p.x + av / 2 - ImGui::CalcTextSize(ini.c_str()).x / 2, yy + av / 2 - 8}, white ? theme::evalBlack : theme::evalWhite, ini.c_str());
+        name = ellipsize(name, std::max(20.f, size - clockW - av - 10 - 28));  // leave room for the spinner, stop left of the clock
         dl->AddText({p.x + av + 10, yy + av / 2 - 8}, theme::text, name.c_str());
         float nx = p.x + av + 10 + ImGui::CalcTextSize(name.c_str()).x + 8;
         ImGui::PopFont();
@@ -559,7 +566,7 @@ void App::Impl::drawPlayPanel() {
 
     // moves
     float btnH = s.end ? 3 * 36 + 2 * 6 : 36;
-    ImGui::BeginChild("playMoves", {0, -btnH - 10});
+    ImGui::BeginChild("playMoves", {0, std::max(80.f, ImGui::GetContentRegionAvail().y - btnH - 10)});
     Board b(s.startFen);
     bool blackFirst = b.sideToMove() == Color::BLACK;
     int num = b.fullMoveNumber();

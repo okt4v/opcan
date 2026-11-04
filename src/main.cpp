@@ -7,6 +7,7 @@
 #include <imgui_internal.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
+#include <algorithm>
 #include <cfloat>
 #include <cstdio>
 #include <cstdlib>
@@ -57,6 +58,11 @@ int main(int argc, char** argv) {
     if (devscript::active()) glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);  // fixed size: sway floats it, script coords stay valid
     GLFWwindow* win = glfwCreateWindow(winW, winH, "opcan", nullptr, nullptr);
     if (!win) return 1;
+    // 1440x900 scaled to the monitor (Windows at 150%: 2160x1350) can be taller than the screen: maximize instead
+    int mx, my, mw = 0, mh = 0, cw, ch;
+    if (GLFWmonitor* mon = glfwGetPrimaryMonitor()) glfwGetMonitorWorkarea(mon, &mx, &my, &mw, &mh);
+    glfwGetWindowSize(win, &cw, &ch);
+    if (!devscript::active() && mw > 0 && (cw > mw || ch > mh)) glfwMaximizeWindow(win);  // Wayland: no work area, skipped
     glfwMakeContextCurrent(win);
     glfwSwapInterval(1);
 
@@ -67,19 +73,8 @@ int main(int argc, char** argv) {
     io.ConfigInputTrickleEventQueue = false;  // the UI scale rewrites queued mouse events once per frame
     io.ConfigDockingWithShift = false;
 
-    // Wayland/macOS report logical window coords (framebuffer scale handles density);
-    // Windows/X11 report pixels, so sizes need the content scale.
-    float xs = 1, ys = 1;
-    glfwGetWindowContentScale(win, &xs, &ys);
-    int ww, wh, fw, fh;
-    glfwGetWindowSize(win, &ww, &wh);
-    glfwGetFramebufferSize(win, &fw, &fh);
-    float scale = xs / (ww ? float(fw) / ww : 1.f);
-    if (scale < 1) scale = 1;
-
+    int fw, fh;
     applyStyle();
-    ImGui::GetStyle().ScaleAllSizes(scale);
-    ImGui::GetStyle().FontScaleDpi = scale;
 
     ImGui_ImplGlfw_InitForOpenGL(win, true);
     ImGui_ImplOpenGL3_Init(glsl);
@@ -109,8 +104,17 @@ int main(int argc, char** argv) {
         app->beforeFrame();
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
-        // UI scale: lay out at a smaller logical size and render it at a higher framebuffer scale
-        if (float us = app->uiScale(); us != 1) {
+        // UI scale: lay out at a smaller logical size and render it at a higher framebuffer scale.
+        // Wayland/macOS report logical window coords (framebuffer scale handles density); Windows/X11 report
+        // pixels, so their content scale goes through the same path: every hard-coded size scales, not just fonts.
+        // Per frame, so dragging the window to a monitor with another DPI rescales it.
+        float xs = 1, ys = 1;
+        int ww, wh;
+        glfwGetWindowContentScale(win, &xs, &ys);
+        glfwGetWindowSize(win, &ww, &wh);
+        glfwGetFramebufferSize(win, &fw, &fh);
+        float dpi = std::max(1.f, xs / (ww ? float(fw) / ww : 1.f));
+        if (float us = app->uiScale() * dpi; us != 1) {
             io.DisplaySize = {io.DisplaySize.x / us, io.DisplaySize.y / us};
             io.DisplayFramebufferScale = {io.DisplayFramebufferScale.x * us, io.DisplayFramebufferScale.y * us};
             for (auto& e : GImGui->InputEventsQueue)

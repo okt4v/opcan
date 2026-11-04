@@ -174,7 +174,7 @@ void App::Impl::drawExplorer() {
     ImVec2 avail = ImGui::GetContentRegionAvail();
     bool wide = avail.x >= 760;
     float panelW = wide ? std::clamp(avail.x * 0.42f, 360.f, 560.f) : avail.x;
-    float boardSize = wide ? std::min(avail.y, avail.x - panelW - 24) : std::min(avail.x, 560.f);
+    float boardSize = wide ? std::min(avail.y, avail.x - panelW - 24) : std::min({avail.x, avail.y - 40, 560.f});
     boardSize = std::max(160.f, std::floor(boardSize / 8) * 8);
     if (!wide) {
         ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::rgb(0, 0));

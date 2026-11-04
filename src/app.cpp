@@ -787,7 +787,7 @@ void App::Impl::drawSidebar(float w) {
 
     // bottom: background status + profile
     float bottom = wp.y + ws.y - 20;
-    float y = bottom - 48;
+    float y = std::max(bottom - 48, ImGui::GetCursorScreenPos().y + 38);  // short windows: below the nav, not over it
     std::string status;
     if (syncer && syncer->running()) status = "Syncing…";
     else if (bg || (set.autoAnalyze && unreviewedCount > 0 && !enginePath.empty()))
@@ -885,10 +885,11 @@ float fitBoard(ImVec2 avail) {
     return std::max(160.f, std::floor(size / 8) * 8);
 }
 
-// Narrow or portrait windows (e.g. a tiling-WM column): board on top, panel below.
+// Narrow or portrait windows (e.g. a tiling-WM column): board on top, panel below. Short landscape windows
+// (1366x768 at 150% = 910x512 logical) stay side by side: stacked, their board would shrink to the minimum.
 bool stackedLayout() {
     ImVec2 ws = ImGui::GetMainViewport()->WorkSize;
-    return ws.x < 1000 || ws.x < ws.y * 1.1f;
+    return ws.x < 700 || ws.x < ws.y * 1.1f;
 }
 }  // namespace
 
@@ -916,7 +917,7 @@ void App::Impl::drawMain() {
         ImGui::SetCursorPos({x0, origin.y});
         drawBoardArea({leftW + kGap, avail.y});
         ImGui::SetCursorPos({x0 + leftW + kGap, origin.y});
-        ImGui::BeginChild("panel", {panelW, avail.y}, ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
+        ImGui::BeginChild("panel", {panelW, avail.y}, ImGuiChildFlags_AlwaysUseWindowPadding);
     }
     ImGui::PopStyleVar();
     drawPanel();
@@ -1033,32 +1034,38 @@ void App::Impl::drawStrip(const Board& b, Color c, float w, float h) {
     float av = h - 12, y = p.y + 6;
     dl->AddRectFilled({p.x, y}, {p.x + av, y + av}, white ? theme::evalWhite : theme::evalBlack, 6);
     if (white) dl->AddRect({p.x, y}, {p.x + av, y + av}, theme::edge, 6);
-    std::string name = game->header(white ? "White" : "Black");
-    if (name.empty() || name == "?") name = white ? "White" : "Black";
-    ImGui::PushFont(f.bold, 15);
-    dl->AddText({p.x + 6 + av / 2 - ImGui::CalcTextSize(name.substr(0, 1).c_str()).x / 2 - 6 + 6, y + av / 2 - 8},
-                white ? theme::evalBlack : theme::evalWhite, name.substr(0, 1).c_str());
-    dl->AddText({p.x + av + 10, y + av / 2 - 8}, theme::text, name.c_str());
-    float nx = p.x + av + 10 + ImGui::CalcTextSize(name.c_str()).x + 8;
-    ImGui::PopFont();
-    std::string elo = game->header(white ? "WhiteElo" : "BlackElo");
-    if (!elo.empty() && elo != "?") {
-        elo = "(" + elo + ")";
-        dl->AddText({nx, y + av / 2 - 8}, theme::dim, elo.c_str());
-        nx += ImGui::CalcTextSize(elo.c_str()).x + 8;
-    }
-    int diff = material(b, c) - material(b, ~c);
-    if (diff > 0) dl->AddText({nx, y + av / 2 - 8}, theme::dim, ("+" + std::to_string(diff)).c_str());
     // clock: last known clock of this color on the path
     int clk = -1;
     for (int n = cur; n > 0 && clk < 0; n = game->nodes[n].parent) {
         Board pb = game->board(game->nodes[n].parent);
         if (pb.sideToMove() == c) clk = game->nodes[n].clockSec;
     }
+    std::string t = clk >= 0 ? clockText(clk) : "";
+    ImGui::PushFont(f.mono, 16);
+    ImVec2 ts = ImGui::CalcTextSize(t.c_str());
+    ImGui::PopFont();
+    float limit = p.x + w - (clk >= 0 ? ts.x + 20 + 8 : 0);  // text stops left of the clock box
+    std::string name = game->header(white ? "White" : "Black");
+    if (name.empty() || name == "?") name = white ? "White" : "Black";
+    std::string elo = game->header(white ? "WhiteElo" : "BlackElo");
+    elo = !elo.empty() && elo != "?" ? "(" + elo + ")" : "";
+    float eloW = elo.empty() ? 0 : ImGui::CalcTextSize(elo.c_str()).x + 8;
+    ImGui::PushFont(f.bold, 15);
+    dl->AddText({p.x + 6 + av / 2 - ImGui::CalcTextSize(name.substr(0, 1).c_str()).x / 2 - 6 + 6, y + av / 2 - 8},
+                white ? theme::evalBlack : theme::evalWhite, name.substr(0, 1).c_str());
+    name = ellipsize(name, std::max(20.f, limit - (p.x + av + 10) - 8 - eloW));
+    dl->AddText({p.x + av + 10, y + av / 2 - 8}, theme::text, name.c_str());
+    float nx = p.x + av + 10 + ImGui::CalcTextSize(name.c_str()).x + 8;
+    ImGui::PopFont();
+    if (!elo.empty() && nx + eloW - 8 <= limit) {
+        dl->AddText({nx, y + av / 2 - 8}, theme::dim, elo.c_str());
+        nx += eloW;
+    }
+    int diff = material(b, c) - material(b, ~c);
+    std::string mat = "+" + std::to_string(diff);
+    if (diff > 0 && nx + ImGui::CalcTextSize(mat.c_str()).x <= limit) dl->AddText({nx, y + av / 2 - 8}, theme::dim, mat.c_str());
     if (clk >= 0) {
-        std::string t = clockText(clk);
         ImGui::PushFont(f.mono, 16);
-        ImVec2 ts = ImGui::CalcTextSize(t.c_str());
         bool active = b.sideToMove() == c;
         ImVec2 a{p.x + w - ts.x - 20, y}, z{p.x + w, y + av};
         dl->AddRectFilled(a, z, active ? (white ? theme::evalWhite : theme::panel2) : theme::panel, 6);
@@ -1505,8 +1512,10 @@ void App::Impl::drawReview() {
         }
     }
     float infoH = !meta || prefs.docking ? 0 : infoOpen ? std::min(304.f, ImGui::GetContentRegionAvail().y * 0.55f) : 40;
-    // never squash the move list: in a short (stacked) panel the panel scrolls instead
-    ImGui::BeginChild("moves", {0, std::max(150.f, ImGui::GetContentRegionAvail().y - 46 - infoH)}, ImGuiChildFlags_None);
+    // never squash the move list: in a short panel the panel scrolls instead (side by side: down to 80 first, so the
+    // nav row stays on screen on short laptop windows)
+    float minMoves = stackedLayout() ? 150.f : 80.f;
+    ImGui::BeginChild("moves", {0, std::max(minMoves, ImGui::GetContentRegionAvail().y - 46 - infoH)}, ImGuiChildFlags_None);
     drawMoveList();
     ImGui::EndChild();
     if (meta && !prefs.docking) drawGameInfo(infoH - 8);
@@ -1772,6 +1781,8 @@ void App::Impl::drawPicker() {
 
 void App::Impl::drawHelp() {
     if (showHelp && !ImGui::IsPopupOpen("Shortcuts")) ImGui::OpenPopup("Shortcuts");
+    ImVec2 vs = ImGui::GetMainViewport()->WorkSize;  // cap to the window so the bottom buttons stay reachable (scrolls)
+    ImGui::SetNextWindowSizeConstraints({0, 0}, {std::max(200.f, vs.x - 40), std::max(200.f, vs.y - 40)});
     if (!ImGui::BeginPopupModal("Shortcuts", &showHelp, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) return;
     if (ImGui::BeginTable("keys", 2, ImGuiTableFlags_SizingFixedFit)) {
         for (int i = 0; i < kActCount; i++) {

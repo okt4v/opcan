@@ -387,7 +387,7 @@ void App::Impl::drawAvatar(ImDrawList* dl, ImVec2 a, float s, const std::string&
     }
     auto [pc, bg] = parseAvatar(av);
     dl->AddRectFilled(a, b, bg, r);
-    float q = s * 0.7f, need = q * ImGui::GetStyle().FontScaleDpi;
+    float q = s * 0.7f, need = q * ImGui::GetIO().DisplayFramebufferScale.x;
     int px = need <= 32 ? 32 : need <= 64 ? 64 : need <= 128 ? 128 : 256;
     ImVec2 c{a.x + s / 2, a.y + s / 2 + s * 0.02f};
     dl->AddImage(board.pieceTexture(pc, px), {c.x - q / 2, c.y - q / 2}, {c.x + q / 2, c.y + q / 2});
