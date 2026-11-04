@@ -45,7 +45,7 @@ class Syncer {
 public:
     ~Syncer();
     // older=false: new games since each account's `newest` (first sync: last kFirstSyncDays).
-    // older=true: one more kOlderStepDays window before each account's `oldest`.
+    // older=true: everything before each account's `oldest`, which then becomes kAllHistory.
     // book (optional, must outlive the sync): names openings from our openings database.
     void start(Store& store, const Profile& p, bool older, const Openings* book = nullptr);
     void cancel();
@@ -53,7 +53,8 @@ public:
     int added() const;          // new games inserted so far
     std::string status() const; // e.g. "chess.com: 2024/05", "" when idle
     std::string error() const;  // last error, "" if none
-    static constexpr int kFirstSyncDays = 90, kOlderStepDays = 90;
+    static constexpr int kFirstSyncDays = 90;
+    static constexpr int64_t kAllHistory = 1;  // Account::oldest once the whole history is in (0 = never synced)
 
 private:
     struct Impl;

@@ -132,7 +132,7 @@ std::unique_ptr<Shared> openShared(const std::string& path, const Openings& book
                         if (lower(g.header(c ? "Black" : "White")) == lower(a.username)) side = c;
             if (side != r->userColor) r->userColor = side, changed = true;
         }
-        bool bot = isBotGame(g, r->userColor);
+        bool bot = isSiteBotGame(g, r->site, r->userColor);  // "import": the name/event guesses
         bool counts = r->countsInStats && r->userColor >= 0 && !bot;
         if (bot != r->vsBot || counts != r->countsInStats) changed = true;
         r->vsBot = bot || r->vsBot, r->countsInStats = counts;

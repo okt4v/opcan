@@ -186,7 +186,7 @@ std::vector<GameRow> parseChessComMonth(const std::string& body, const Account& 
         auto pg = fillFromPgn(g, acc);
         if (!pg) continue;
         // "Play vs Coach" (Coach-Magnus), "Play vs Bot", "vs Computer"
-        g.vsBot = isBotGame(*pg, g.userColor);
+        g.vsBot = isSiteBotGame(*pg, "chess.com", g.userColor);
         g.countsInStats = g.userColor >= 0 && !g.vsBot;
         for (auto& t : eventTags(*pg)) g.tags = withTag(g.tags, t);
         if (!str(x, "tournament").empty()) g.tags = withTag(g.tags, "tournament");
@@ -206,7 +206,9 @@ std::vector<GameRow> parseLichessGames(const std::string& body, const Account& a
         if (nl == std::string::npos) nl = body.size();
         auto x = json::parse(body.begin() + pos, body.begin() + nl, nullptr, false);
         pos = nl + 1;
-        if (x.is_discarded() || !x.is_object() || str(x, "variant") != "standard") continue;
+        if (x.is_discarded() || !x.is_object()) continue;
+        auto variant = str(x, "variant");  // "fromPosition": standard rules from a set-up position, like chess.com's
+        if (variant != "standard" && variant != "fromPosition") continue;
         GameRow g;
         g.profileId = pid;
         g.site = "lichess";
@@ -234,8 +236,8 @@ std::vector<GameRow> parseLichessGames(const std::string& body, const Account& a
         if (g.siteId.empty()) continue;
         auto pg = fillFromPgn(g, acc);
         if (!pg) continue;
-        g.vsBot = (g.userColor >= 0 ? bot[1 - g.userColor] : bot[0] || bot[1]) || isBotGame(*pg, g.userColor);
-        g.countsInStats = g.userColor >= 0 && !g.vsBot;
+        g.vsBot = (g.userColor >= 0 ? bot[1 - g.userColor] : bot[0] || bot[1]) || isSiteBotGame(*pg, "lichess", g.userColor);
+        g.countsInStats = g.userColor >= 0 && !g.vsBot && variant == "standard";  // no openings/accuracy from a set-up start
         for (auto& t : eventTags(*pg)) g.tags = withTag(g.tags, t);
         if (x.contains("tournament") || x.contains("swiss")) g.tags = withTag(g.tags, "tournament");
         out.push_back(std::move(g));
@@ -267,7 +269,9 @@ bool fetchChessCom(const Account& acc, int64_t pid, int64_t since, int64_t until
         if (s == std::string::npos || std::sscanf(url.c_str() + s, "/games/%d/%d", &y, &m) != 2 || m < 1 || m > 12)
             continue;
         int64_t from = monthStart(y, m), to = m == 12 ? monthStart(y + 1, 1) : monthStart(y, m + 1);
-        if (to <= since || from >= until) continue;
+        // archives are filed by US Pacific time: a game ending just after midnight UTC on the 1st is in the month
+        // before. A day of slack on both sides; parseChessComMonth still keeps only [since, until).
+        if (to + 86400 <= since || from - 86400 >= until) continue;
         if (!first && !sleepFor(150, cancel)) return false;
         first = false;
         char label[32];
@@ -289,15 +293,40 @@ bool fetchLichess(const Account& acc, int64_t pid, int64_t since, int64_t until,
                   const std::atomic<bool>* cancel, const Sink& sink) {
     std::vector<GameRow> out;
     sink("lichess · " + acc.username, out);
-    std::string url = "https://lichess.org/api/games/user/" + acc.username + "?since=" + std::to_string(since * 1000) +
-                      "&until=" + std::to_string(until * 1000) +
-                      "&pgnInJson=true&clocks=true&opening=true"
-                      "&perfType=ultraBullet,bullet,blitz,rapid,classical,correspondence";
-    auto body = get(url, {"Accept: application/x-ndjson"}, err, cancel);
-    if (!body) return false;
-    out = parseLichessGames(*body, acc, pid, cancel);
-    if (cancel && *cancel) return false;
-    sink("lichess · " + acc.username, out);
+    // lichess filters since/until by when a game STARTED, while since/until here are about when it ended (newest =
+    // the last move seen): start the query earlier, a day for live games and a year for correspondence ones, and
+    // keep the games that ended in [since, until). Already stored games just upsert.
+    // Pages of kPage games, newest first, each stored as it arrives: a whole history in one request runs past curl's
+    // time limit for big accounts (~25 games/s without a token) and nothing would be stored.
+    constexpr int kPage = 1000;
+    const std::pair<const char*, int64_t> kinds[] = {{"ultraBullet,bullet,blitz,rapid,classical", 86400},
+                                                     {"correspondence", 365 * 86400}};
+    for (auto [perf, back] : kinds) {
+        int64_t from = since > back ? since - back : 1;
+        for (int64_t upTo = until * 1000;;) {  // ms, lichess's unit
+            std::string url = "https://lichess.org/api/games/user/" + acc.username + "?since=" + std::to_string(from * 1000) +
+                              "&until=" + std::to_string(upTo) + "&max=" + std::to_string(kPage) +
+                              "&pgnInJson=true&clocks=true&opening=true&perfType=" + perf;
+            auto body = get(url, {"Accept: application/x-ndjson"}, err, cancel);
+            if (!body) return false;
+            int n = 0;
+            int64_t oldestStart = upTo;
+            for (size_t pos = 0, nl; pos < body->size(); pos = nl + 1) {
+                nl = std::min(body->find('\n', pos), body->size());
+                auto x = json::parse(body->begin() + pos, body->begin() + nl, nullptr, false);
+                if (!x.is_object()) continue;
+                n++;
+                if (int64_t c = num(x, "createdAt"); c > 0) oldestStart = std::min(oldestStart, c);
+            }
+            out = parseLichessGames(*body, acc, pid, cancel);
+            if (cancel && *cancel) return false;
+            std::erase_if(out, [&](const GameRow& g) { return g.playedAt < since || g.playedAt >= until; });
+            sink("lichess · " + acc.username, out);
+            if (n < kPage || oldestStart >= upTo) break;
+            upTo = oldestStart;  // games started at exactly this ms may come twice: upserted
+            if (!sleepFor(1000, cancel)) return false;  // lichess asks API clients for one request at a time, unhurried
+        }
+    }
     return true;
 }
 
@@ -421,7 +450,8 @@ void Syncer::start(Store& store, const Profile& p, bool older, const Openings* b
             int64_t since, until;
             if (older) {
                 until = acc.oldest ? acc.oldest : now;
-                since = until - (int64_t)kOlderStepDays * 86400;
+                since = kAllHistory;  // everything before: chess.com skips months outside, lichess streams it in one go
+                if (until <= since) continue;
             } else {
                 since = acc.newest ? acc.newest + 1 : now - (int64_t)kFirstSyncDays * 86400;
                 until = now + 60;

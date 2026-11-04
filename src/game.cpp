@@ -69,7 +69,9 @@ bool isBotGame(const Game& g, int userColor) {
     for (const char* w : {"bot", "bots", "computer", "coach", "odds"})
         if (has(ev, w)) return true;
     auto v = words(g.header("Variant"));
-    if (!v.empty() && !(v.size() == 1 && v[0] == "standard")) return true;
+    // other rules (chess960, crazyhouse...) are left out like bot games; "From Position" is standard chess
+    if (!v.empty() && !(v.size() == 1 && v[0] == "standard") && !(v.size() == 2 && v[0] == "from" && v[1] == "position"))
+        return true;
     for (int c = 0; c < 2; c++) {
         if (userColor == c) continue;  // only the opponent
         std::string side = c ? "Black" : "White";
@@ -78,6 +80,22 @@ bool isBotGame(const Game& g, int userColor) {
         for (auto& x : t) x = (char)std::toupper((unsigned char)x);
         for (auto& x : comp) x = (char)std::tolower((unsigned char)x);
         if (t == "BOT" || comp == "yes") return true;
+    }
+    return false;
+}
+
+bool isSiteBotGame(const Game& g, const std::string& site, int userColor) {
+    if (site == "chess.com") {
+        std::string ev = g.header("Event");
+        return ev.rfind("Play vs ", 0) == 0 || ev == "vs Computer";
+    }
+    if (site != "lichess") return isBotGame(g, userColor);
+    for (int c = 0; c < 2; c++) {
+        if (userColor == c) continue;  // only the opponent
+        std::string side = c ? "Black" : "White", t = g.header(side + "Title"), n = g.header(side);
+        for (auto& x : t) x = (char)std::toupper((unsigned char)x);
+        for (auto& x : n) x = (char)std::tolower((unsigned char)x);
+        if (t == "BOT" || n.rfind("lichess ai", 0) == 0) return true;
     }
     return false;
 }

@@ -1136,7 +1136,8 @@ void App::Impl::drawLibrary() {
     while (clip.Step())
         for (int i = clip.DisplayStart; i < clip.DisplayEnd; i++) drawGameRow(rows[i], lw);
     ImGui::Dummy({0, 12});
-    bool more = (int)rows.size() < total, older = !prof->accounts.empty();
+    bool more = (int)rows.size() < total, older = std::any_of(prof->accounts.begin(), prof->accounts.end(),
+                                                                [](auto& a) { return a.oldest != Syncer::kAllHistory; });
     if (more || older) {
         float bw = 160, n = float(more + older);
         ImGui::SetCursorPosX((lw - n * bw - (n - 1) * 8) / 2);

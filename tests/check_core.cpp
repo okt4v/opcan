@@ -100,6 +100,15 @@ void checkCore() {
                           "[Variant \"Chess960\"]\r\n\r\n1. e4 e5 *\r\n");
     CHECK(multi.size() == 2 && multi[0].mainline().size() == 4 && multi[0].nodes[0].children.size() == 2);
     CHECK(isBotGame(multi[1]));  // non-standard variant: never counts
+    // synced games: the site's markers only, a human with "bot" in the name stays human
+    auto site = [](const char* hdr) { return parsePgn(std::string(hdr) + "\n\n1. e4 e5 *")[0]; };
+    CHECK(isSiteBotGame(site(R"([Event "Play vs Coach"] [White "okt4v"] [Black "Coach-Magnus"])"), "chess.com", 0));
+    CHECK(isSiteBotGame(site(R"([Event "Play vs Bot"] [White "okt4v"] [Black "Martin"])"), "chess.com", 0));
+    CHECK(!isSiteBotGame(site(R"([Event "Live Chess"] [White "okt4v"] [Black "Not-A-Bot"])"), "chess.com", 0));
+    CHECK(!isSiteBotGame(site(R"([Event "Beat the Bot Arena"] [White "okt4v"] [Black "x"])"), "chess.com", 0));
+    CHECK(isSiteBotGame(site(R"([Event "Rated Blitz game"] [White "u"] [Black "maia1"] [BlackTitle "BOT"])"), "lichess", 0));
+    CHECK(isSiteBotGame(site(R"([Event "Casual game"] [White "lichess AI level 3"] [Black "u"])"), "lichess", 1));
+    CHECK(!isSiteBotGame(site(R"([Event "Rated Blitz game"] [White "u"] [Black "Odds-Bot"])"), "lichess", 0));
     {  // event tags
         auto tagsOf = [](const char* headers) {
             auto gs = parsePgn(std::string(headers) + "\n1. e4 e5 *");

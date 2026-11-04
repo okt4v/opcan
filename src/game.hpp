@@ -39,6 +39,10 @@ std::vector<Game> parsePgn(std::string_view text);
 // Looks at [Event], player names (the opponent's when userColor is 0/1, else both), lichess
 // [WhiteTitle "BOT"], [WhiteIsComp "Yes"] and non-standard [Variant].
 bool isBotGame(const Game& g, int userColor = -1);
+// Bot game by the site's own markers, for games from chess.com / lichess (no guessing from names or event words, so a
+// human called "Not-A-Bot" stays a human): chess.com files bot/coach games under Event "Play vs Bot" / "Play vs
+// Coach", lichess gives BOT accounts the BOT title and names its AI "lichess AI level N". Other sites: isBotGame.
+bool isSiteBotGame(const Game& g, const std::string& site, int userColor = -1);
 // Tags a game gets on import / sync from its headers: "tournament" ([Tournament], an Event naming a tournament,
 // arena or swiss, or a numbered [Round] as in over-the-board events), "team match" (chess.com [Match]).
 std::vector<std::string> eventTags(const Game& g);
