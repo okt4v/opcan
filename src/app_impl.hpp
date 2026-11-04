@@ -34,6 +34,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <functional>
 #include <vector>
 
 struct Settings {
@@ -42,7 +43,8 @@ struct Settings {
     int reviewDepth = 16, liveDepth = 24;
     int workers = std::max(1, (int)std::thread::hardware_concurrency() / 2);
     int liveThreads = std::max(1, (int)std::thread::hardware_concurrency() / 2);
-    bool engineLines = false, bestArrow = true, threatArrow = true, autoAnalyze = true;
+    bool engineLines = false, bestArrow = true, threatArrow = true, tacticArrows = true, autoAnalyze = true;
+    bool analysisPaused = false;  // the user paused the queue; kept across restarts, so nothing starts until Resume
 };
 
 // Rebindable actions; each has up to two key chords.
@@ -210,6 +212,8 @@ struct PlaySession {
     bool thinking = false, wasFlipped = false;
     std::unique_ptr<EngineOpponent> engine;
     std::optional<GameEnd> end;
+    Game line;                            // the moves as a game (node i = ply i), for live classifications
+    std::unordered_map<int, Cls> clsMemo;
 };
 // Opening explorer page (explorer_ui.cpp): a line through the tree of the user's games.
 struct ExplorerUi {
@@ -224,6 +228,17 @@ struct ExplorerUi {
 };
 
 // Board vision drills (vision_ui.cpp), on the Train page.
+// Train page tiles (train_ui.cpp): a whole-card button with an icon disc, bold title, one dim line, an optional due
+// badge (accent pill) or faint stat, and a progress bar. trainTile returns 1 on a click, 2 on its "..." menu (menu set).
+struct TrainTile {
+    std::string title, sub, badge, stat, tip;
+    float progress = -1;
+    bool menu = false, disabled = false;
+    std::function<void(ImDrawList*, ImVec2)> icon;  // drawn centred in the disc
+};
+int trainTile(const char* id, ImVec2 size, const TrainTile& t, ImFont* bold);
+// n cells of height h across W, up to `cols` columns (each at least 230 wide); fn(i, size) draws cell i
+void trainGrid(float W, int cols, int n, float h, const std::function<void(int, ImVec2)>& fn);
 enum class Drill { FindSquare, NameSquare, PlayMove, Routes, Checks, Captures, BlindMemory, BlindGame, Count };
 struct VisionUi {
     Drill drill = Drill::FindSquare;
@@ -261,6 +276,7 @@ struct VisionUi {
 // repertoire lines and opening courses.
 struct TrainUi {
     enum class Page { Home, Session, Repertoire, Courses, Vision } page = Page::Home;
+    int tab = 0;  // home: 0 practice, 1 board vision
     std::vector<Card> all;  // every card of the profile (refreshed when stale)
     bool stale = true;
     Async<int> gen;         // background card generation (puzzles / repertoire), returns cards added
@@ -413,6 +429,8 @@ struct App::Impl {
     std::unordered_map<int, int> spent;     // node -> seconds spent on the move
     std::unordered_map<int, int> lineIdx;   // mainline node -> review line index
     std::unique_ptr<LiveAnalyzer> live;
+    PosEvalCache liveEvals;                // single positions for live classifications (side lines, play)
+    std::unordered_map<int, Cls> clsMemo;  // node -> live classification of the open game
     std::string enginePath, toast;
     RetryState retry;
     std::set<int> retrySolved;  // mistakes solved in this session (per open game)
@@ -492,7 +510,6 @@ struct App::Impl {
         int whenDone = 0;         // 0 nothing, 1 quit opcan, 2 shut the computer down
         double countdownEnd = 0;  // ImGui time when whenDone fires (60 s countdown, cancelable); 0 = none
     } overnight;
-    bool analysisPaused = false;  // the user paused the queue (this session)
     bool showAnalysis = false;    // the Analysis window
     int queueCount = 0;           // the profile's queued games, refreshed every few s
     std::set<int64_t> queuedIds;  // the same games (row chips)
@@ -530,6 +547,10 @@ struct App::Impl {
     void openSettings();
     void loadText(std::string_view text);
     void open(Game g, int64_t id = 0);
+    // Classification of node n of g played live (no review covers it), Cls::None until its evals are in; ask: request
+    // them. withReview: g is the open game, so its review's evals and classifications count.
+    Cls liveCls(const Game& g, std::unordered_map<int, Cls>& memo, int n, bool ask, bool withReview);
+    Cls nodeCls(int n) { return game ? liveCls(*game, clsMemo, n, false, true) : Cls::None; }  // open game, any move
     int userSide() const;
     void openFileDialog();
     void computeSpent();

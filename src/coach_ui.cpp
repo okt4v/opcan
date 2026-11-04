@@ -545,7 +545,7 @@ void App::Impl::drawCoachCard() {
     if (typing) textH = 18;
     float headH = 24, footH = 22;
     float bubbleH = std::max(pip - 4, 12 + headH + 4 + textH + 12);
-    float h = std::max(pip + 30, bubbleH + footH + 12);
+    float h = std::max(pip + 30, bubbleH + footH + 22);  // the footer clears the bubble
     dl->AddRectFilled(p, {p.x + w, p.y + h}, theme::panel2, 10);
 
     // Pip and name
@@ -622,8 +622,9 @@ void App::Impl::drawCoachCard() {
     ImGui::EndGroup();
 
     // footer: download hint or model + ask button
-    ImGui::SetCursorScreenPos({bx, p.y + h - footH - 4});
+    float footY = p.y + h - footH - 8;
     ImGui::PushFont(f.ui, 12);
+    ImGui::SetCursorScreenPos({bx + 6, footY + (footH - ImGui::GetFontSize()) / 2});  // centred on the Ask button
     if (!coachReady()) {
         if (!c.on) {
             ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
@@ -633,7 +634,10 @@ void App::Impl::drawCoachCard() {
             ImGui::PushStyleColor(ImGuiCol_Text, theme::accent);
             ImGui::TextUnformatted(c.dlModel >= 0 ? "Downloading the AI coach…" : "Download the AI coach");
             ImGui::PopStyleColor();
-            if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            if (ImGui::IsItemHovered()) {  // a link: underlined on hover
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                dl->AddLine({ImGui::GetItemRectMin().x, ImGui::GetItemRectMax().y}, ImGui::GetItemRectMax(), theme::accent);
+            }
             if (ImGui::IsItemClicked()) settingsTab = kCoachTab, openSettings();
         }
     } else {
@@ -672,7 +676,7 @@ void App::Impl::drawCoachCard() {
     std::string ask = "Ask " + std::string(kName);
     float aw = ImGui::CalcTextSize(ask.c_str()).x + 20;
     ImGui::SameLine();
-    ImGui::SetCursorScreenPos({p.x + w - aw - 10, p.y + h - footH - 6});
+    ImGui::SetCursorScreenPos({p.x + w - aw - 8, footY});
     ImGui::PushStyleColor(ImGuiCol_Button, c.chatOpen ? alpha(theme::accent, 90) : theme::panel);
     if (ImGui::Button(ask.c_str(), {aw, footH})) c.chatOpen = !c.chatOpen, c.focusInput = c.chatOpen;
     ImGui::PopStyleColor();
@@ -1025,6 +1029,8 @@ static void addAnnot(const Annot& a, int strength, std::vector<Arrow>& out, std:
         if (std::any_of(out.begin(), out.end(), [&](const Arrow& o) { return o.from == ar.from && o.to == ar.to; })) continue;
         int al = a.kind == Annot::Line ? std::max(70, strength - (int)k * 50) : strength;
         ar.color = a.kind == Annot::Line && k % 2 ? annotColor(2, al) : annotColor(a.color, al);
+        if (a.kind == Annot::Line) ar.icon = k == 0 ? ArrowIcon::Engine : ArrowIcon::None;  // where the line starts
+        else ar.icon = a.color == 0 ? ArrowIcon::Best : a.color == 1 ? ArrowIcon::Threat : a.color == 2 ? ArrowIcon::Engine : ArrowIcon::None;
         out.push_back(ar);
     }
 }

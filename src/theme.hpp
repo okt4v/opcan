@@ -16,6 +16,7 @@ inline ImU32 star = rgb(0xe8c547), dangerHi = rgb(0xec7570);
 inline ImU32 sqLight = rgb(0xdfe2dc), sqDark = rgb(0x7e958e);
 inline ImU32 lastMove = rgb(0xe8d27a, 110), selected = rgb(0x5ab4a6, 130);
 inline ImU32 arrowBest = rgb(0x6fbf73, 200), arrowThreat = rgb(0xe0605a, 170), arrowEngine = rgb(0x5aa0e0, 180);
+inline ImU32 arrowFork = rgb(0xe8963a, 180), arrowPin = rgb(0xa77de0, 180);
 inline ImU32 evalWhite = rgb(0xf0f0ee), evalBlack = rgb(0x3a3e46), edge = 0;  // edge: outline for white surfaces (light theme)
 inline ImU32 win = rgb(0x7fb85a), draw = rgb(0x8a919c), loss = rgb(0xe0605a);
 // charts: categorical series (validated dark-surface order), gridlines, the user's sides

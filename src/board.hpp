@@ -7,9 +7,13 @@
 #include <string>
 #include <vector>
 
+// What an arrow means, drawn as a small round icon on it: color alone is too easy to mix up.
+enum class ArrowIcon { None, Best, Threat, Fork, Pin, Engine };
+
 struct Arrow {
     chess::Square from, to;
     ImU32 color;
+    ArrowIcon icon = ArrowIcon::None;
 };
 
 // Classification badge drawn as a small round icon (board corner, move list, summary).

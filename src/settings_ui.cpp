@@ -207,7 +207,7 @@ void App::Impl::drawSettings() {
     float cw = side ? w - pw - 16 : w;
     if (withPreview && !side) {
         ImGui::BeginGroup();
-        drawPreview(std::min(cw, 280.f));
+        drawPreview(cw);  // full width: board and sample side by side
         ImGui::EndGroup();
         ImGui::Dummy({0, 10});
     }
@@ -240,12 +240,14 @@ void App::Impl::drawSettings() {
 
 void App::Impl::drawPreview(float size) {
     cardBegin("preview", "Preview", nullptr, size);
-    float bs = std::floor(ImGui::GetContentRegionAvail().x);
+    bool wide = size >= 480;  // above the cards: a smaller board with the sample beside it, not a tall column
+    float bs = std::floor(wide ? 200 : ImGui::GetContentRegionAvail().x);
     static const Board pos("r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3");
     ImGui::PushFont(f.ui, 15);
     preview.draw(pos, bs, Move::make(Square::SQ_F1, Square::SQ_B5), Cls::Best, {{Square::SQ_A7, Square::SQ_A6, theme::arrowBest}});
     ImGui::PopFont();
-    ImGui::Dummy({0, 6});
+    if (wide) ImGui::SameLine(0, 20), ImGui::BeginGroup();
+    else ImGui::Dummy({0, 6});
     // a sample of the UI around the board: accent button, move chips, dim text
     ImGui::PushFont(f.ui, 14);
     auto* dl = ImGui::GetWindowDrawList();
@@ -258,11 +260,12 @@ void App::Impl::drawPreview(float size) {
         dl->AddText({x + 6, p.y + 12 - ts.y / 2}, i == 4 ? theme::text : theme::soft, mv[i]);
         x += ts.x + 16;
     }
-    ImGui::Dummy({bs, 28});
+    ImGui::Dummy({wide ? x - p.x : bs, 28});
     ImGui::PushFont(f.mono, 13);
     ImGui::TextDisabled("Ruy Lopez  ·  +0.3");
     ImGui::PopFont();
     ImGui::PopFont();
+    if (wide) ImGui::EndGroup();
     cardEnd();
 }
 
@@ -422,8 +425,10 @@ void App::Impl::settingsBoard(float) {
         changed |= toggleSwitch("last", &prefs.lastMove);
         row("Best move arrow", "After inaccuracies and worse, in the review.");
         if (toggleSwitch("best", &set.bestArrow)) saveSettings();
-        row("Threat arrow", "The opponent's best reply after a mistake.");
+        row("Threat arrows", "The opponent's best reply after a mistake, and pieces you'd lose if you ignored them.");
         if (toggleSwitch("threat", &set.threatArrow)) saveSettings();
+        row("Fork and pin arrows", "Forks by the side that just moved, and pins by either side.");
+        if (toggleSwitch("tactics", &set.tacticArrows)) saveSettings();
         row("Type moves", "Press Enter on a board, type a move (e4, Nf3, e2e4) and press Enter to play it.");
         changed |= toggleSwitch("typeMoves", &prefs.typeMoves);
         rowsEnd();

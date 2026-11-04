@@ -207,6 +207,64 @@ void checkReview() {
     for (auto& m : rr.moves) std::printf("  %s:%s", real.nodes[m.node].san.c_str(), clsName(m.cls));
     std::puts("");
 
+    // live classifications (side lines, play vs engine): single positions through the cache, then classifyMove
+    {
+        PosEvalCache cache;
+        cache.start(eng, 10);
+        chess::Board before("rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 2");  // 1. e4 d5
+        chess::Move m = chess::uci::uciToMove(before, "d1g4");  // 2. Qg4?? Bxg4
+        chess::Board after = before;
+        after.makeMove(m);
+        cache.request(before.getFen());
+        cache.request(after.getFen());
+        cache.request(after.getFen());  // a repeat is a no-op
+        std::optional<PosEval> e, nx;
+        for (int t = 0; t < 300 && !(e && nx); t++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            e = cache.get(before.getFen()), nx = cache.get(after.getFen());
+        }
+        CHECK(e && nx);
+        CHECK(classifyMove(before, m, *e, *nx, false, chess::Move::NO_MOVE, before, Cls::None) == Cls::Blunder);
+        CHECK(classifyMove(before, m, *e, *nx, true, chess::Move::NO_MOVE, before, Cls::None) == Cls::Book);
+        CHECK(!cache.get("8/8/8/8/8/8/8/8 w - - 0 1"));  // never asked
+    }
+
+    // board arrows: a knight fork, a bishop pin, a hanging knight
+    {
+        auto has = [](const std::vector<Tactic>& v, Tactic::Kind k, const char* from, const char* to) {
+            return std::any_of(v.begin(), v.end(), [&](const Tactic& t) {
+                return t.kind == k && t.from == chess::Square(from) && t.to == chess::Square(to);
+            });
+        };
+        auto fork = findTactics(chess::Board("r3k3/2N5/8/8/8/8/8/4K3 b - - 0 1"));
+        CHECK(fork.size() == 3 && has(fork, Tactic::Threat, "c7", "a8") && has(fork, Tactic::Fork, "c7", "a8") && has(fork, Tactic::Fork, "c7", "e8"));
+        auto pin = findTactics(chess::Board("4k3/3n4/8/1B6/8/8/8/4K3 b - - 0 1"));
+        CHECK(pin.size() == 1 && has(pin, Tactic::Pin, "b5", "e8"));  // Bxd7 Kxd7 is even: no threat
+        auto hang = findTactics(chess::Board("4k3/8/8/8/8/8/3n4/4K3 b - - 0 1"));
+        CHECK(hang.size() == 1 && has(hang, Tactic::Threat, "e1", "d2"));
+        CHECK(findTactics(chess::Board("4k3/4r3/8/8/8/8/8/4RK2 b - - 0 1")).empty());  // the pinned rook takes the pinner
+    }
+
+    // chess.com parity: ...h5 leaves the rook on c2 hanging to mate in 3 -> Brilliant though other moves mate too;
+    // ...Qf4+ "leaves" it too, but it's check, so the knight can't take -> not a sacrifice
+    {
+        chess::Board b;
+        for (auto u : {"e2e4", "c7c6", "b1c3", "d7d5", "e4d5", "c6d5", "d2d4", "g8f6", "g1f3", "f6e4", "f1b5", "b8c6",
+                       "b5d3", "e4f2", "e1f2", "f7f6", "b2b3", "c6b4", "d3b5", "c8d7", "b5d7", "d8d7", "d1e2", "e7e5",
+                       "d4e5", "f8c5", "c1e3", "c5e3", "e2e3", "e8g8", "e3c5", "b4c2", "a1d1", "d5d4", "e5e6", "d7e6",
+                       "c3b5", "a8c8", "c5a7", "e6e3", "f2g3", "g7g5", "d1d4", "c2d4", "b5d4", "c8c2", "h1e1"})
+            b.makeMove(chess::uci::uciToMove(b, u));
+        PosEval e = ev(863, "e3f4"), nx = ev(-863, "g3h3");
+        chess::Move qf4 = chess::uci::uciToMove(b, "e3f4");
+        CHECK(classifyMove(b, qf4, e, nx, false, chess::Move::NO_MOVE, b, Cls::None) == Cls::Best);
+        b.makeMove(qf4);
+        b.makeMove(chess::uci::uciToMove(b, "g3h3"));
+        e = ev(0, "h7h5"), e.best.mate = 3, e.hasSecond = true, e.second.mate = 4;
+        nx = ev(0, "e1e4"), nx.best.mate = -3;
+        CHECK(classifyMove(b, chess::uci::uciToMove(b, "h7h5"), e, nx, false, chess::Move::NO_MOVE, b, Cls::None) ==
+              Cls::Brilliant);
+    }
+
     // chess.com parity (a real game): allowing mate is a Blunder, the only legal move is Forced,
     // and a mate that is the only winning move is Great
     {

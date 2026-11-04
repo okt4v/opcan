@@ -41,6 +41,30 @@ std::string lineText(const std::vector<std::string>& sans, int n) {
     for (int i = 0; i < std::min(n, (int)sans.size()); i++) s += (i ? " " : "") + (i % 2 == 0 ? std::to_string(i / 2 + 1) + ". " : std::string()) + sans[i];
     return s;
 }
+// The Stats page's segmented control: a panel2 track, the picked segment raised.
+int pageSegmented(const char* id, const char* const* labels, int n, int sel, float w) {
+    auto* dl = ImGui::GetWindowDrawList();
+    ImVec2 sp = ImGui::GetCursorScreenPos();
+    float sw = w / n, sh = ImGui::GetFrameHeight();
+    ImGui::BeginGroup();
+    ImGui::PushID(id);
+    dl->AddRectFilled(sp, {sp.x + w, sp.y + sh}, theme::panel2, 8);
+    for (int i = 0; i < n; i++) {
+        ImGui::SetCursorScreenPos({sp.x + i * sw, sp.y});
+        ImGui::PushID(i);
+        if (ImGui::InvisibleButton("seg", {sw, sh})) sel = i;
+        bool hov = ImGui::IsItemHovered();
+        ImVec2 a{sp.x + i * sw + 3, sp.y + 3}, b{sp.x + (i + 1) * sw - 3, sp.y + sh - 3};
+        if (i == sel) dl->AddRectFilled(a, b, theme::line, 6);
+        else if (hov) dl->AddRectFilled(a, b, theme::hover, 6);
+        textCentered(dl, {(a.x + b.x) / 2, (a.y + b.y) / 2}, i == sel ? theme::text : theme::dim, labels[i]);
+        ImGui::PopID();
+    }
+    ImGui::PopID();
+    ImGui::EndGroup();
+    return sel;
+}
+
 }  // namespace
 
 void App::Impl::startExplorer() {
@@ -141,18 +165,14 @@ void App::Impl::drawExplorer() {
         firstF = false;
     };
     const char* colors[] = {"As White", "As Black"};
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {12, 8});  // the Stats page's filter row
     place(200);
-    ImGui::BeginGroup();  // groups: segmented() leaves the cursor below itself
-    int c = segmented("excolor", colors, 2, color, 200);
-    ImGui::EndGroup();
+    int c = pageSegmented("excolor", colors, 2, color, 200);
     if (c != color) ex.color = color = c, node = nullptr, hoverMove = Move::NO_MOVE;
     place(320);
-    ImGui::BeginGroup();
-    int r = segmented("exrange", kRanges, 4, ex.range, 320);
-    ImGui::EndGroup();
+    int r = pageSegmented("exrange", kRanges, 4, ex.range, 320);
     if (r != ex.range) ex.range = r, changed = true;
     place(168);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {12, (30 - ImGui::GetFontSize()) / 2});
     ImGui::SetNextItemWidth(168);
     changed |= ImGui::Combo("##extc", &ex.tc, kTcLabel, 6);
     ImGui::PopStyleVar();
@@ -208,41 +228,51 @@ void App::Impl::drawExplorer() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {16, 14});
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::panel);
-    float panelH = wide ? avail.y : 0;
-    ImGui::BeginChild("exPanel", {panelW, panelH}, ImGuiChildFlags_AlwaysUseWindowPadding | (wide ? 0 : ImGuiChildFlags_AutoResizeY));
+    // as tall as its content (at least the board), scrolling past the window bottom
+    if (wide) ImGui::SetNextWindowSizeConstraints({panelW, boardSize}, {panelW, avail.y});
+    ImGui::BeginChild("exPanel", {panelW, 0}, ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_AutoResizeY);
     ImGui::PopStyleColor();
     ImGui::PopStyleVar(2);
     float w = ImGui::GetContentRegionAvail().x;
     auto* pdl = ImGui::GetWindowDrawList();
 
-    // opening name
-    ImGui::PushFont(f.mono, 12);
-    ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
-    ImGui::TextUnformatted(named ? named->eco.c_str() : ex.pos ? "Unnamed line" : "Start");
-    ImGui::PopStyleColor();
-    ImGui::PopFont();
+    // opening name (the ECO code above it when there is one)
+    if (named) {
+        ImGui::PushFont(f.mono, 12);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
+        ImGui::TextUnformatted(named->eco.c_str());
+        ImGui::PopStyleColor();
+        ImGui::PopFont();
+    }
     ImGui::PushFont(f.bold, 17);
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + w);
-    ImGui::TextUnformatted(named ? named->name.c_str() : "Starting position");
+    ImGui::TextUnformatted(named ? named->name.c_str() : ex.pos ? "Unnamed line" : "Starting position");
     ImGui::PopTextWrapPos();
     ImGui::PopFont();
     ImGui::Dummy({0, 4});
 
-    // navigation + breadcrumb
-    float nb = 32;
-    if (ImGui::Button("|<", {nb, 28})) ex.pos = 0;
-    ImGui::SameLine(0, 4);
-    if (ImGui::Button("<", {nb, 28})) ex.pos = std::max(0, ex.pos - 1);
-    ImGui::SameLine(0, 4);
-    if (ImGui::Button(">", {nb, 28})) ex.pos = std::min((int)ex.line.size(), ex.pos + 1);
-    ImGui::SameLine(0, 10);
-    {
+    // navigation + breadcrumb; before a line exists just the hint
+    if (ex.line.empty()) {
+        ImGui::PushFont(f.ui, 13);
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
+        ImGui::TextUnformatted("Click a move below, or play one on the board");
+        ImGui::PopStyleColor();
+        ImGui::PopFont();
+    } else {
+        float nb = 30;
+        ImGui::BeginDisabled(ex.pos == 0);
+        if (ImGui::Button("|<", {nb, 28})) ex.pos = 0;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Back to the start");
+        ImGui::SameLine(0, 4);
+        if (ImGui::Button("<", {nb, 28})) ex.pos = std::max(0, ex.pos - 1);
+        ImGui::EndDisabled();
+        ImGui::SameLine(0, 4);
+        ImGui::BeginDisabled(ex.pos >= (int)ex.line.size());
+        if (ImGui::Button(">", {nb, 28})) ex.pos = std::min((int)ex.line.size(), ex.pos + 1);
+        ImGui::EndDisabled();
+        ImGui::SameLine(0, 10);
         float x0 = ImGui::GetCursorPosX(), xr = ImGui::GetWindowContentRegionMax().x;
         ImGui::PushFont(f.mono, 13);
-        if (ex.line.empty()) {
-            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (28 - ImGui::GetFontSize()) / 2);
-            ImGui::TextDisabled("Pick a move to start a line");
-        }
         // sans is from the top of the frame: a move played on the board above changed ex.line since
         for (int i = 0; i < (int)std::min(sans.size(), ex.line.size()); i++) {
             std::string t = (i % 2 == 0 ? std::to_string(i / 2 + 1) + "." : "") + sans[i];
@@ -357,12 +387,13 @@ void App::Impl::drawExplorer() {
         std::string lbl = node->games.size() == 1 ? "Show this game" : "Show these " + std::to_string(node->games.size()) + " games";
         if (accentButton(lbl.c_str(), {w, 36})) showExplorerGames(node->games, lineText(sans, ex.pos));
     }
-    ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
-    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + w);
     ImGui::Dummy({0, 4});
-    ImGui::TextWrapped("Your counted games (no bots, no aborted games), first %d plies. Positions merge across move orders.", kExplorerPlies);
-    ImGui::PopTextWrapPos();
-    ImGui::PopStyleColor();
+    ImGui::PushFont(f.ui, 12);
+    ImGui::TextDisabled("Counted games only  ·  first %d plies  (?)", kExplorerPlies);
+    ImGui::PopFont();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Your games that count in stats: no bots, no aborted games.\nThe first %d plies of each; the same position "
+                          "reached by different move orders is merged.", kExplorerPlies);
     ImGui::EndChild();
     if (!wide) ImGui::EndChild();
 }

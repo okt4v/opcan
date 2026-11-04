@@ -18,7 +18,7 @@ const char* kColLabel[] = {"Both colors", "White", "Black"};
 const int kTcSlot[] = {1, 0, 2, 3, 4};
 const Cls kBadCls[4] = {Cls::Inaccuracy, Cls::Mistake, Cls::Miss, Cls::Blunder};
 const char* kBadName[4] = {"Inaccuracies", "Mistakes", "Misses", "Blunders"};
-const char* kBucket[kRatingBuckets] = {"-200 or less", "-200 to -100", "-100 to 0", "0 to +100", "+100 to +200", "+200 or more"};
+const char* kBucket[kRatingBuckets] = {"200+ weaker", "100–200 weaker", "0–100 weaker", "0–100 stronger", "100–200 stronger", "200+ stronger"};
 const char* kPatternHelp[] = {
     "The opponent's best reply captures a minor piece or more, and the move lost at least 10% win chance",
     "After the move the opponent has a forced mate",
@@ -29,6 +29,7 @@ const char* kPatternHelp[] = {
 
 const Fonts* F = nullptr;
 constexpr float kPad = 16, kGap = 16;
+int ratingView = 0;  // rating card: 0 = site rating, 1 = opcan rating
 
 std::string fmt(const char* f, double v) {
     char b[48];
@@ -86,7 +87,7 @@ void swatch(ImDrawList* dl, ImVec2 p, ImU32 col, bool line = false) {
     else dl->AddRectFilled({p.x + 2, p.y + 3}, {p.x + 10, p.y + 11}, col, 2);
 }
 
-// Legend: swatch + label pairs left to right. Returns the height used.
+// Legend: swatch + label pairs left to right. Returns the x where it ends.
 float legend(ImDrawList* dl, ImVec2 p, const std::vector<std::tuple<ImU32, std::string, bool>>& items) {
     float x = p.x;
     for (auto& [col, label, line] : items) {
@@ -95,7 +96,31 @@ float legend(ImDrawList* dl, ImVec2 p, const std::vector<std::tuple<ImU32, std::
         text(dl, F->ui, 13, {x, p.y - 1}, theme::dim, label);
         x += textW(F->ui, 13, label) + 16;
     }
-    return 24;
+    return x;
+}
+
+// Small segmented toggle right-aligned at `right` (top-right corner). Returns true when the selection changed.
+bool segToggle(ImDrawList* dl, ImVec2 right, const char* const* labels, int n, int& sel) {
+    float pad = 10, h = 24, w = 0;
+    for (int i = 0; i < n; i++) w += textW(F->ui, 13, labels[i]) + 2 * pad;
+    ImVec2 o{right.x - w - 4, right.y};
+    dl->AddRectFilled(o, {o.x + w + 4, o.y + h}, theme::panel2, 6);
+    bool changed = false;
+    float x = o.x + 2;
+    for (int i = 0; i < n; i++) {
+        float bw = textW(F->ui, 13, labels[i]) + 2 * pad;
+        ImGui::SetCursorScreenPos({x, o.y});
+        ImGui::PushID(i);
+        if (ImGui::InvisibleButton("seg", {bw, h}) && sel != i) sel = i, changed = true;
+        bool hov = ImGui::IsItemHovered();
+        ImGui::PopID();
+        ImVec2 a{x, o.y + 2}, b{x + bw, o.y + h - 2};
+        if (i == sel) dl->AddRectFilled(a, b, theme::line, 5);
+        else if (hov) dl->AddRectFilled(a, b, theme::hover, 5);
+        text(dl, F->ui, 13, {x + pad, o.y + 4}, i == sel ? theme::text : theme::dim, labels[i]);
+        x += bw;
+    }
+    return changed;
 }
 
 void emptyNote(ImDrawList* dl, ImVec2 p, float w, float h, const char* title, const char* sub) {
@@ -331,14 +356,19 @@ void App::Impl::drawStats() {
     // analysis coverage
     if (s.games > 0 && s.analyzed < s.games) {
         ImVec2 c = ImGui::GetCursorScreenPos();
-        bool filling = set.autoAnalyze && !enginePath.empty();
+        // what the analysis queue is really doing (backgroundWork), not just whether auto-analyze is on
+        bool filling = !analyzingIds.empty();
         std::string msg = std::to_string(s.analyzed) + " of " + std::to_string(s.games) + " games analyzed";
-        std::string hint = filling ? "  ·  background analysis is filling in the rest"
-                                   : "  ·  turn on automatic analysis in Settings to include the rest";
+        std::string q = std::to_string(queueCount) + (queueCount == 1 ? " game" : " games");
+        std::string hint = filling                 ? "  ·  analyzing in the background, " + q + " queued"
+                           : queueCount > 0 && set.analysisPaused ? "  ·  " + q + " queued, analysis is paused"
+                           : queueCount > 0        ? "  ·  " + q + " waiting in the analysis queue"
+                           : set.autoAnalyze       ? "  ·  add the rest to the Analysis queue in the Library to include them"
+                                                   : "  ·  turn on automatic analysis in Settings to include the rest";
         float x = c.x;
-        if (filling) spinner(dl, {x + 6, c.y + 9}, 5, theme::accent), x += 20;
-        text(dl, f.ui, 13, {x, c.y + 1}, theme::text, msg);
-        text(dl, f.ui, 13, {x + textW(f.ui, 13, msg), c.y + 1}, theme::dim, hint);
+        if (filling) spinner(dl, {x + 5, c.y + 9}, 4, alpha(theme::accent, 160)), x += 16;
+        text(dl, f.ui, 12, {x, c.y + 2}, theme::soft, msg);
+        text(dl, f.ui, 12, {x + textW(f.ui, 12, msg), c.y + 2}, theme::dim, hint);
         ImGui::Dummy({W, 20});
         ImGui::Dummy({0, 4});
         if (filling) animUntil = now + 0.1;
@@ -383,7 +413,7 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
 
     // ---- KPI tiles ----
     {
-        struct Tile { std::string label, value, sub; ImU32 subCol = theme::dim; };
+        struct Tile { std::string label, value, sub; ImU32 subCol = theme::dim; std::string tip; };
         std::vector<Tile> tiles;
         int n = s.wdl[0] + s.wdl[1] + s.wdl[2];
         tiles.push_back({"Games", std::to_string(s.games),
@@ -392,6 +422,7 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
         tiles.push_back({"Avg accuracy", s.accuracy >= 0 ? fmt("%.1f", s.accuracy) : "–",
                          s.analyzed ? std::to_string(s.analyzed) + " analyzed" : "No analyzed games yet"});
         Tile rt{"Rating", s.currentRating ? std::to_string(s.currentRating) : "–", "No rated games"};
+
         if (s.ratingClass >= 0 && !s.ratings[s.ratingClass].empty()) {
             auto& rs = s.ratings[s.ratingClass];
             rt.label = std::string(kTcName[s.ratingClass]) + " rating";
@@ -399,16 +430,13 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
             rt.sub = (d > 0 ? "+" : "") + std::to_string(d) + " in this range";
             rt.subCol = d > 0 ? theme::win : d < 0 ? theme::loss : theme::dim;
         }
+        if (s.opcanRating)
+            rt.tip = "opcan rating " + std::to_string(s.opcanRating) + "\nPerformance " + std::to_string(s.performance) + " over " +
+                   std::to_string(s.perfGames) + (s.perfGames == 1 ? " game" : " games");
         tiles.push_back(rt);
-        Tile ot{"opcan rating", s.opcanRating ? std::to_string(s.opcanRating) : "–", "No rated games"};
-        if (s.opcanRating) {
-            ot.label = std::string(kTcName[s.ratingClass]) + " opcan rating";
-            ot.sub = "Performance " + std::to_string(s.performance) + " over " + std::to_string(s.perfGames) + (s.perfGames == 1 ? " game" : " games");
-        }
-        tiles.push_back(ot);
         tiles.push_back({"Blunders per game", s.blundersPerGame >= 0 ? fmt("%.2f", s.blundersPerGame) : "–",
                          s.analyzed ? "in analyzed games" : "No analyzed games yet"});
-        int per = W >= 860 ? 6 : W >= 480 ? 3 : 2;
+        int per = W >= 640 ? 5 : W >= 480 ? 3 : 2;
         float tw = (W - kGap * (per - 1)) / per, th = 88;
         for (size_t i = 0; i < tiles.size(); i++) {
             int col = (int)i % per, row = (int)i / per;
@@ -420,6 +448,9 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
             std::string sub = ellipsize(tiles[i].sub, tw - 2 * kPad);
             ImGui::PopFont();
             text(dl, f.ui, 12, {a.x + kPad, a.y + 64}, tiles[i].subCol, sub);
+            std::string tip = sub != tiles[i].sub ? tiles[i].sub : "";
+            if (!tiles[i].tip.empty()) tip += (tip.empty() ? "" : "\n") + tiles[i].tip;
+            if (!tip.empty() && ImGui::IsMouseHoveringRect(a, {a.x + tw, a.y + th})) ImGui::SetTooltip("%s", tip.c_str());
         }
         int rows = ((int)tiles.size() + per - 1) / per;
         y += rows * (th + kGap) - kGap + kGap;
@@ -430,14 +461,18 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
         std::string title, sub;
         float h;  // content height
         std::function<void(ImVec2, float, float)> draw;
+        std::function<void(ImVec2)> head = nullptr;  // drawn at the card's top-right corner (e.g. a toggle)
     };
     std::vector<Card> cards;
     const char* noAnalysis = "No analyzed games yet";
     const char* noAnalysisSub = "Background analysis fills this in as it reviews your games";
 
-    // rating per time class: the sites' own, and opcan's one scale across sites
-    auto ratingCard = [&](const char* title, const char* sub, const std::vector<Stats::RatingPoint>* series) {
-    cards.push_back({title, sub, 232, [&, series](ImVec2 p, float w, float h) {
+    // rating per time class: the sites' own, or opcan's one scale across sites
+    {
+    const std::vector<Stats::RatingPoint>* series = ratingView ? s.opcan : s.ratings;
+    cards.push_back({"Rating", ratingView ? "opcan's own rating: one scale across chess.com, lichess and imports"
+                                          : "Your site rating after each game, per time control",
+                     232, [&, series](ImVec2 p, float w, float h) {
         auto& ratings = series;
         std::vector<std::tuple<ImU32, std::string, bool>> items;
         double lo = 1e9, hi = -1e9, t0 = 1e18, t1 = -1e18;
@@ -448,7 +483,12 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
                                          t0 = std::min(t0, (double)r.t), t1 = std::max(t1, (double)r.t);
         }
         if (items.empty()) return emptyNote(dl, p, w, h, "No rated games", "Games without ratings (e.g. imports) aren't plotted");
-        legend(dl, p, items);
+        float lx = legend(dl, p, items);
+        if (ratingView && s.perfGames) {
+            std::string perf = "Performance " + std::to_string(s.performance) + " over " + std::to_string(s.perfGames) +
+                               (s.perfGames == 1 ? " game" : " games");
+            if (lx + textW(f.ui, 13, perf) < p.x + w) textRight(dl, f.ui, 13, {p.x + w, p.y - 1}, theme::dim, perf);
+        }
         double y0, y1, step;
         niceRange(lo, hi, y0, y1, step, 40, 0, 4000);
         Plot pl = plotFrame(dl, {p.x, p.y + 28}, w, h - 28, t0, t1, y0, y1, step, "%.0f", true);
@@ -485,10 +525,11 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
             ImGui::EndTooltip();
             if (ImGui::IsItemClicked()) openStored(r.gameId);
         }
+    }, [&](ImVec2 tr) {
+        static const char* kViews[] = {"Site rating", "opcan rating"};
+        segToggle(dl, tr, kViews, 2, ratingView);
     }});
-    };
-    ratingCard("Rating", "Your rating after each game, per time control", s.ratings);
-    ratingCard("opcan rating", "One rating across chess.com, lichess and imports, per time control", s.opcan);
+    }
 
     // accuracy trend
     cards.push_back({"Accuracy", "Each analyzed game in order, and the 10-game average", 232, [&](ImVec2 p, float w, float h) {
@@ -541,7 +582,7 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
     }});
 
     // results by color
-    cards.push_back({"Results", "From your side of the board", 168, [&](ImVec2 p, float w, float) {
+    cards.push_back({"Results", "From your side of the board", 204, [&](ImVec2 p, float w, float) {
         struct Row { const char* label; const int* wdl; };
         std::vector<Row> rows{{"All games", s.wdl}};
         if (statsColor != 2) rows.push_back({"As White", s.wdlColor[0]});
@@ -556,21 +597,26 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
             wdlBar(dl, {p.x, yy + 22}, w, 12, r.wdl, r.label);
             ImGui::PopID();
             if (n) text(dl, f.mono, 12, {p.x + textW(f.ui, 14, r.label) + 8, yy + 1}, theme::dim, pct(r.wdl[0], n) + " won");
-            yy += 48;
+            yy += 60;
         }
         legend(dl, {p.x, yy}, {{theme::win, "Won", false}, {theme::draw, "Drew", false}, {theme::loss, "Lost", false}});
     }});
 
     // vs rating difference
-    cards.push_back({"Against stronger and weaker players", "Opponent rating minus yours", 6 * 32 + 20, [&](ImVec2 p, float w, float h) {
+    cards.push_back({"Against stronger and weaker players", "Your results by how much higher or lower your opponent was rated", 6 * 32 + 24, [&](ImVec2 p, float w, float h) {
         int total = 0;
         for (auto& b : s.buckets) total += b.wdl[0] + b.wdl[1] + b.wdl[2];
         if (!total) return emptyNote(dl, p, w, h, "No rated games", nullptr);
-        float lw = 104, rw = 84, yy = p.y;
+        float lw = 124, rw = 84, yy = p.y;
+        text(dl, f.ui, 12, {p.x, yy}, theme::dim, "Opponent rated");
+        text(dl, f.ui, 12, {p.x + lw, yy}, theme::dim, "Won / drew / lost");
+        textRight(dl, f.ui, 12, {p.x + w - 40, yy}, theme::dim, "Won");
+        textRight(dl, f.ui, 12, {p.x + w, yy}, theme::dim, "Games");
+        yy += 26;
         for (int i = 0; i < kRatingBuckets; i++) {
             auto& b = s.buckets[i];
             int n = b.wdl[0] + b.wdl[1] + b.wdl[2];
-            text(dl, f.mono, 12, {p.x, yy + 1}, theme::dim, kBucket[i]);
+            text(dl, f.ui, 13, {p.x, yy}, n ? theme::text : theme::dim, kBucket[i]);
             ImGui::PushID(i);
             wdlBar(dl, {p.x + lw, yy + 3}, w - lw - rw, 12, b.wdl, kBucket[i]);
             ImGui::PopID();
@@ -579,9 +625,79 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
             textRight(dl, f.mono, 12, {p.x + w - 40, yy + 1}, n ? theme::text : theme::dim, n ? pct(b.wdl[0], n) : "–");
             yy += 32;
         }
-        text(dl, f.ui, 12, {p.x + lw, yy}, theme::dim, "Bar: won / drew / lost");
-        textRight(dl, f.ui, 12, {p.x + w - 40, yy}, theme::dim, "won");
-        textRight(dl, f.ui, 12, {p.x + w, yy}, theme::dim, "games");
+    }});
+
+    // accuracy by phase
+    cards.push_back({"Accuracy by phase", "Average move accuracy in each phase", 196, [&](ImVec2 p, float w, float h) {
+        if (!s.analyzed) return emptyNote(dl, p, w, h, noAnalysis, noAnalysisSub);
+        bool showW = statsColor != 2, showB = statsColor != 1;
+        static const char* kPh[] = {"Opening", "Middlegame", "Endgame"};
+        float lw = 96, cw = 52, vw = 44, yy = p.y + 8, bw = w - lw - cw - vw;
+        for (int ph = 0; ph < 3; ph++) {
+            text(dl, f.ui, 14, {p.x, yy + ((showW && showB) ? 4 : -3)}, theme::text, kPh[ph]);
+            float by = yy;
+            for (int c = 0; c < 2; c++) {
+                if ((c == 0 && !showW) || (c == 1 && !showB)) continue;
+                double a = s.phaseAcc[c][ph];
+                ImU32 col = c == 0 ? theme::sideWhite : theme::sideBlack;
+                float bx = p.x + lw + cw;
+                text(dl, f.ui, 12, {p.x + lw, by - 3}, theme::dim, c ? "Black" : "White");
+                dl->AddRectFilled({bx, by}, {bx + bw, by + 10}, theme::panel2, 4);
+                if (a >= 0) dl->AddRectFilled({bx, by}, {bx + std::max(4.f, bw * (float)a / 100), by + 10}, col, 4);
+                textRight(dl, f.mono, 12, {p.x + w, by - 2}, a >= 0 ? theme::text : theme::dim, a >= 0 ? fmt("%.1f", a) : "–");
+                ImGui::SetCursorScreenPos({p.x + lw, by - 2});
+                ImGui::PushID(ph * 2 + c);
+                ImGui::InvisibleButton("ph", {cw + bw, 14});
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s as %s: %s (%d games)", kPh[ph], c ? "Black" : "White",
+                                      a >= 0 ? fmt("%.1f", a).c_str() : "no data", s.phaseN[c][ph]);
+                ImGui::PopID();
+                by += 16;
+            }
+            yy += 52;
+        }
+    }});
+
+    // time usage
+    cards.push_back({"Time usage", "From the clock times in your games", 196, [&](ImVec2 p, float w, float h) {
+        if (!s.timedGames) return emptyNote(dl, p, w, h, "No clock data", "These games have no [%clk] times");
+        int losses = s.wdl[2];
+        struct Mini { std::string label, value, sub; };
+        Mini m[3] = {
+            {"Time trouble", pct(s.timeTrouble, s.timedGames), std::to_string(s.timeTrouble) + " of " + std::to_string(s.timedGames) + " games under 10%"},
+            {"Lost on time", std::to_string(s.lostOnTime), losses ? pct(s.lostOnTime, losses) + " of your losses" : "no losses"},
+            {"Accuracy in time trouble", s.accTrouble >= 0 ? fmt("%.1f", s.accTrouble) : "–",
+             s.accNormal >= 0 ? "vs " + fmt("%.1f", s.accNormal) + " with time left" : "needs analyzed games"},
+        };
+        float cw = (w - 2 * kGap) / 3;
+        for (int i = 0; i < 3; i++) {
+            float x = p.x + i * (cw + kGap);
+            ImGui::PushFont(f.ui, 13);
+            std::string l = ellipsize(m[i].label, cw);
+            ImGui::PopFont();
+            ImGui::PushFont(f.ui, 12);
+            std::string sb = ellipsize(m[i].sub, cw);
+            ImGui::PopFont();
+            text(dl, f.ui, 13, {x, p.y}, theme::dim, l);
+            text(dl, f.mono, 20, {x, p.y + 18}, theme::text, m[i].value);
+            text(dl, f.ui, 12, {x, p.y + 44}, theme::dim, sb);
+        }
+        float yy = p.y + 76;
+        text(dl, f.ui, 13, {p.x, yy}, theme::dim, "Average time per move");
+        yy += 24;
+        static const char* kPh[] = {"Opening", "Middlegame", "Endgame"};
+        double mt = 1;
+        for (double t : s.avgMoveTime) mt = std::max(mt, t);
+        float lw = 96, vw = 56, bw = w - lw - vw;
+        for (int ph = 0; ph < 3; ph++) {
+            double t = s.avgMoveTime[ph];
+            text(dl, f.ui, 14, {p.x, yy - 3}, theme::text, kPh[ph]);
+            dl->AddRectFilled({p.x + lw, yy}, {p.x + lw + bw, yy + 10}, theme::panel2, 4);
+            if (t >= 0) dl->AddRectFilled({p.x + lw, yy}, {p.x + lw + std::max(4.f, bw * (float)(t / mt)), yy + 10}, theme::accent, 4);
+            textRight(dl, f.mono, 12, {p.x + w, yy - 2}, t >= 0 ? theme::text : theme::dim,
+                      t < 0 ? "–" : t < 60 ? fmt("%.1fs", t) : fmt("%.1fm", t / 60));
+            yy += 26;
+        }
     }});
 
     // mistakes over time
@@ -708,81 +824,6 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
         }
     }});
 
-    // accuracy by phase
-    cards.push_back({"Accuracy by phase", "Average move accuracy in each phase", 196, [&](ImVec2 p, float w, float h) {
-        if (!s.analyzed) return emptyNote(dl, p, w, h, noAnalysis, noAnalysisSub);
-        bool showW = statsColor != 2, showB = statsColor != 1;
-        std::vector<std::tuple<ImU32, std::string, bool>> items;
-        if (showW) items.push_back({theme::sideWhite, "As White", false});
-        if (showB) items.push_back({theme::sideBlack, "As Black", false});
-        legend(dl, p, items);
-        static const char* kPh[] = {"Opening", "Middlegame", "Endgame"};
-        float lw = 96, vw = 44, yy = p.y + 32, bw = w - lw - vw;
-        for (int ph = 0; ph < 3; ph++) {
-            text(dl, f.ui, 14, {p.x, yy + 4}, theme::text, kPh[ph]);
-            float by = yy;
-            for (int c = 0; c < 2; c++) {
-                if ((c == 0 && !showW) || (c == 1 && !showB)) continue;
-                double a = s.phaseAcc[c][ph];
-                ImU32 col = c == 0 ? theme::sideWhite : theme::sideBlack;
-                dl->AddRectFilled({p.x + lw, by}, {p.x + lw + bw, by + 10}, theme::panel2, 4);
-                if (a >= 0) dl->AddRectFilled({p.x + lw, by}, {p.x + lw + std::max(4.f, bw * (float)a / 100), by + 10}, col, 4);
-                textRight(dl, f.mono, 12, {p.x + w, by - 2}, a >= 0 ? theme::text : theme::dim, a >= 0 ? fmt("%.1f", a) : "–");
-                ImGui::SetCursorScreenPos({p.x + lw, by - 2});
-                ImGui::PushID(ph * 2 + c);
-                ImGui::InvisibleButton("ph", {bw, 14});
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("%s as %s: %s (%d games)", kPh[ph], c ? "Black" : "White",
-                                      a >= 0 ? fmt("%.1f", a).c_str() : "no data", s.phaseN[c][ph]);
-                ImGui::PopID();
-                by += 16;
-            }
-            yy += 52;
-        }
-    }});
-
-    // time usage
-    cards.push_back({"Time usage", "From the clock times in your games", 196, [&](ImVec2 p, float w, float h) {
-        if (!s.timedGames) return emptyNote(dl, p, w, h, "No clock data", "These games have no [%clk] times");
-        int losses = s.wdl[2];
-        struct Mini { std::string label, value, sub; };
-        Mini m[3] = {
-            {"Time trouble", pct(s.timeTrouble, s.timedGames), std::to_string(s.timeTrouble) + " of " + std::to_string(s.timedGames) + " games under 10%"},
-            {"Lost on time", std::to_string(s.lostOnTime), losses ? pct(s.lostOnTime, losses) + " of your losses" : "no losses"},
-            {"Accuracy in time trouble", s.accTrouble >= 0 ? fmt("%.1f", s.accTrouble) : "–",
-             s.accNormal >= 0 ? "vs " + fmt("%.1f", s.accNormal) + " with time left" : "needs analyzed games"},
-        };
-        float cw = (w - 2 * kGap) / 3;
-        for (int i = 0; i < 3; i++) {
-            float x = p.x + i * (cw + kGap);
-            ImGui::PushFont(f.ui, 13);
-            std::string l = ellipsize(m[i].label, cw);
-            ImGui::PopFont();
-            ImGui::PushFont(f.ui, 12);
-            std::string sb = ellipsize(m[i].sub, cw);
-            ImGui::PopFont();
-            text(dl, f.ui, 13, {x, p.y}, theme::dim, l);
-            text(dl, f.mono, 20, {x, p.y + 18}, theme::text, m[i].value);
-            text(dl, f.ui, 12, {x, p.y + 44}, theme::dim, sb);
-        }
-        float yy = p.y + 76;
-        text(dl, f.ui, 13, {p.x, yy}, theme::dim, "Average time per move");
-        yy += 24;
-        static const char* kPh[] = {"Opening", "Middlegame", "Endgame"};
-        double mt = 1;
-        for (double t : s.avgMoveTime) mt = std::max(mt, t);
-        float lw = 96, vw = 56, bw = w - lw - vw;
-        for (int ph = 0; ph < 3; ph++) {
-            double t = s.avgMoveTime[ph];
-            text(dl, f.ui, 14, {p.x, yy - 3}, theme::text, kPh[ph]);
-            dl->AddRectFilled({p.x + lw, yy}, {p.x + lw + bw, yy + 10}, theme::panel2, 4);
-            if (t >= 0) dl->AddRectFilled({p.x + lw, yy}, {p.x + lw + std::max(4.f, bw * (float)(t / mt)), yy + 10}, theme::accent, 4);
-            textRight(dl, f.mono, 12, {p.x + w, yy - 2}, t >= 0 ? theme::text : theme::dim,
-                      t < 0 ? "–" : t < 60 ? fmt("%.1fs", t) : fmt("%.1fm", t / 60));
-            yy += 26;
-        }
-    }});
-
     // openings per color
     for (int c = 0; c < 2; c++) {
         if (statsColor == 2 - c) continue;  // filtered to the other color
@@ -853,6 +894,7 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
                 top += 20;
             }
             ImGui::PushID((int)(i + k));
+            if (c.head) c.head({a.x + cw - kPad, a.y + kPad - 4});
             c.draw({a.x + kPad, top}, cw - 2 * kPad, c.h);  // own height: a taller neighbour doesn't stretch charts
             ImGui::PopID();
         }

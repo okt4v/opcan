@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 #include <cctype>
 #include <ctime>
+#include <functional>
 #include <map>
 
 using namespace chess;
@@ -44,6 +45,70 @@ Arrow arrowOf(Move m, ImU32 col) {
 }
 std::string sanOf(const Board& b, Move m) { return uci::moveToSan(b, m); }
 }  // namespace
+
+int trainTile(const char* id, ImVec2 sz, const TrainTile& t, ImFont* bold) {
+    auto* dl = ImGui::GetWindowDrawList();
+    ImVec2 p = ImGui::GetCursorScreenPos(), q{p.x + sz.x, p.y + sz.y};
+    ImGui::PushID(id);
+    bool click = ImGui::InvisibleButton("tile", sz) && !t.disabled;
+    bool hov = ImGui::IsItemHovered() && !t.disabled;
+    ImGui::PopID();
+    dl->AddRectFilled(p, q, hov ? theme::hover : theme::panel, 12);
+    if (theme::edge) dl->AddRect(p, q, theme::edge, 12);
+    const float pad = 16, d = 44;
+    ImVec2 ic{p.x + pad + d / 2, p.y + sz.y / 2};
+    dl->AddCircleFilled(ic, d / 2, t.disabled ? theme::panel2 : alpha(theme::accent, hov ? 60 : 36));
+    if (t.icon) t.icon(dl, ic);
+    // menu dots, top right; a click there is the menu, not the tile
+    ImVec2 mc{q.x - 18, p.y + 16};
+    bool onMenu = t.menu && ImGui::IsMouseHoveringRect({mc.x - 12, mc.y - 10}, {mc.x + 12, mc.y + 10});
+    if (t.menu) {
+        if (onMenu && hov) dl->AddRectFilled({mc.x - 12, mc.y - 9}, {mc.x + 12, mc.y + 9}, theme::line, 5);
+        for (int k = -1; k <= 1; k++) dl->AddCircleFilled({mc.x + k * 5.f, mc.y}, 1.7f, hov ? theme::soft : theme::dim);
+    }
+    // right side: due badge or faint stat
+    float right = q.x - pad - (t.menu ? 22 : 0);
+    if (!t.badge.empty()) {
+        ImGui::PushFont(bold, 13);
+        ImVec2 ts = ImGui::CalcTextSize(t.badge.c_str());
+        ImVec2 a{right - ts.x - 16, ic.y - 11}, b{right, ic.y + 11};
+        dl->AddRectFilled(a, b, theme::accent, 11);
+        dl->AddText({a.x + 8, std::floor(ic.y - ts.y / 2)}, theme::onAccent, t.badge.c_str());
+        ImGui::PopFont();
+        right = a.x - 10;
+    } else if (!t.stat.empty()) {
+        ImVec2 ts = ImGui::CalcTextSize(t.stat.c_str());
+        dl->AddText({right - ts.x, std::floor(ic.y - ts.y / 2)}, theme::dim, t.stat.c_str());
+        right -= ts.x + 10;
+    }
+    float tx = ic.x + d / 2 + 14, tw = right - tx;
+    bool bar = t.progress >= 0;
+    float ty = ic.y - (bar ? 24 : 19);
+    ImGui::PushFont(bold, 15);
+    dl->AddText({tx, ty}, t.disabled ? theme::dim : theme::text, ellipsize(t.title, tw).c_str());
+    ImGui::PopFont();
+    dl->AddText({tx, ty + 21}, theme::dim, ellipsize(t.sub, tw).c_str());
+    if (bar) {
+        float by = ty + 42;
+        dl->AddRectFilled({tx, by}, {right, by + 4}, theme::panel2, 2);
+        dl->AddRectFilled({tx, by}, {tx + (right - tx) * std::min(1.f, t.progress), by + 4}, theme::accent, 2);
+    }
+    if (hov && !onMenu && !t.tip.empty()) ImGui::SetTooltip("%s", t.tip.c_str());
+    return click ? (onMenu ? 2 : 1) : 0;
+}
+
+void trainGrid(float W, int cols, int n, float h, const std::function<void(int, ImVec2)>& fn) {
+    const float gap = 12;
+    cols = std::max(1, std::min(cols, (int)((W + gap) / (230 + gap))));
+    const float w = std::floor((W - gap * (cols - 1)) / cols);
+    for (int i = 0; i < n; i++) {
+        if (i % cols) ImGui::SameLine(0, gap);
+        else if (i) ImGui::Dummy({0, gap - ImGui::GetStyle().ItemSpacing.y});
+        ImGui::PushID(i);
+        fn(i, {w, h});
+        ImGui::PopID();
+    }
+}
 
 void App::Impl::trainLoad() {
     tr.all = store.cards(prof->id);
@@ -88,92 +153,83 @@ void App::Impl::trainHome() {
     ImGui::TextUnformatted("Train");
     ImGui::PopFont();
     if (tr.gen.busy()) spinner(dl, {p.x + W - 8, p.y + 16}, 6, theme::accent);
-    ImGui::TextDisabled("Exercises come back just before you'd forget them. A few minutes a day is enough.");
-    ImGui::Dummy({0, 14});
+    ImGui::TextDisabled("A few minutes a day. Exercises come back just before you'd forget them.");
+    ImGui::Dummy({0, 10});
+
+    auto due = [](const std::vector<Card>& cs) { return (int)dueQueue(cs, nowS(), dayStart()).size(); };
+    auto plural = [](int n, const char* one, const char* many) { return std::to_string(n) + " " + (n == 1 ? one : many); };
+    auto badge = [](int n) { return n ? std::to_string(n) + " due" : std::string(); };
+    auto piece = [&](Piece pc) {
+        return [this, pc](ImDrawList* d, ImVec2 c) { d->AddImage(board.pieceTexture(pc, 64), {c.x - 19, c.y - 19}, {c.x + 19, c.y + 19}); };
+    };
+    auto mistakes = inDeck(tr.all, "mistakes");
+    std::vector<Card> reps[2] = {inDeck(tr.all, repDeck(0)), inDeck(tr.all, repDeck(1))};
+    std::map<std::string, std::vector<Card>> courses;
+    for (auto& c : tr.all)
+        if (isCourse(c.deck)) courses[c.deck].push_back(c);
+    int courseDue = 0;
+    for (auto& [deck, cs] : courses) courseDue += due(cs);
+
+    // daily review: every deck mixed, the one primary action
+    auto daily = dueQueue(tr.all, nowS(), dayStart());
+    {
+        ImVec2 a = ImGui::GetCursorScreenPos(), b{a.x + W, a.y + 92};
+        dl->AddRectFilled(a, b, theme::panel, 12);
+        if (theme::edge) dl->AddRect(a, b, theme::edge, 12);
+        ImVec2 c{a.x + 20 + 28, a.y + 46};
+        dl->AddCircleFilled(c, 28, daily.empty() ? theme::panel2 : theme::accent);
+        ImGui::PushFont(f.bold, daily.size() > 99 ? 17 : 21);
+        textCentered(dl, c, daily.empty() ? theme::dim : theme::onAccent, daily.empty() ? "0" : std::to_string(daily.size()).c_str());
+        ImGui::PopFont();
+        float tx = c.x + 28 + 16;
+        ImGui::PushFont(f.bold, 18);
+        dl->AddText({tx, a.y + 24}, theme::text, "Daily review");
+        ImGui::PopFont();
+        std::string sub;
+        if (daily.empty()) sub = tr.all.empty() ? "Nothing to practice yet: pick something below." : "All caught up. Come back tomorrow.";
+        else {
+            int parts[3] = {due(mistakes), due(reps[0]) + due(reps[1]), courseDue};
+            const char* names[3] = {" puzzles", " repertoire", " course lines"};
+            for (int i = 0; i < 3; i++)
+                if (parts[i]) sub += (sub.empty() ? "" : "  ·  ") + std::to_string(parts[i]) + names[i];
+        }
+        dl->AddText({tx, a.y + 50}, theme::dim, sub.c_str());
+        ImGui::SetCursorScreenPos({b.x - 150, a.y + 28});
+        ImGui::BeginDisabled(daily.empty());
+        if (accentButton("Start", {130, 36})) trainStart(daily, "Daily review");
+        ImGui::EndDisabled();
+        ImGui::SetCursorScreenPos({a.x, b.y});
+        ImGui::Dummy({W, 0});
+    }
+    ImGui::Dummy({0, 10});
+
+    std::string practiceTab = "Practice";
+    if (int n = due(mistakes) + due(reps[0]) + due(reps[1]) + courseDue) practiceTab += "  (" + std::to_string(n) + ")";
+    const char* tabs[] = {practiceTab.c_str(), "Board vision"};
+    tr.tab = segmented("trainTabs", tabs, 2, tr.tab, std::min(W, 360.f));
+    ImGui::Dummy({0, 6});
 
     ImGui::BeginChild("trainScroll", {0, 0}, ImGuiChildFlags_None);
     W = ImGui::GetContentRegionAvail().x;
-    auto tile = [&](const char* id, float w, float h, auto body) {
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::panel);
-        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {18, 16});
-        ImGui::BeginChild(id, {w, h}, ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
-        ImGui::PopStyleVar(2);
-        ImGui::PopStyleColor();
-        body();
-        ImGui::EndChild();
-    };
     auto section = [&](const char* t) {
-        ImGui::Dummy({0, 10});
-        ImGui::PushFont(f.bold, 17);
+        ImGui::Dummy({0, 8});
+        ImGui::PushFont(f.bold, 16);
         ImGui::TextUnformatted(t);
         ImGui::PopFont();
         ImGui::Dummy({0, 2});
     };
-    auto count = [](const std::vector<Card>& cs, int& due, int& fresh) {
-        due = fresh = 0;
-        for (auto& c : dueQueue(cs, nowS(), dayStart())) (isNew(c) ? fresh : due)++;
-    };
-
-    // daily review over every deck
-    auto daily = dueQueue(tr.all, nowS(), dayStart());
-    tile("daily", W, 86, [&] {
-        ImGui::PushFont(f.bold, 18);
-        ImGui::TextUnformatted("Daily review");
-        ImGui::PopFont();
-        if (daily.empty()) ImGui::TextDisabled(tr.all.empty() ? "Nothing to practice yet: start with the sections below." : "All caught up. Come back tomorrow.");
-        else ImGui::TextDisabled("%d %s waiting: puzzles, repertoire and course lines mixed.", (int)daily.size(), daily.size() == 1 ? "exercise" : "exercises");
-        ImGui::SetCursorPos({ImGui::GetWindowWidth() - 150, 24});
-        ImGui::BeginDisabled(daily.empty());
-        if (accentButton("Start", {130, 36})) trainStart(daily, "Daily review");
-        ImGui::EndDisabled();
-    });
-
-    // puzzles
-    section("Puzzles from your mistakes");
-    auto mistakes = inDeck(tr.all, "mistakes");
-    tile("mistakes", W, 86, [&] {
-        int due, fresh;
-        count(mistakes, due, fresh);
-        if (mistakes.empty()) {
-            ImGui::TextWrapped(tr.gen.busy() ? "Looking through your reviewed games..."
-                                             : "Review some games first: every mistake, miss and blunder you make becomes a puzzle here.");
-        } else {
-            ImGui::PushFont(f.bold, 16);
-            ImGui::Text("%d puzzles", (int)mistakes.size());
-            ImGui::PopFont();
-            ImGui::TextDisabled("%d due, %d new today. New mistakes are added after each review.", due, fresh);
-            ImGui::SetCursorPos({ImGui::GetWindowWidth() - 150, 24});
-            if (ImGui::Button(due + fresh ? "Practice" : "Practice anyway", {130, 36})) trainStart(practiceQueue(mistakes), "Your mistakes");
-        }
-    });
-
-    // repertoire
-    section("Your repertoire");
-    float half = (W - 12) / 2;
-    for (int c = 0; c < 2; c++) {
-        if (c) ImGui::SameLine(0, 12);
-        auto rep = inDeck(tr.all, repDeck(c));
-        tile(c ? "repB" : "repW", half, 116, [&] {
-            int due, fresh;
-            count(rep, due, fresh);
-            ImGui::PushFont(f.bold, 16);
-            ImGui::Text("As %s", colorWord(c));
-            ImGui::PopFont();
-            if (rep.empty()) ImGui::TextDisabled("No lines yet");
-            else ImGui::TextDisabled("%d lines · %d due", (int)rep.size(), due + fresh);
-            ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 50);
-            ImGui::BeginDisabled(rep.empty());
-            if (ImGui::Button("Practice", {100, 34})) trainStart(practiceQueue(rep), std::string("Repertoire as ") + colorWord(c));
-            ImGui::EndDisabled();
-            ImGui::SameLine();
-            if (ImGui::Button("Edit", {80, 34})) {
-                tr.page = TrainUi::Page::Repertoire, tr.repColor = c, tr.repLine.clear();
-            }
-        });
+    if (tr.tab == 1) {
+        visionTiles(W);
+        ImGui::Dummy({0, 20});
+        ImGui::EndChild();
+        return;
     }
-    ImGui::BeginDisabled(tr.gen.busy());
-    if (ImGui::Button("Build from my games")) {
+
+    // puzzles + the two repertoires
+    section("Your games");
+    static int menuFor = -1;  // repertoire color whose menu is open
+    const ImGuiID repMenu = ImGui::GetID("##repmenu"), rmCourse = ImGui::GetID("##rmcourse");  // opened inside the grid's ID scope
+    auto build = [&] {
         Store* st = &store;
         int64_t pid = prof->id;
         const Openings* bk = &book;
@@ -183,62 +239,89 @@ void App::Impl::trainHome() {
             for (int c = 0; c < 2; c++) n += st->addCards(repertoireFromGames(ex, c, pid, *bk, nowS()));
             return n;
         });
-    }
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("Adds the lines you actually play: your most played move at each of your turns, and every\n"
-                          "reply you've met at least twice, up to move %d. Lines you already have are kept.", kRepertoirePlies / 2);
-
-    // courses
-    section("Opening courses");
-    std::map<std::string, std::vector<Card>> courses;
-    for (auto& c : tr.all)
-        if (isCourse(c.deck)) courses[c.deck].push_back(c);
-    static std::string removing;
-    for (auto& [deck, cs] : courses) {
-        int color = deck[7] - '0';
-        std::string name = deck.substr(9);
-        tile(deck.c_str(), W, 92, [&] {
-            int due, fresh, learned = 0;
-            count(cs, due, fresh);
-            for (auto& c : cs) learned += !isNew(c);
-            ImGui::PushFont(f.bold, 16);
-            ImGui::Text("%s", name.c_str());
-            ImGui::PopFont();
-            ImGui::SameLine();
-            ImGui::TextDisabled("as %s", colorWord(color));
-            ImGui::TextDisabled("%d of %d lines learned · %d due", learned, (int)cs.size(), due + fresh);
-            ImVec2 bp = ImGui::GetCursorScreenPos();
-            float bw = ImGui::GetWindowWidth() - 360;
-            ImGui::GetWindowDrawList()->AddRectFilled({bp.x, bp.y + 6}, {bp.x + bw, bp.y + 12}, theme::panel2, 3);
-            ImGui::GetWindowDrawList()->AddRectFilled({bp.x, bp.y + 6}, {bp.x + bw * learned / std::max<size_t>(1, cs.size()), bp.y + 12}, theme::accent, 3);
-            ImGui::SetCursorPos({ImGui::GetWindowWidth() - 320, 26});
-            if (ImGui::Button("Practice", {110, 36})) trainStart(practiceQueue(cs), name + " as " + colorWord(color));
-            ImGui::SameLine();
-            if (ImGui::Button("Remove", {90, 36})) removing = deck, ImGui::OpenPopup("##rmcourse");
-            if (ImGui::BeginPopup("##rmcourse")) {
-                ImGui::Text("Remove this course and its progress?");
-                if (ImGui::Button("Remove")) {
-                    store.deleteCards(prof->id, removing);
-                    tr.stale = true;
-                    ImGui::CloseCurrentPopup();
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-                ImGui::EndPopup();
+    };
+    trainGrid(W, 3, 3, 84, [&](int i, ImVec2 sz) {
+        if (i == 0) {
+            TrainTile t{"Your mistakes"};
+            t.icon = piece(Piece::WHITEKNIGHT);
+            if (mistakes.empty()) {
+                t.title = tr.gen.busy() ? "Finding your mistakes..." : "No puzzles yet";
+                t.sub = "Review games to get puzzles";
+                t.disabled = true;
+            } else {
+                t.sub = plural((int)mistakes.size(), "puzzle", "puzzles") + " from your games";
+                t.badge = badge(due(mistakes));
             }
-        });
-        ImGui::Dummy({0, 4});
-    }
-    if (courses.empty()) ImGui::TextDisabled("Pick any opening and learn all its main lines, one at a time.");
-    if (accentButton("Learn a new opening", {200, 36})) {
-        tr.page = TrainUi::Page::Courses;
-        if (tr.families.empty()) {
-            tr.families = openingFamilies(book);
-            std::stable_sort(tr.families.begin(), tr.families.end(), [](const Family& a, const Family& b) { return a.lines > b.lines; });
+            t.tip = "Positions where you made a mistake, miss or blunder: find the better move.\nNew ones are added after each review.";
+            if (trainTile("mistakes", sz, t, f.bold) == 1) trainStart(practiceQueue(mistakes), "Your mistakes");
+            return;
         }
+        int c = i - 1;
+        TrainTile t{std::string(colorWord(c)) + " repertoire"};
+        t.icon = piece(c ? Piece::BLACKKING : Piece::WHITEKING);
+        t.menu = true;
+        if (reps[c].empty()) t.sub = "No lines yet: click to add";
+        else t.sub = plural((int)reps[c].size(), "line", "lines"), t.badge = badge(due(reps[c]));
+        int r = trainTile(c ? "repB" : "repW", sz, t, f.bold);
+        if (r == 2 || (r == 1 && reps[c].empty())) menuFor = c, ImGui::OpenPopup(repMenu);
+        else if (r == 1) trainStart(practiceQueue(reps[c]), std::string("Repertoire as ") + colorWord(c));
+    });
+    if (ImGui::BeginPopup("##repmenu")) {
+        int c = std::max(0, menuFor);
+        if (ImGui::MenuItem(reps[c].empty() ? "Add lines by hand" : "Edit lines")) tr.page = TrainUi::Page::Repertoire, tr.repColor = c, tr.repLine.clear();
+        if (ImGui::MenuItem("Build from my games", nullptr, false, !tr.gen.busy())) build();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Your most played move at each of your turns, and every reply you've met at least\n"
+                              "twice, up to move %d, for both colors. Lines you already have are kept.", kRepertoirePlies / 2);
+        ImGui::EndPopup();
     }
-    visionTiles(W);
+
+    // courses, then a tile to start a new one
+    section("Opening courses");
+    std::vector<std::string> decks;
+    for (auto& [deck, cs] : courses) decks.push_back(deck);
+    static std::string removing;
+    trainGrid(W, 3, (int)decks.size() + 1, 84, [&](int i, ImVec2 sz) {
+        if (i == (int)decks.size()) {
+            TrainTile t{"New course", "Learn any opening's main lines"};
+            t.icon = [](ImDrawList* d, ImVec2 c) {
+                d->AddLine({c.x - 8, c.y}, {c.x + 8, c.y}, theme::accent, 2.5f);
+                d->AddLine({c.x, c.y - 8}, {c.x, c.y + 8}, theme::accent, 2.5f);
+            };
+            if (trainTile("new", sz, t, f.bold) == 1) {
+                tr.page = TrainUi::Page::Courses;
+                if (tr.families.empty()) {
+                    tr.families = openingFamilies(book);
+                    std::stable_sort(tr.families.begin(), tr.families.end(), [](const Family& a, const Family& b) { return a.lines > b.lines; });
+                }
+            }
+            return;
+        }
+        auto& deck = decks[i];
+        auto& cs = courses[deck];
+        int learned = 0;
+        for (auto& c : cs) learned += !isNew(c);
+        int color = deck[7] - '0';
+        TrainTile t{deck.substr(9), std::string("As ") + colorWord(color) + "  ·  " + std::to_string(learned) + " of " + std::to_string(cs.size()) + " learned"};
+        t.icon = piece(color ? Piece::BLACKBISHOP : Piece::WHITEBISHOP);
+        t.badge = badge(due(cs));
+        t.progress = (float)learned / std::max<size_t>(1, cs.size());
+        t.menu = true;
+        int r = trainTile(deck.c_str(), sz, t, f.bold);
+        if (r == 1) trainStart(practiceQueue(cs), deck.substr(9) + " as " + colorWord(color));
+        if (r == 2) removing = deck, ImGui::OpenPopup(rmCourse);
+    });
+    if (ImGui::BeginPopup("##rmcourse")) {
+        ImGui::Text("Remove this course and its progress?");
+        if (ImGui::Button("Remove")) {
+            store.deleteCards(prof->id, removing);
+            tr.stale = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
     ImGui::Dummy({0, 20});
     ImGui::EndChild();
 }
@@ -275,11 +358,11 @@ void App::Impl::trainCourses() {
         ImGui::SetCursorScreenPos({p.x + 4, p.y + 27});
         ImGui::TextDisabled("%d named lines", fam.lines);
         for (int c = 0; c < 2; c++) {
-            ImGui::SetCursorScreenPos({p.x + W - 250 + c * 124, p.y + 8});
+            ImGui::SetCursorScreenPos({p.x + W - 316 + c * 158, p.y + 8});
             std::string deck = courseDeck(c, fam.name);
             bool has = started.count(deck);
-            std::string label = std::string(has ? "Practice " : "As ") + colorWord(c);
-            if (ImGui::Button(label.c_str(), {116, 32})) {
+            std::string label = std::string(has ? "Practice as " : "Learn as ") + colorWord(c);
+            if (ImGui::Button(label.c_str(), {150, 32})) {
                 if (!has) {
                     int n = store.addCards(courseCards(book, fam.name, c, prof->id, nowS()));
                     notify("Added " + std::to_string(n) + " lines of the " + fam.name);

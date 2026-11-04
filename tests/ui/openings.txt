@@ -3,7 +3,7 @@
 #env OPCAN_PROFILE=2 OPCAN_PAGE=openings
 wait 1s
 shot open-0.png
-click 943 289
+click 943 257
 wait 10
 shot open-e4.png
 drag 442 249 442 330 6
@@ -16,6 +16,6 @@ click 1151 837
 wait 10
 shot open-games.png
 # back to the openings page from the library
-click 82 184
+click 82 234
 wait 10
 shot open-return.png

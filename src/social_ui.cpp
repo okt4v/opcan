@@ -209,7 +209,7 @@ void App::Impl::shareCard(BoardView& bv, int i, float w) {
     // board
     std::vector<Arrow> arrows;
     if (sh.arrow && mr && cls >= Cls::Inaccuracy && cls <= Cls::Blunder && mr->bestUci.size() >= 4)
-        arrows.push_back({Square(mr->bestUci.substr(0, 2)), Square(mr->bestUci.substr(2, 2)), theme::arrowBest});
+        arrows.push_back({Square(mr->bestUci.substr(0, 2)), Square(mr->bestUci.substr(2, 2)), theme::arrowBest, ArrowIcon::Best});
     bv.flipped = board.flipped;
     bv.interactive = false;
     bv.coords = sh.coords ? 1 : 0;
@@ -377,26 +377,35 @@ void App::Impl::drawSocial() {
     ImGui::PushFont(f.bold, 26);
     ImGui::TextUnformatted("Social");
     ImGui::PopFont();
-    {  // stats and files for friends, game or not
-        ImVec2 back = ImGui::GetCursorScreenPos();
-        float bx = p.x + W - (game ? 158 : 0) - 2 * 158;
-        ImGui::SetCursorScreenPos({bx, p.y});
-        if (ImGui::Button("Open a shared file…", {150, 34})) openFileDialog();
+    auto friendBtns = [&](ImVec2 sz) {  // stats and files for friends, game or not
+        if (ImGui::Button("Open a shared file…", sz)) openFileDialog();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("A friend's stats or game (.opcan)");
         ImGui::SameLine(0, 8);
         ImGui::BeginDisabled(!prof || prof->guest);
-        if (ImGui::Button("Share my stats…", {150, 34})) shareStatsDialog();
+        if (ImGui::Button("Share my stats…", sz)) shareStatsDialog();
         ImGui::EndDisabled();
-        ImGui::SetCursorScreenPos(back);
-    }
-    if (!game) {
+    };
+    if (!game) {  // centred: no game to share, and where to get one
         ImGui::TextDisabled("Share images, GIFs and annotated PGN of your games.");
-        ImGui::Dummy({0, 30});
-        ImGui::TextWrapped("Open a game first: pick one in the Library or paste a PGN in Analyze, then come back here "
-                           "(or press Share next to a game's board).");
-        ImGui::Dummy({0, 8});
-        if (accentButton("Go to the library", {180, 36})) view = View::Library, libDirty = true;
+        auto* dl = ImGui::GetWindowDrawList();
+        float top = std::max(p.y + 90, p.y + ImGui::GetContentRegionAvail().y * 0.3f), bw = 160;
+        ImGui::PushFont(f.bold, 20);
+        textCentered(dl, {p.x + W / 2, top}, theme::text, "No game open");
+        ImGui::PopFont();
+        ImGui::PushFont(f.ui, 14);
+        textCentered(dl, {p.x + W / 2, top + 30}, theme::dim, "Open one from your library, or press Share beside a game's board.");
+        ImGui::PopFont();
+        ImGui::SetCursorScreenPos({p.x + W / 2 - bw * 1.5f - 8, top + 58});
+        if (accentButton("Go to the library", {bw, 36})) view = View::Library, libDirty = true;
+        ImGui::SameLine(0, 8);
+        friendBtns({bw, 36});
         return;
+    }
+    {
+        ImVec2 back = ImGui::GetCursorScreenPos();
+        ImGui::SetCursorScreenPos({p.x + W - 3 * 158 + 8, p.y});
+        friendBtns({150, 34});
+        ImGui::SetCursorScreenPos(back);
     }
     if (sh.forGame != &*game) openShare(-1);
     auto line = shareLine();

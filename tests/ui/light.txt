@@ -31,15 +31,15 @@ wait 10
 shot light-retry.png
 key Escape
 wait 5
-click 32 184
+click 32 234
 wait 1s
 shot light-openings.png
 click 32 134
 wait 10
 shot light-analyze.png
-click 32 234
+click 32 284
 wait 2s
 shot light-train.png
-click 32 284
+click 32 184
 wait 2s
 shot light-stats.png

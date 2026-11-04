@@ -3,6 +3,7 @@
 #include "game.hpp"
 #include "openings.hpp"
 #include <atomic>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -60,6 +61,37 @@ struct ReviewResult {
 
 // Pure: turns per-position evals into classifications, accuracy, stats.
 ReviewResult buildReview(const Game& game, const std::vector<PosEval>& evals, const Openings& book);
+
+// One move as buildReview classifies it, for moves classified while they're played (side lines, games vs the engine).
+// e / next: evals of the positions before / after m. book: m and every move before it were book moves. prev: the move
+// before m (NO_MOVE when m is the first), played from prevBefore; prevCls: its classification (Cls::None if unknown).
+Cls classifyMove(const chess::Board& before, chess::Move m, const PosEval& e, const PosEval& next, bool book,
+                 chess::Move prev, const chess::Board& prevBefore, Cls prevCls);
+
+// What's going on in a position, for arrows: forks by the side that just moved (forker -> each target), pins by
+// either side (pinner -> the piece behind the pinned one), threats against the side to move (attacker -> a piece it
+// wins material by taking).
+struct Tactic {
+    enum Kind { Fork, Pin, Threat } kind;
+    chess::Square from, to;
+};
+std::vector<Tactic> findTactics(const chess::Board& b);
+
+PosEval toPosEval(const std::vector<PvLine>& lines);  // analyse(..., multipv 2) -> PosEval
+
+// Evaluates single positions on one engine thread, newest request first, and keeps the results (by FEN).
+class PosEvalCache {
+public:
+    ~PosEvalCache();
+    void start(const std::string& enginePath, int depth);  // drops the cache
+    void request(const std::string& fen);                 // no-op if known or queued
+    std::optional<PosEval> get(const std::string& fen) const;
+
+private:
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
+    void stop();
+};
 
 // Runs the engine over the mainline on worker threads (one engine process each).
 class Reviewer {

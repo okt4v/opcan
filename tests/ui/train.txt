@@ -20,7 +20,7 @@ wait 3s
 shot tr-wrong.png
 key Escape
 wait 10
-click 340 616
+click 430 475
 wait 10
 shot tr-courses.png
 click 1205 419
@@ -53,15 +53,19 @@ wait 1s
 shot tr-line-done.png
 key Escape
 wait 10
-click 311 511
+click 820 340
+wait 10
+click 897 384
 wait 3s
 shot tr-home2.png
-click 405 458
+click 995 315
+wait 10
+click 1050 337
 wait 10
 shot tr-rep.png
 shot tr-rep2.png
 click 1038 38
 wait 10
-click 897 458
+click 1150 350
 wait 2s
 shot tr-repblack.png

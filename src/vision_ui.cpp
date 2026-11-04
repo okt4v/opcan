@@ -1,6 +1,7 @@
 // Board vision drills on the Train page: square names, reading moves, piece routes, checks and captures,
 // blindfold memory and a blindfold game against the engine. Logic in vision.cpp.
 #include "app_impl.hpp"
+#include <functional>
 
 using namespace chess;
 
@@ -12,14 +13,14 @@ struct DrillInfo {
     bool timed;         // 60 s for as many as you can, else kRounds rounds
 };
 const DrillInfo kDrills[] = {
-    {"Find the square", "A square name appears: click it.", "I'll name a square, you click it. As many as you can in a minute.", true},
-    {"Name the square", "A square lights up: type its name.", "A square lights up: type its name, like e4. As many as you can in a minute.", true},
-    {"Play the move", "Read a move, play it on a busy board.", "I'll show a move in notation. Find the piece and play it. As many as you can in a minute.", true},
-    {"Piece routes", "Take a lone piece to a square in the fewest moves.", "Click squares to move the piece to the target in as few moves as possible. 10 routes.", false},
-    {"Find every check", "Spot all checking moves in a position.", "Play every move that gives check, one by one. 10 positions.", false},
-    {"Find every capture", "Spot all captures in a position.", "Play every move that captures something, one by one. 10 positions.", false},
-    {"Blindfold memory", "Follow moves without a board, then answer.", "I'll read out some moves. Picture the board, then tell me where the pieces are. 5 rounds.", false},
-    {"Blindfold game", "Play the engine without seeing the pieces.", "Type your moves (like Nf3 or e2e4). The pieces stay hidden; peek if you must.", false},
+    {"Find the square", "Click the named square", "I'll name a square, you click it. As many as you can in a minute.", true},
+    {"Name the square", "Type the lit square's name", "A square lights up: type its name, like e4. As many as you can in a minute.", true},
+    {"Play the move", "Play a move read in notation", "I'll show a move in notation. Find the piece and play it. As many as you can in a minute.", true},
+    {"Piece routes", "Reach a square in fewest moves", "Click squares to move the piece to the target in as few moves as possible. 10 routes.", false},
+    {"Find every check", "Spot every checking move", "Play every move that gives check, one by one. 10 positions.", false},
+    {"Find every capture", "Spot every capture", "Play every move that captures something, one by one. 10 positions.", false},
+    {"Blindfold memory", "Follow moves without a board", "I'll read out some moves. Picture the board, then tell me where the pieces are. 5 rounds.", false},
+    {"Blindfold game", "Play with the pieces hidden", "Type your moves (like Nf3 or e2e4). The pieces stay hidden; peek if you must.", false},
 };
 constexpr int kRounds = 10, kQuizzes = 5, kQuestions = 4;
 const int kPlies[] = {4, 6, 8, 12, 16, 20};
@@ -49,32 +50,40 @@ std::string App::Impl::visionBestKey() const { return "p" + std::to_string(prof 
 
 // ---------- tiles on the Train home page ----------
 
+// the Board vision tab of the Train home page: one tile per drill, the blurb in its tooltip
 void App::Impl::visionTiles(float W) {
-    ImGui::Dummy({0, 10});
-    ImGui::PushFont(f.bold, 17);
-    ImGui::TextUnformatted("Board vision");
-    ImGui::PopFont();
-    ImGui::TextDisabled("Quick drills to see the board faster, and to play without seeing it.");
-    ImGui::Dummy({0, 2});
-    const int cols = W > 900 ? 4 : 2;
-    const float gap = ImGui::GetStyle().ItemSpacing.x, w = std::floor((W - gap * (cols - 1)) / cols);
-    for (int i = 0; i < (int)Drill::Count; i++) {
-        if (i % cols) ImGui::SameLine();
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::panel);
-        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {16, 14});
-        ImGui::BeginChild(("vision" + std::to_string(i)).c_str(), {w, 118}, ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar);
-        ImGui::PopStyleVar(2);
-        ImGui::PopStyleColor();
-        ImGui::PushFont(f.bold, 16);
-        ImGui::TextUnformatted(kDrills[i].name);
-        ImGui::PopFont();
-        ImGui::PushTextWrapPos(0);
-        ImGui::TextDisabled("%s", kDrills[i].blurb);
-        ImGui::PopTextWrapPos();
-        std::string best = store.setting("p" + std::to_string(prof->id) + ".vision." + std::to_string(i));
-        ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 46);
-        if (ImGui::Button("Open", {90, 30})) {
+    ImGui::Dummy({0, 8});
+    auto tex = [this](Piece pc) {
+        return [this, pc](ImDrawList* d, ImVec2 c) { d->AddImage(board.pieceTexture(pc, 64), {c.x - 19, c.y - 19}, {c.x + 19, c.y + 19}); };
+    };
+    auto glyph = [this](const char* g, float size) {
+        return [this, g, size](ImDrawList* d, ImVec2 c) {
+            ImGui::PushFont(f.bold, size);
+            textCentered(d, c, theme::text, g);
+            ImGui::PopFont();
+        };
+    };
+    auto eye = [](bool shut) {
+        return [shut](ImDrawList* d, ImVec2 c) {
+            ImU32 col = theme::text;
+            d->PathArcTo({c.x, c.y + 9}, 15, -3.14159f * 0.82f, -3.14159f * 0.18f, 16);
+            d->PathStroke(col, 0, 1.8f);
+            d->PathArcTo({c.x, c.y - 9}, 15, 3.14159f * 0.18f, 3.14159f * 0.82f, 16);
+            d->PathStroke(col, 0, 1.8f);
+            d->AddCircleFilled(c, 3.5f, col);
+            if (shut) d->AddLine({c.x - 10, c.y + 9}, {c.x + 10, c.y - 9}, col, 2);
+        };
+    };
+    std::function<void(ImDrawList*, ImVec2)> icons[] = {
+        [](ImDrawList* d, ImVec2 c) { drawIcon(d, c, Icon::Train, theme::text); },
+        glyph("e4", 15), tex(Piece::WHITEKNIGHT), tex(Piece::WHITEROOK), glyph("+", 28), glyph("x", 24), eye(false), eye(true)};
+    trainGrid(W, 4, (int)Drill::Count, 84, [&](int i, ImVec2 sz) {
+        std::string best = i == (int)Drill::BlindGame ? "" : store.setting("p" + std::to_string(prof->id) + ".vision." + std::to_string(i));
+        TrainTile t{kDrills[i].name, kDrills[i].blurb};
+        t.stat = best.empty() ? "" : "Best " + best;
+        t.tip = kDrills[i].blurb;
+        t.icon = icons[i];
+        if (trainTile("drill", sz, t, f.bold) == 1) {
             vs = VisionUi();
             vs.drill = (Drill)i;
             vs.msg = kDrills[i].how;
@@ -82,13 +91,7 @@ void App::Impl::visionTiles(float W) {
             vs.wasFlipped = board.flipped, vs.wasCoords = board.coords;
             tr.page = TrainUi::Page::Vision;
         }
-        if (!best.empty() && i != (int)Drill::BlindGame) {
-            ImGui::SameLine();
-            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 6);
-            ImGui::TextDisabled("Best %s", best.c_str());
-        }
-        ImGui::EndChild();
-    }
+    });
 }
 
 // ---------- drill flow ----------

@@ -2,11 +2,10 @@
 #needs-db
 #env OPCAN_PROFILE=2 OPCAN_PAGE=train
 wait 2s
-move 800 500
-scroll -20
+click 509 222
 wait 10
 shot vision-tiles.png
-click 300 695
+click 380 311
 wait 10
 key Enter
 wait 10
@@ -18,20 +17,14 @@ wait 5
 shot vision-find-done.png
 key Escape
 wait 10
-move 800 500
-scroll -20
-wait 10
-click 300 819
+click 380 413
 wait 10
 key Enter
 wait 10
 shot vision-checks.png
 key Escape
 wait 10
-move 800 500
-scroll -20
-wait 10
-click 882 819
+click 970 413
 wait 10
 key Enter
 wait 5
@@ -40,10 +33,7 @@ wait 5
 shot vision-memory.png
 key Escape
 wait 10
-move 800 500
-scroll -20
-wait 10
-click 1173 819
+click 1265 413
 wait 10
 key Enter
 wait 10

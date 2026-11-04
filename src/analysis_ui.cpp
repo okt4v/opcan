@@ -124,7 +124,7 @@ void App::Impl::drawAnalysisWindow() {
         ImGui::TextUnformatted(n == 0 ? "Queue empty" : n == 1 ? "1 game queued" : (thousands(n) + " games queued").c_str());
         ImGui::PopFont();
         std::string line;
-        if (analysisPaused) line = "Paused";
+        if (set.analysisPaused && !runnerOvernight) line = overnight.on ? "Paused until the overnight run starts" : "Paused";
         else if (n == 0) line = "Nothing to analyze";
         else if (overnight.on && overnight.startAt > (int64_t)std::time(nullptr)) line = "Light power until the overnight run starts";
         else line = runnerOvernight ? "Analyzing at full power" : "Analyzing in the background at light power";
@@ -132,7 +132,7 @@ void App::Impl::drawAnalysisWindow() {
             line += "  ·  " + thousands(st.done) + " done";
             if (st.failed) line += ", " + thousands(st.failed) + " failed";
         }
-        if (n > 0 && !analysisPaused) {
+        if (n > 0 && (!set.analysisPaused || runnerOvernight)) {
             AnalysisPower pw = runnerOvernight ? AnalysisPower::overnight() : AnalysisPower::light();
             line += "  ·  " + (st.secPerGame > 0 ? aboutDuration(st.secPerGame * n / std::max(1, pw.games)) + " left"
                                                  : std::string("estimating time left…"));
@@ -157,7 +157,7 @@ void App::Impl::drawAnalysisWindow() {
 
         // controls
         ImGui::Dummy({0, 6});
-        if (ImGui::Button(analysisPaused ? "Resume" : "Pause", {112, 32})) analysisPaused = !analysisPaused;
+        if (ImGui::Button(set.analysisPaused ? "Resume" : "Pause", {112, 32})) set.analysisPaused = !set.analysisPaused, saveSettings();
         ImGui::SameLine(0, 8);
         ImGui::BeginDisabled(n == 0);
         if (ImGui::Button("Clear queue", {112, 32})) ui.confirmClear = true;

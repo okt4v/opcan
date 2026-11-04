@@ -27,7 +27,8 @@ void App::Impl::updateFrame() {
     auto& u = up;
     if (!u.started) {
         std::string mode = store.setting("update.mode", "ask");
-        bool dev = devscript::active() || std::getenv("OPCAN_SHOT");  // screenshot checks stay offline
+        // screenshot checks stay offline; local -dev builds don't nag (Settings > Updates still checks on demand)
+        bool dev = devscript::active() || std::getenv("OPCAN_SHOT") || std::string(appVersion()).ends_with("-dev");
         if (mode != "off" && !dev) updateCheck(true);
         u.started = true;
     }

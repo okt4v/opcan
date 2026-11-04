@@ -169,6 +169,27 @@ bool toggle(const char* label, bool on, bool star = false, Cls badge = Cls::None
     return click;
 }
 
+// Include toggle: a chip with a checkbox, ticked = these games are shown.
+bool checkChip(const char* label, bool on) {
+    ImVec2 ts = ImGui::CalcTextSize(label);
+    float w = ts.x + 42, h = ImGui::GetFrameHeight();
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    bool click = ImGui::InvisibleButton(label, {w, h});
+    bool hov = ImGui::IsItemHovered();
+    auto* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p, {p.x + w, p.y + h}, hov ? theme::line : theme::panel2, 6);
+    ImVec2 c{p.x + 18, p.y + h / 2};
+    if (on) {
+        dl->AddRectFilled({c.x - 6, c.y - 6}, {c.x + 6, c.y + 6}, theme::accent, 3);
+        ImVec2 ck[3] = {{c.x - 3.5f, c.y + 0.2f}, {c.x - 1, c.y + 2.8f}, {c.x + 3.8f, c.y - 2.8f}};
+        dl->AddPolyline(ck, 3, theme::onAccent, 0, 1.8f);
+    } else {
+        dl->AddRect({c.x - 6, c.y - 6}, {c.x + 6, c.y + 6}, theme::dim, 3, 0, 1.2f);
+    }
+    dl->AddText({p.x + 30, p.y + (h - ts.y) / 2}, on ? theme::text : theme::dim, label);
+    return click;
+}
+
 int64_t parseDate(const Game& g) {
     std::string d = g.header("UTCDate");
     if (d.empty() || d.find('?') != std::string::npos) d = g.header("Date");
@@ -1025,25 +1046,47 @@ void App::Impl::drawLibrary() {
     dl->AddText({p.x + tw + 12, p.y + 11}, theme::dim, cnt);
     ImGui::PopFont();
     bool syncing = syncer && syncer->running();
-    // Analysis (the queue window) + a menu to queue everything the filters show; left of Sync
-    float ax = p.x + W - (prof->accounts.empty() ? 0 : 96 + 8) - 104 - 26;
+    // the analysis queue: one split button, the main part opens the queue window, the arrow queues the filtered games
+    float ax, abw;
     {
+        ImGui::PushFont(f.ui, 14);
+        const char* lbl = "Analysis queue";
+        std::string q = queueCount > 999 ? "999+" : std::to_string(queueCount);
+        float lw = ImGui::CalcTextSize(lbl).x;
+        ImGui::PushFont(f.mono, 12);
+        float qw = queueCount > 0 ? ImGui::CalcTextSize(q.c_str()).x + 12 : 0;
+        ImGui::PopFont();
+        abw = 16 + lw + (qw ? 8 + qw : 0) + 14;
+        const float mw = 28, h = 32;
+        ax = p.x + W - (prof->accounts.empty() ? 0 : 96 + 8) - abw - mw;
+        float r = ImGui::GetStyle().FrameRounding;
         ImGui::SetCursorScreenPos({ax, p.y});
-        if (ImGui::Button("Analysis", {104, 32})) showAnalysis = true;
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The analysis queue and the overnight run");
-        if (queueCount > 0) {  // badge: queued games
-            ImGui::PushFont(f.mono, 11);
-            std::string q = queueCount > 999 ? "999+" : std::to_string(queueCount);
-            ImVec2 ts = ImGui::CalcTextSize(q.c_str());
-            float bw = std::max(18.f, ts.x + 10), bx = ax + 104 - bw / 2 - 4;
-            dl->AddRectFilled({bx - bw / 2, p.y - 6}, {bx + bw / 2, p.y + 12}, theme::accent, 9);
-            dl->AddText({bx - ts.x / 2, p.y + 3 - ts.y / 2}, theme::onAccent, q.c_str());
+        if (ImGui::InvisibleButton("anq", {abw, h})) showAnalysis = true;
+        bool h1 = ImGui::IsItemHovered(), a1 = ImGui::IsItemActive();
+        if (h1) ImGui::SetTooltip(queueCount > 0 ? "%d games waiting for analysis. Open the queue and the overnight run"
+                                                 : "Open the analysis queue and the overnight run", queueCount);
+        ImGui::SetCursorScreenPos({ax + abw, p.y});
+        if (ImGui::InvisibleButton("anmenuBtn", {mw, h})) ImGui::OpenPopup("anmenu");
+        bool h2 = ImGui::IsItemHovered(), a2 = ImGui::IsItemActive();
+        if (h2) ImGui::SetTooltip("Queue games for analysis");
+        auto col = [](bool hov, bool act) { return ImGui::GetColorU32(act ? ImGuiCol_ButtonActive : hov ? ImGuiCol_ButtonHovered : ImGuiCol_Button); };
+        dl->AddRectFilled({ax, p.y}, {ax + abw + mw, p.y + h}, col(false, false), r);
+        if (h1 || a1) dl->AddRectFilled({ax, p.y}, {ax + abw, p.y + h}, col(h1, a1), r, ImDrawFlags_RoundCornersLeft);
+        if (h2 || a2) dl->AddRectFilled({ax + abw, p.y}, {ax + abw + mw, p.y + h}, col(h2, a2), r, ImDrawFlags_RoundCornersRight);
+        dl->AddLine({ax + abw, p.y + 7}, {ax + abw, p.y + h - 7}, alpha(theme::dim, 90));
+        float ty = p.y + h / 2 - ImGui::GetFontSize() / 2;
+        dl->AddText({ax + 16, ty}, theme::text, lbl);
+        ImGui::PopFont();
+        if (qw) {  // queued games
+            ImGui::PushFont(f.mono, 12);
+            float qx = ax + 16 + lw + 8;
+            dl->AddRectFilled({qx, p.y + h / 2 - 9}, {qx + qw, p.y + h / 2 + 9}, theme::accent, 9);
+            textCentered(dl, {qx + qw / 2, p.y + h / 2}, theme::onAccent, q.c_str());
             ImGui::PopFont();
         }
-        ImGui::SetCursorScreenPos({ax + 104 + 2, p.y});
-        if (ImGui::Button("##anmenu", {24, 32})) ImGui::OpenPopup("anmenu");
-        ImVec2 c{ax + 104 + 2 + 12, p.y + 16};
+        ImVec2 c{ax + abw + mw / 2, p.y + h / 2};
         dl->AddTriangleFilled({c.x - 4, c.y - 2}, {c.x + 4, c.y - 2}, {c.x, c.y + 3}, theme::soft);
+        ImGui::SetNextWindowPos({ax, p.y + h + 4});
         if (ImGui::BeginPopup("anmenu")) {
             std::string lbl = "Analyze all " + std::to_string(total) + (total == 1 ? " game" : " games") +
                               (total < allGames ? " matching the filters" : " in the library");
@@ -1054,6 +1097,7 @@ void App::Impl::drawLibrary() {
                                             : "Queued " + std::to_string(q) + " games (" + std::to_string((int)ids.size() - q) + " already analyzed)");
             }
             if (ImGui::MenuItem("Open the analysis queue…")) showAnalysis = true;
+            ImGui::TextDisabled("Tip: ctrl/shift-click games to pick them");
             ImGui::EndPopup();
         }
     }
@@ -1097,7 +1141,11 @@ void App::Impl::drawLibrary() {
         ImGui::SetNextItemWidth(w);
         if (ImGui::Combo(id, &sel, items, n)) libDirty = true;
     };
-    float sw = std::clamp(W * 0.22f, 200.f, 280.f);
+    // one line when it fits: the search box takes what the combos and chips leave; the chips wrap as a group
+    float chipW = ImGui::CalcTextSize("Favorites").x + 42 + ImGui::CalcTextSize("Brilliant").x + 42 + ImGui::CalcTextSize("Bots").x + 42 +
+                  ImGui::CalcTextSize("Imported").x + 42 + 3 * 8;
+    float comboW = 104 + 104 + 100 + 104 + 100 + 5 * 8;
+    float sw = std::clamp(W - comboW - chipW - 8, 200.f, 280.f);
     place(sw);
     ImGui::SetNextItemWidth(sw);
     if (ImGui::InputTextWithHint("##search", "Search players, openings, tags", search, sizeof search)) libDirty = true;
@@ -1113,13 +1161,13 @@ void App::Impl::drawLibrary() {
     for (int i = 0; i < 4; i++)
         if (filter.site == kSiteKey[i]) ssel = i;
     int rsel = filter.result + 1, csel = filter.color + 1;
-    combo("##time", kTime, 6, tsel, 120);
-    combo("##res", kRes, 4, rsel, 120);
-    combo("##col", kCol, 3, csel, 112);
-    combo("##site", kSite, 4, ssel, 112);
+    combo("##time", kTime, 6, tsel, 104);
+    combo("##res", kRes, 4, rsel, 104);
+    combo("##col", kCol, 3, csel, 100);
+    combo("##site", kSite, 4, ssel, 104);
     filter.timeClass = kTimeKey[tsel], filter.site = kSiteKey[ssel], filter.result = rsel - 1, filter.color = csel - 1;
-    place(112);
-    ImGui::SetNextItemWidth(112);
+    place(100);
+    ImGui::SetNextItemWidth(100);
     if (ImGui::BeginCombo("##tag", filter.tag.empty() ? "Any tag" : filter.tag.c_str())) {
         if (ImGui::Selectable("Any tag", filter.tag.empty())) filter.tag.clear(), libDirty = true;
         for (auto& t : tagList)
@@ -1127,17 +1175,24 @@ void App::Impl::drawLibrary() {
         if (tagList.empty()) ImGui::TextDisabled("No tags yet");
         ImGui::EndCombo();
     }
-    place(ImGui::CalcTextSize("Favorites").x + 42);
+    // chips: "only" filters (star / badge) light up when on; include filters are checkboxes, ticked = shown
+    place(chipW);
     if (toggle("Favorites", filter.favoritesOnly, true)) filter.favoritesOnly = !filter.favoritesOnly, libDirty = true;
-    place(ImGui::CalcTextSize("Bots").x + 24);
-    if (toggle("Bots", showBots)) showBots = !showBots, libDirty = true;
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Include games against bots and coaches (they never count in stats)");
-    place(ImGui::CalcTextSize("Imported").x + 24);
-    if (toggle("Imported", filter.includeImports)) filter.includeImports = !filter.includeImports, libDirty = true;
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Include games you pasted or opened from a PGN file");
-    place(ImGui::CalcTextSize("Brilliant").x + 42);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(filter.favoritesOnly ? "Showing only favorites. Click to show all" : "Show only favorite games");
+    ImGui::SameLine(0, 8);
     if (toggle("Brilliant", filter.brilliantOnly, false, Cls::Brilliant)) filter.brilliantOnly = !filter.brilliantOnly, libDirty = true;
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Games where you played a brilliant move");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(filter.brilliantOnly ? "Showing only games with a brilliant move of yours. Click to show all" : "Show only games where you played a brilliant move");
+    ImGui::SameLine(0, 8);
+    if (checkChip("Bots", showBots)) showBots = !showBots, libDirty = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(showBots ? "Games against bots and coaches are shown (they never count in stats). Click to hide them"
+                                   : "Games against bots and coaches are hidden. Click to show them");
+    ImGui::SameLine(0, 8);
+    if (checkChip("Imported", filter.includeImports)) filter.includeImports = !filter.includeImports, libDirty = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(filter.includeImports ? "Games you pasted or opened from a PGN file are shown. Click to hide them"
+                                                : "Games you pasted or opened from a PGN file are hidden. Click to show them");
     if (filter.ids) {  // from the opening explorer
         std::string chip = "Position after " + (ex.shown.empty() ? std::string("the start") : ex.shown) + "   x";
         place(ImGui::CalcTextSize(chip.c_str()).x + 24);
@@ -1272,31 +1327,40 @@ void App::Impl::drawGameRow(const GameRow& g, float w) {
     else if (hov || starHov) drawStar(dl, sc, 8, starHov ? theme::text : theme::dim, false);
     if (starClick) row.favorite = !row.favorite, saveMeta(row);
 
-    ImGui::PushFont(f.mono, 13);
+    // fixed columns from the right: star | date | accuracy | badges, so rows line up
+    ImGui::PushFont(f.ui, 13);
     std::string date = fmtDate(g.playedAt, true);
     ImVec2 ds = ImGui::CalcTextSize(date.c_str());
-    dl->AddText({right - 36 - ds.x, cy - ds.y / 2}, theme::dim, date.c_str());
-    float accRight = right - 36 - 96;
-    float textLimit;
+    float dateRight = right - 32;
+    dl->AddText({dateRight - ds.x, cy - ds.y / 2}, theme::dim, date.c_str());
+    ImGui::PopFont();
+    float accRight = dateRight - 76 - 16;
+    float textLimit = accRight;
+    ImGui::PushFont(f.mono, 13);
     if (g.reviewDepth > 0) {
         char b[48];
-        auto chip = [&](double acc, bool white, float xr) {
+        // one pill for the user's accuracy (their color is the dot on the second line); both sides, marked, otherwise
+        auto chip = [&](double acc, int side, float xr) {
             if (acc < 0) std::snprintf(b, sizeof b, "–");  // too few moves: n/a
             else std::snprintf(b, sizeof b, "%.1f", acc);
             ImVec2 ts = ImGui::CalcTextSize(b);
-            float x0 = xr - ts.x - 26;
+            float pw = std::max(52.f, ts.x + 20 + (side >= 0 ? 14 : 0)), x0 = xr - pw;
             dl->AddRectFilled({x0, cy - 12}, {xr, cy + 12}, theme::panel2, 6);
-            dl->AddRectFilled({x0 + 8, cy - 4}, {x0 + 16, cy + 4}, white ? theme::evalWhite : theme::evalBlack, 2);
-            if (white) dl->AddRect({x0 + 8, cy - 4}, {x0 + 16, cy + 4}, theme::edge, 2);
-            if (!white) dl->AddRect({x0 + 8, cy - 4}, {x0 + 16, cy + 4}, theme::dim, 2);
-            dl->AddText({x0 + 20, cy - ts.y / 2}, theme::text, b);
+            float tx = x0 + (pw - ts.x - (side >= 0 ? 14 : 0)) / 2 + (side >= 0 ? 14 : 0);
+            if (side >= 0) {
+                ImVec2 dc{tx - 9, cy};
+                dl->AddCircleFilled(dc, 4, side == 0 ? theme::evalWhite : theme::evalBlack, 16);
+                dl->AddCircle(dc, 4, theme::dim, 16, 1);
+            }
+            dl->AddText({tx, cy - ts.y / 2}, acc < 0 ? theme::dim : theme::text, b);
             return x0;
         };
-        if (g.userColor >= 0) textLimit = chip(g.userColor ? g.accBlack : g.accWhite, g.userColor == 0, accRight);
-        else textLimit = chip(g.accWhite, true, chip(g.accBlack, false, accRight) - 6);
+        if (g.userColor >= 0) textLimit = chip(g.userColor ? g.accBlack : g.accWhite, -1, accRight);
+        else textLimit = chip(g.accWhite, 0, chip(g.accBlack, 1, accRight) - 6);
         // brilliant / great badges (the user's side, or both when the user didn't play)
         int nb = g.userColor >= 0 ? g.brilliant(g.userColor) : g.brillWhite + g.brillBlack;
         int ng = g.userColor >= 0 ? g.great(g.userColor) : g.greatWhite + g.greatBlack;
+        textLimit -= 4;
         for (auto [c, n] : {std::pair{Cls::Brilliant, nb}, std::pair{Cls::Great, ng}})
             if (n > 0) {
                 textLimit -= 17;
@@ -1335,12 +1399,13 @@ void App::Impl::drawGameRow(const GameRow& g, float w) {
     name = ellipsize(name, textLimit - x - 60);
     dl->AddText({x, y1}, theme::text, name.c_str());
     float nx = x + ImGui::CalcTextSize(name.c_str()).x + 6;
+    float base = y1 + ImGui::GetFontSize();  // rating shares the name's baseline
     ImGui::PopFont();
     if (elo > 0) {
-        ImGui::PushFont(f.mono, 12);
-        std::string e = "(" + std::to_string(elo) + ")";
-        dl->AddText({nx, y1 + 2}, theme::dim, e.c_str());
-        nx += ImGui::CalcTextSize(e.c_str()).x + 6;
+        ImGui::PushFont(f.ui, 13);
+        std::string e = std::to_string(elo);
+        dl->AddText({nx, base - ImGui::GetFontSize()}, theme::dim, e.c_str());
+        nx += ImGui::CalcTextSize(e.c_str()).x + 8;
         ImGui::PopFont();
     }
     if (g.vsBot && nx + 30 < textLimit) {  // never counts toward stats
@@ -1719,18 +1784,19 @@ void App::Impl::backgroundWork() {
     keepAwake.set(overnight.on);  // also while waiting: the PC has to be awake at the start time
     bool fg = reviewer && reviewer->running();
     bool busy = runner && !runner->status().active.empty();
-    if (!enginePath.empty() && (queueCount > 0 || busy)) {
+    // paused by the user: no runner at all (also right after launch, before a paused one could take a game)
+    if (!enginePath.empty() && (queueCount > 0 || busy) && (!set.analysisPaused || full)) {  // an overnight run goes ahead at its start time
         if (!runner || runnerOvernight != full) {  // (re)start at the right power; claimed games go back and are retaken
             runner = std::make_unique<AnalysisRunner>();
             runner->start(store, book, enginePath, full ? AnalysisPower::overnight() : AnalysisPower::light(), prof->id);
             runnerOvernight = full;
         }
-    } else if (runner && !overnight.on) {
-        runner.reset();  // queue empty: no idle polling
+    } else if (runner && !full) {
+        runner.reset(), runnerOvernight = false;  // queue empty or paused: no idle polling, claimed games go back
     }
     analyzingIds.clear();
     if (runner) {
-        runner->setPaused(analysisPaused || fg);
+        runner->setPaused(fg);
         auto st = runner->status();
         for (auto& a : st.active) analyzingIds.insert(a.gameId);
         for (int64_t id : runner->takeSaved()) {

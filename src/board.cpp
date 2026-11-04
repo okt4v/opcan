@@ -126,6 +126,44 @@ void drawBadge(ImDrawList* dl, ImVec2 c, float r, Cls cls) {
     }
 }
 
+void drawArrowIcon(ImDrawList* dl, ImVec2 c, float r, ArrowIcon icon, ImU32 fill) {
+    const ImU32 white = IM_COL32(255, 255, 255, 255);
+    float t = std::max(1.0f, r * 0.2f);
+    dl->AddCircleFilled(c, r, fill, 24);
+    dl->AddCircle(c, r - 0.5f, white, 24, std::max(1.0f, r * 0.1f));
+    auto P = [&](float x, float y) { return c + ImVec2(x, y) * r; };
+    switch (icon) {
+        case ArrowIcon::Best: {  // star
+            std::vector<ImVec2> p;
+            for (int i = 0; i < 10; i++) {
+                float a = -IM_PI / 2 + i * IM_PI / 5, rr = (i & 1) ? 0.27f : 0.62f;
+                p.push_back(P(std::cos(a) * rr, std::sin(a) * rr + 0.04f));
+            }
+            fillPoly(dl, p, white);
+            break;
+        }
+        case ArrowIcon::Threat:  // "!": something is attacked
+            dl->AddLine(P(0, -0.5f), P(0, 0.12f), white, t * 1.3f);
+            dl->AddCircleFilled(P(0, 0.42f), t * 0.75f, white);
+            break;
+        case ArrowIcon::Fork:  // a three-pronged fork
+            dl->AddLine(P(0, 0.55f), P(0, -0.05f), white, t);
+            dl->AddLine(P(-0.36f, -0.05f), P(0.36f, -0.05f), white, t);
+            for (float x : {-0.36f, 0.f, 0.36f}) dl->AddLine(P(x, -0.05f), P(x, -0.5f), white, t);
+            break;
+        case ArrowIcon::Pin:  // a push pin, tilted
+            dl->AddCircleFilled(P(0.2f, -0.2f), r * 0.27f, white);
+            dl->AddLine(P(-0.2f, -0.28f), P(0.28f, 0.2f), white, t * 1.2f);
+            dl->AddLine(P(0.04f, -0.04f), P(-0.46f, 0.46f), white, t * 0.8f);
+            break;
+        case ArrowIcon::Engine:  // a lightning bolt
+            fillPoly(dl, {P(0.12f, -0.58f), P(-0.32f, 0.08f), P(-0.02f, 0.08f), P(-0.12f, 0.58f), P(0.32f, -0.08f),
+                          P(0.02f, -0.08f)}, white);
+            break;
+        case ArrowIcon::None: break;
+    }
+}
+
 namespace {
 void upload(GLuint t, lunasvg::Bitmap& bm) {
     bm.convertToRGBA();
@@ -550,7 +588,9 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
     all.insert(all.end(), drawnArrows.begin(), drawnArrows.end());
     if (s.rFrom >= 0 && ImGui::IsMouseDown(ImGuiMouseButton_Right) && hoverSq >= 0 && hoverSq != s.rFrom)
         all.push_back({Square(s.rFrom), Square(hoverSq), s.rCol});
+    std::vector<std::pair<ImVec2, Arrow>> icons;  // on top of every arrow
     for (const Arrow& a : all) {
+        ImVec2 iconAt;
         int f0 = a.from.index() & 7, r0 = a.from.index() >> 3, f1 = a.to.index() & 7, r1 = a.to.index() >> 3;
         if (a.from == a.to) continue;
         ImVec2 A = sqPos(a.from.index()) + ImVec2(q, q) * 0.5f, B = sqPos(a.to.index()) + ImVec2(q, q) * 0.5f;
@@ -563,13 +603,17 @@ Move BoardView::draw(const Board& b, float size, Move lastMove, Cls badge, const
             ImVec2 S = A + d1 * (q * 0.28f), H = B - d2 * headL;
             pts = {S + n1 * hw, C + (n1 + n2) * hw, H + n2 * hw, H + n2 * headW, B,
                    H - n2 * headW, H - n2 * hw, C - (n1 + n2) * hw, S - n1 * hw};
+            iconAt = C;
         } else {
             ImVec2 d = norm(B - A), n(-d.y, d.x);
             ImVec2 S = A + d * (q * 0.28f), H = B - d * headL;
             pts = {S + n * hw, H + n * hw, H + n * headW, B, H - n * headW, H - n * hw, S - n * hw};
+            iconAt = (S + H) * 0.5f;
         }
         fillPoly(dl, pts, a.color);
+        if (a.icon != ArrowIcon::None) icons.push_back({iconAt, a});
     }
+    for (auto& [c, a] : icons) drawArrowIcon(dl, c, q * 0.17f, a.icon, a.color | IM_COL32_A_MASK);
 
     // Badge on the destination square's top-right corner.
     if (badge != Cls::None && lastMove.move() != Move::NO_MOVE) {

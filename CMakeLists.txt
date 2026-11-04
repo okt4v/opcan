@@ -6,6 +6,12 @@ endif()
 set(OPCAN_VERSION "" CACHE STRING "Version baked into the app, e.g. 0.2.0 or 0.3.0-beta.1")
 string(REGEX REPLACE "^v" "" OPCAN_VERSION "${OPCAN_VERSION}")  # a tag name works too
 set(_opcan_numeric 0.1.0)
+# local builds: the newest release tag (so a dev build isn't "older" than what's released)
+execute_process(COMMAND git describe --tags --abbrev=0 --match "v[0-9]*" WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                OUTPUT_VARIABLE _opcan_tag OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(_opcan_tag MATCHES "^v([0-9]+\\.[0-9]+\\.[0-9]+)$")
+  set(_opcan_numeric ${CMAKE_MATCH_1})
+endif()
 if(OPCAN_VERSION MATCHES "^([0-9]+\\.[0-9]+\\.[0-9]+)")
   set(_opcan_numeric ${CMAKE_MATCH_1})
 endif()

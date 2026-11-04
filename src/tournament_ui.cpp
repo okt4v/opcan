@@ -160,26 +160,38 @@ void App::Impl::tourneyList() {
     ImGui::TextUnformatted("Tournaments");
     ImGui::PopFont();
     ImGui::TextDisabled("Your events with their games, results and scoreboard.");
+    auto importBtn = [&](ImVec2 sz) {
+        if (ImGui::Button("Import PGN…", sz)) {
+            tourneyCreate("New tournament");
+            tourneyPgnDialog();
+            if (tn.es.empty()) store.deleteTournament(tn.openId), tn.openId = 0, tn.stale = true;  // cancelled
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A whole event's games from a PGN file: the title, place and date come from it");
+    };
+    auto newBtn = [&](ImVec2 sz) {
+        if (accentButton("New tournament", sz)) tourneyCreate("New tournament"), tn.focusName = true;
+    };
     float bw = 150;
-    ImGui::SetCursorScreenPos({p.x + W - bw * 2 - 8, p.y});
-    if (ImGui::Button("Import PGN…", {bw, 34})) {
-        tourneyCreate("New tournament");
-        tourneyPgnDialog();
-        if (tn.es.empty()) store.deleteTournament(tn.openId), tn.openId = 0, tn.stale = true;  // cancelled
-    }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("A whole event's games from a PGN file: the title, place and date come from it");
-    ImGui::SameLine(0, 8);
-    if (accentButton("New tournament", {bw, 34})) tourneyCreate("New tournament"), tn.focusName = true;
-    ImGui::SetCursorScreenPos({p.x, p.y + 64});
-
-    if (tn.list.empty()) {
-        ImGui::Dummy({0, 40});
-        ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
-        ImGui::TextWrapped("No tournaments yet. Start a new one and add your games from the library, import an event's PGN, "
-                           "or type in results to build the scoreboard.");
-        ImGui::PopStyleColor();
+    if (tn.list.empty()) {  // centred: what this page is for, and the two ways in
+        float top = std::max(p.y + 90, p.y + ImGui::GetContentRegionAvail().y * 0.3f);
+        ImGui::PushFont(f.bold, 20);
+        textCentered(dl, {p.x + W / 2, top}, theme::text, "No tournaments yet");
+        ImGui::PopFont();
+        ImGui::PushFont(f.ui, 14);
+        textCentered(dl, {p.x + W / 2, top + 30}, theme::dim, "Add your games from the library, or import a whole event's PGN.");
+        ImGui::PopFont();
+        ImGui::SetCursorScreenPos({p.x + W / 2 - bw - 4, top + 58});
+        newBtn({bw, 36});
+        ImGui::SameLine(0, 8);
+        importBtn({bw, 36});
         return;
     }
+    ImGui::SetCursorScreenPos({p.x + W - bw * 2 - 8, p.y});
+    importBtn({bw, 34});
+    ImGui::SameLine(0, 8);
+    newBtn({bw, 34});
+    ImGui::SetCursorScreenPos({p.x, p.y + 64});
+
     ImGui::BeginChild("tlist", {0, 0});
     float w = ImGui::GetContentRegionAvail().x;
     auto you = tourneyYou();

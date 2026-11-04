@@ -349,6 +349,7 @@ void App::Impl::startPlay() {
     auto s = std::make_unique<PlaySession>();
     s->startFen = playSetup.fen;
     s->board = Board(s->startFen);
+    if (auto g = gameFromFen(s->startFen)) s->line = std::move(*g);
     s->user = playSetup.color;
     s->elo = playSetup.full ? 0 : playSetup.elo;
     const int mins[] = {0, 5, 10, playSetup.minutes};
@@ -381,6 +382,7 @@ void App::Impl::playMove(Move m) {
     if (prefs.speakMoves) speech.say(spokenSan(s.sans.back()));
     s.board.makeMove(m);
     s.moves.push_back(m);
+    if (!s.line.nodes.empty()) s.line.addMove((int)s.line.nodes.size() - 1, m);
     int mover = (int)before.sideToMove();
     if (s.baseMs) s.clockMs[mover] += s.incMs;
     s.end = gameEnd(s.board);
@@ -396,6 +398,7 @@ void App::Impl::updatePlay() {
     auto& s = *play;
     double now = ImGui::GetTime();
     animUntil = now + 0.1;  // clocks tick, engine replies arrive
+    liveCls(s.line, s.clsMemo, (int)s.line.nodes.size() - 1, true, false);  // the latest move, both sides, the last one too
     if (s.end) return;
     const int stm = (int)s.board.sideToMove();
     if (s.baseMs) {
@@ -520,7 +523,7 @@ void App::Impl::drawPlayBoard(ImVec2 avail) {
     ImVec2 bp = ImGui::GetCursorScreenPos();
     board.interactive = !s.end;
     Move last = s.moves.empty() ? Move::NO_MOVE : s.moves.back();
-    Move mv = board.draw(s.board, size, last, Cls::None, {});
+    Move mv = board.draw(s.board, size, last, liveCls(s.line, s.clsMemo, (int)s.line.nodes.size() - 1, false, false), {});
     board.interactive = true;
     if (mv != Move::NO_MOVE && (int)s.board.sideToMove() == s.user && !s.end) playMove(mv);
     if (s.end) {  // result banner over the board
@@ -596,14 +599,24 @@ void App::Impl::drawPlayPanel() {
         bool whiteMove = (i % 2 == 0) != blackFirst;
         std::string t = whiteMove ? std::to_string(num) + ". " + s.sans[i] : (i == 0 ? std::to_string(num) + "... " : "") + s.sans[i];
         if (!whiteMove) num++;
+        Cls c = liveCls(s.line, s.clsMemo, (int)i + 1, false, false);  // node i + 1 = this move
+        bool mark = c != Cls::None && c != Cls::Best && c != Cls::Excellent && c != Cls::Good;
         ImVec2 ts = ImGui::CalcTextSize(t.c_str());
+        if (mark) ts.x += 18;
         if (i) {
             ImGui::SameLine(0, whiteMove ? 12 : 6);
             if (ImGui::GetCursorPosX() + ts.x > right) ImGui::NewLine();
         }
-        ImGui::PushStyleColor(ImGuiCol_Text, i + 1 == s.sans.size() ? theme::text : theme::soft);
+        ImGui::PushStyleColor(ImGuiCol_Text, isBad(c) ? theme::clsText(c) : i + 1 == s.sans.size() ? theme::text : theme::soft);
         ImGui::TextUnformatted(t.c_str());
         ImGui::PopStyleColor();
+        if (mark) {  // after the move, like a !! or ?? annotation
+            ImGui::SameLine(0, 4);
+            ImVec2 bp = ImGui::GetCursorScreenPos();
+            float lh = ImGui::GetTextLineHeight();
+            drawBadge(ImGui::GetWindowDrawList(), {bp.x + 7, bp.y + lh / 2}, 7, c);
+            ImGui::Dummy({14, lh});
+        }
         if (i + 1 == s.sans.size()) ImGui::SetScrollHereY(1);
     }
     if (s.sans.empty()) ImGui::TextDisabled("No moves yet.");

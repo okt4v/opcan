@@ -2,7 +2,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <condition_variable>
+#include <mutex>
 #include <thread>
+#include <unordered_map>
 
 using namespace chess;
 
@@ -16,6 +19,7 @@ constexpr double kMateBlunderMinBefore = 5;  // allowing mate from below this wi
 constexpr double kBrilliantMaxLoss = 2;
 constexpr double kBrilliantMinAfter = 50;
 constexpr double kBrilliantMaxBefore = 97;
+constexpr int kBrilliantMateMax = 5;  // a sacrifice that keeps a mate in this many is brilliant even when winning
 constexpr int kEndgamePieces = 6, kOpeningPieces = 10, kOpeningMaxPly = 20, kOpeningNoBookPly = 16;
 
 const char* clsName(Cls c) {
@@ -63,10 +67,9 @@ Bitboard attackersTo(const Board& b, Square sq, Bitboard occ) {
            occ;
 }
 
-// Static exchange: material the side to move wins by capturing on sq (0 if it shouldn't). Ignores pins.
-int see(const Board& b, Square sq) {
+// Static exchange: material `side` wins by capturing on sq (0 if it shouldn't). Ignores pins.
+int see(const Board& b, Square sq, Color side) {
     Bitboard occ = b.occ();
-    Color side = b.sideToMove();
     auto lva = [&](Color c, int& from, int& val) {
         auto att = attackersTo(b, sq, occ) & b.us(c);
         for (int pt = 0; pt < 6; pt++)
@@ -91,8 +94,11 @@ int see(const Board& b, Square sq) {
 }
 
 // After the mover's move m (from `before`), does the mover leave a minor-or-better piece en prise
-// for more than it just captured?
+// for more than it just captured? Only pieces the opponent can legally take now count (a check usually can't be
+// answered by taking the hanging piece).
 bool isSacrifice(const Board& before, const Board& after, Move m) {
+    Movelist caps;
+    movegen::legalmoves<movegen::MoveGenType::CAPTURE>(caps, after);
     int captured = m.typeOf() == Move::ENPASSANT ? 100
                    : m.typeOf() == Move::CASTLING ? 0
                                                   : pieceValue(before.at<PieceType>(m.to()));
@@ -102,11 +108,69 @@ bool isSacrifice(const Board& before, const Board& after, Move m) {
         int sq = own.lsb();
         own &= ~Bitboard::fromSquare(sq);
         int v = pieceValue(after.at<PieceType>(Square(sq)));
-        if (v > captured && see(after, Square(sq)) > 0) return true;
+        if (v > captured && see(after, Square(sq), after.sideToMove()) > 0 &&
+            std::any_of(caps.begin(), caps.end(), [&](Move c) { return c.to().index() == sq; }))
+            return true;
     }
     return false;
 }
 
+bool isKing(const Board& b, Square sq) { return b.at<PieceType>(sq) == PieceType::KING; }
+}  // namespace
+
+std::vector<Tactic> findTactics(const Board& b) {
+    std::vector<Tactic> out;
+    Bitboard occ = b.occ();
+    Color stm = b.sideToMove(), mover = ~stm;
+    auto val = [&](Square sq) { return pieceValue(b.at<PieceType>(sq)); };
+    auto squares = [](Bitboard x) {
+        std::vector<Square> v;
+        while (x) v.push_back(Square(x.pop()));
+        return v;
+    };
+    // forks: a piece of the side that just moved, safe where it stands, hits two of: the king, a piece worth more
+    // than it, an undefended piece
+    for (Square f : squares(b.us(mover) & ~b.pieces(PieceType::KING))) {
+        if (see(b, f, stm) > 0) continue;
+        PieceType pt = b.at<PieceType>(f);
+        Bitboard att = pt == PieceType::PAWN     ? attacks::pawn(mover, f)
+                       : pt == PieceType::KNIGHT ? attacks::knight(f)
+                       : pt == PieceType::BISHOP ? attacks::bishop(f, occ)
+                       : pt == PieceType::ROOK   ? attacks::rook(f, occ)
+                                                 : attacks::queen(f, occ);
+        std::vector<Square> hit;
+        for (Square t : squares(att & b.us(stm) & ~b.pieces(PieceType::PAWN)))
+            if (isKing(b, t) || val(t) > val(f) || !(attackersTo(b, t, occ) & b.us(stm))) hit.push_back(t);
+        if (hit.size() >= 2)
+            for (Square t : hit) out.push_back({Tactic::Fork, f, t});
+    }
+    // pins (both sides): a slider, an enemy piece it can't be taken by, and behind it the king or something worth more
+    for (Square s : squares(b.occ() & (b.pieces(PieceType::BISHOP) | b.pieces(PieceType::ROOK) | b.pieces(PieceType::QUEEN)))) {
+        Color us = b.at(s).color();
+        PieceType pt = b.at<PieceType>(s);
+        for (bool diag : {true, false}) {
+            if ((diag && pt == PieceType::ROOK) || (!diag && pt == PieceType::BISHOP)) continue;
+            auto ray = [&](Bitboard o) { return diag ? attacks::bishop(s, o) : attacks::rook(s, o); };
+            Bitboard seen = ray(occ);
+            for (Square y : squares(seen & b.us(~us) & ~b.pieces(PieceType::KING))) {
+                Bitboard yb = Bitboard::fromSquare(y);
+                if (attackersTo(b, s, occ) & yb) continue;  // it just takes the pinner
+                for (Square z : squares(ray(occ & ~yb) & ~seen & b.us(~us)))
+                    if (isKing(b, z) || val(z) > val(y)) out.push_back({Tactic::Pin, s, z});
+            }
+        }
+    }
+    // threats: the side to move's pieces the other side wins material by taking, from the cheapest attacker
+    for (Square t : squares(b.us(stm) & ~b.pieces(PieceType::KING))) {
+        if (see(b, t, mover) <= 0) continue;
+        auto att = squares(attackersTo(b, t, occ) & b.us(mover));
+        Square from = *std::min_element(att.begin(), att.end(), [&](Square x, Square y) { return val(x) < val(y); });
+        out.push_back({Tactic::Threat, from, t});
+    }
+    return out;
+}
+
+namespace {
 int nonPawnPieces(const Board& b) {
     return (b.occ() & ~b.pieces(PieceType::PAWN) & ~b.pieces(PieceType::KING)).count();
 }
@@ -150,6 +214,64 @@ Phase phaseAfter(const Board& after, int moveIndex, bool bookMove, Phase prev) {
                   ? Opening
                   : Middlegame;
     return std::max(prev, p);
+}
+
+Cls classifyMove(const Board& before, Move m, const PosEval& e, const PosEval& next, bool book, Move prev,
+                 const Board& prevBefore, Cls prevCls) {
+    if (book) return Cls::Book;
+    Board after = before;
+    after.makeMove(m);
+    double wpBefore = winPercent(e.best), wpAfter = 100 - winPercent(next.best);
+    double loss = std::max(0.0, wpBefore - wpAfter);
+    bool isBest = uci::moveToUci(m) == e.bestUci;
+    Cls cl = isBest ? Cls::Best
+             : loss <= kExcellent ? Cls::Excellent
+             : loss <= kGood ? Cls::Good
+             : loss <= kInaccuracy ? Cls::Inaccuracy
+             : loss <= kMistake ? Cls::Mistake
+                                : Cls::Blunder;
+    // throwing away a forced mate is at least a Mistake
+    Score nx = next.best;
+    bool stillMate = nx.mated || nx.mate < 0;
+    if (!isBest && e.best.mate > 0 && !stillMate && (cl == Cls::Excellent || cl == Cls::Good || cl == Cls::Inaccuracy))
+        cl = Cls::Mistake;
+    // walking into a forced mate is a Blunder (chess.com), unless already hopelessly lost
+    bool mateAgainstBefore = e.best.mated || e.best.mate < 0, mateAgainstAfter = nx.mate > 0;
+    if (!mateAgainstBefore && mateAgainstAfter && wpBefore >= kMateBlunderMinBefore) cl = Cls::Blunder;
+    bool first = prev == Move::NO_MOVE;
+    if (bad(cl)) {
+        bool chance = wpBefore >= kMissChance || e.best.mate > 0;
+        bool opening = (!first && bad(prevCls)) || e.best.mate > 0;
+        if (chance && opening && wpAfter >= kMissNotLosing) cl = Cls::Miss;
+    }
+    if (isBest && e.hasSecond) {
+        double wb = winPercent(e.best), ws = winPercent(e.second);
+        bool recapture = !first && before.isCapture(m) && prevBefore.isCapture(prev) && prev.to() == m.to();
+        // includes mating moves: like chess.com, a mate that is the only way to win is Great
+        if (wb - ws >= kGreatGap && ws < kGreatSecondMax && !recapture) cl = Cls::Great;
+    }
+    // not already totally winning, unless the sacrifice is the only way to keep it that way or forces a quick mate
+    // (chess.com: leaving a rook hanging to mate in 3 is brilliant even when other moves win too)
+    bool quickMate = e.best.mate > 0 && e.best.mate <= kBrilliantMateMax && stillMate;
+    bool trivial = wpBefore >= kBrilliantMaxBefore && !(e.hasSecond && winPercent(e.second) < kBrilliantMaxBefore) &&
+                   !quickMate;
+    Movelist legal;
+    movegen::legalmoves(legal, before);
+    if ((isBest || loss <= kBrilliantMaxLoss) && wpAfter >= kBrilliantMinAfter && !trivial && isSacrifice(before, after, m) &&
+        legal.size() > 1)
+        cl = Cls::Brilliant;
+    if (legal.size() == 1) cl = Cls::Forced;
+    return cl;
+}
+
+PosEval toPosEval(const std::vector<PvLine>& lines) {
+    PosEval pe;
+    if (lines.empty()) return pe;
+    pe.best = lines[0].score;
+    pe.pv = lines[0].pv;
+    if (!pe.pv.empty()) pe.bestUci = pe.pv[0];
+    if (lines.size() > 1 && !lines[1].pv.empty()) pe.hasSecond = true, pe.second = lines[1].score;
+    return pe;
 }
 
 ReviewResult buildReview(const Game& game, const std::vector<PosEval>& evals, const Openings& book) {
@@ -198,55 +320,10 @@ ReviewResult buildReview(const Game& game, const std::vector<PosEval>& evals, co
                 b.makeMove(pm);
             }
         }
-        double loss = std::max(0.0, mr.wpBefore - mr.wpAfter);
-        bool isBest = uci::moveToUci(m) == e.bestUci;
-
         allBook = allBook && book.isBook(after);
-        if (allBook) {
-            mr.cls = Cls::Book;
-        } else {
-            Cls cl = isBest ? Cls::Best
-                     : loss <= kExcellent ? Cls::Excellent
-                     : loss <= kGood ? Cls::Good
-                     : loss <= kInaccuracy ? Cls::Inaccuracy
-                     : loss <= kMistake ? Cls::Mistake
-                                        : Cls::Blunder;
-            // throwing away a forced mate is at least a Mistake
-            Score nx = evals[i + 1].best;
-            bool stillMate = nx.mated || nx.mate < 0;
-            if (!isBest && e.best.mate > 0 && !stillMate && (cl == Cls::Excellent || cl == Cls::Good || cl == Cls::Inaccuracy))
-                cl = Cls::Mistake;
-            // walking into a forced mate is a Blunder (chess.com), unless already hopelessly lost
-            bool mateAgainstBefore = e.best.mated || e.best.mate < 0, mateAgainstAfter = nx.mate > 0;
-            if (!mateAgainstBefore && mateAgainstAfter && mr.wpBefore >= kMateBlunderMinBefore) cl = Cls::Blunder;
-            if (bad(cl)) {
-                bool chance = mr.wpBefore >= kMissChance || e.best.mate > 0;
-                bool opening = (i > 0 && bad(r.moves[i - 1].cls)) || e.best.mate > 0;
-                if (chance && opening && mr.wpAfter >= kMissNotLosing) cl = Cls::Miss;
-            }
-            if (isBest && e.hasSecond) {
-                double wb = winPercent(e.best), ws = winPercent(e.second);
-                bool recapture = false;
-                if (i > 0 && before.isCapture(m)) {
-                    Move pm = game.nodes[r.line[i]].move;
-                    recapture = boards[i - 1].isCapture(pm) && pm.to() == m.to();
-                }
-                // includes mating moves: like chess.com, a mate that is the only way to win is Great
-                if (wb - ws >= kGreatGap && ws < kGreatSecondMax && !recapture) cl = Cls::Great;
-            }
-            // not already totally winning, unless the sacrifice is the only way to keep it that way
-            bool trivial = mr.wpBefore >= kBrilliantMaxBefore && !(e.hasSecond && winPercent(e.second) < kBrilliantMaxBefore);
-            if ((isBest || loss <= kBrilliantMaxLoss) && mr.wpAfter >= kBrilliantMinAfter && !trivial &&
-                isSacrifice(before, after, m)) {
-                Movelist ml;
-                movegen::legalmoves(ml, before);
-                if (ml.size() > 1) cl = Cls::Brilliant;
-            }
-            Movelist legal;
-            movegen::legalmoves(legal, before);
-            if (legal.size() == 1) cl = Cls::Forced;
-            mr.cls = cl;
-        }
+        Move prev = i > 0 ? game.nodes[r.line[i]].move : Move::NO_MOVE;
+        mr.cls = classifyMove(before, m, e, evals[i + 1], allBook, prev, i > 0 ? boards[i - 1] : before,
+                              i > 0 ? r.moves[i - 1].cls : Cls::None);
 
         phase = mr.phase = phaseAfter(after, (int)i, mr.cls == Cls::Book, phase);
         phaseSum[c][phase] += mr.accuracy;
@@ -337,11 +414,7 @@ void Reviewer::start(const Game& game, const std::string& enginePath, int depth,
                     im->cancel = true;
                     break;
                 }
-                PosEval pe;
-                pe.best = lines[0].score;
-                pe.pv = lines[0].pv;
-                if (!pe.pv.empty()) pe.bestUci = pe.pv[0];
-                if (lines.size() > 1 && !lines[1].pv.empty()) pe.hasSecond = true, pe.second = lines[1].score;
+                PosEval pe = toPosEval(lines);
                 {
                     std::lock_guard l(im->mu);
                     im->evals[i] = std::move(pe);
@@ -427,4 +500,71 @@ std::string annotatedPgn(const Game& src, const ReviewResult* rev, const PgnExpo
         }
     }
     return g.pgn();
+}
+
+struct PosEvalCache::Impl {
+    mutable std::mutex mu;
+    std::condition_variable cv;
+    std::unordered_map<std::string, PosEval> known;
+    std::vector<std::string> todo;  // stack: the newest request first
+    std::string busy;               // being searched
+    bool stop = false;
+    std::thread th;
+};
+
+PosEvalCache::~PosEvalCache() { stop(); }
+
+void PosEvalCache::stop() {
+    if (!impl_) return;
+    {
+        std::lock_guard l(impl_->mu);
+        impl_->stop = true;
+    }
+    impl_->cv.notify_all();
+    impl_->th.join();  // the search in flight finishes first: a short fixed depth
+    impl_.reset();
+}
+
+void PosEvalCache::start(const std::string& enginePath, int depth) {
+    stop();
+    impl_ = std::make_shared<Impl>();
+    impl_->th = std::thread([im = impl_.get(), enginePath, depth] {
+        UciProcess eng;
+        if (!eng.start(enginePath, 1, 64)) return;
+        for (;;) {
+            std::string fen;
+            {
+                std::unique_lock l(im->mu);
+                im->cv.wait(l, [&] { return im->stop || !im->todo.empty(); });
+                if (im->stop) return;
+                fen = std::move(im->todo.back());
+                im->todo.pop_back();
+                im->busy = fen;
+            }
+            auto lines = analyse(eng, fen, depth, 2);
+            if (lines.empty()) return;  // the engine died
+            std::lock_guard l(im->mu);
+            im->known[fen] = toPosEval(lines);
+            im->busy.clear();
+        }
+    });
+}
+
+void PosEvalCache::request(const std::string& fen) {
+    if (!impl_) return;
+    {
+        std::lock_guard l(impl_->mu);
+        if (impl_->known.count(fen) || impl_->busy == fen) return;
+        std::erase(impl_->todo, fen);
+        impl_->todo.push_back(fen);  // to the top: what's on the board now goes first
+    }
+    impl_->cv.notify_one();
+}
+
+std::optional<PosEval> PosEvalCache::get(const std::string& fen) const {
+    if (!impl_) return std::nullopt;
+    std::lock_guard l(impl_->mu);
+    auto it = impl_->known.find(fen);
+    if (it == impl_->known.end()) return std::nullopt;
+    return it->second;
 }

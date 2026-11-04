@@ -147,7 +147,9 @@ void App::Impl::loadSettings() {
     s.engineLines = num("engineLines", s.engineLines);
     s.bestArrow = num("bestArrow", s.bestArrow);
     s.threatArrow = num("threatArrow", s.threatArrow);
+    s.tacticArrows = num("tacticArrows", s.tacticArrows);
     s.autoAnalyze = num("autoAnalyze", s.autoAnalyze);
+    s.analysisPaused = num("analysisPaused", s.analysisPaused);
     set = s;
     syzygyPath = store.setting("syzygyPath");
     applyTablebases();  // sets SyzygyPath (the engine isn't resolved yet, so nothing restarts)
@@ -163,7 +165,9 @@ void App::Impl::saveSettings() {
     put("engineLines", set.engineLines);
     put("bestArrow", set.bestArrow);
     put("threatArrow", set.threatArrow);
+    put("tacticArrows", set.tacticArrows);
     put("autoAnalyze", set.autoAnalyze);
+    put("analysisPaused", set.analysisPaused);
 }
 
 // ---------- per-profile preferences ----------
@@ -294,11 +298,42 @@ void App::Impl::resolveEngine() {
     enginePath = set.enginePath.empty() ? findEngine() : set.enginePath;
     live.reset();
     if (enginePath.empty()) return notify("No chess engine found. Set one in Settings");
+    liveEvals.start(enginePath, set.reviewDepth);
     live = std::make_unique<LiveAnalyzer>();
     if (!live->start(enginePath, set.liveThreads, 256, 3)) {
         live.reset();
         notify("Engine failed to start: " + enginePath);
     }
+}
+
+Cls App::Impl::liveCls(const Game& g, std::unordered_map<int, Cls>& memo, int n, bool ask, bool withReview) {
+    if (n <= 0 || n >= (int)g.nodes.size()) return Cls::None;
+    if (withReview && review)
+        if (auto* mr = review->forNode(n)) return mr->cls;
+    if (auto it = memo.find(n); it != memo.end()) return it->second;
+    int par = g.nodes[n].parent;
+    auto evalAt = [&](int k) -> std::optional<PosEval> {
+        if (withReview && review)
+            if (auto it = lineIdx.find(k); it != lineIdx.end()) return review->evals[it->second];
+        if (ask) liveEvals.request(g.nodes[k].fen);
+        return liveEvals.get(g.nodes[k].fen);
+    };
+    auto e = evalAt(par), next = evalAt(n);
+    if (!e || !next) return Cls::None;
+    auto path = g.path(n);  // root..n: the positions before n's move and its parent's, and whether all of it was book
+    Board before = g.board(0), prevBefore = before;
+    bool inBook = true;
+    for (size_t i = 1; i < path.size(); i++) {
+        Board after = before;
+        after.makeMove(g.nodes[path[i]].move);
+        inBook = inBook && book.isBook(after);
+        if (i + 1 < path.size()) prevBefore = before, before = after;
+    }
+    Move prev = par ? g.nodes[par].move : Move::NO_MOVE;
+    Cls prevCls = par ? liveCls(g, memo, par, false, withReview) : Cls::None;
+    Cls c = classifyMove(before, g.nodes[n].move, *e, *next, inBook, prev, prevBefore, prevCls);
+    if (!par || prevCls != Cls::None) memo[n] = c;  // else a Miss may still show up once the move before is known
+    return c;
 }
 
 // ---------- loading ----------
@@ -346,6 +381,7 @@ void App::Impl::open(Game g, int64_t id) {
     review.reset();
     reviewer.reset();
     reviewErr.clear();
+    clsMemo.clear();
     computeSpent();
     cur = 0;
     auto ml = game->mainline();
@@ -703,6 +739,7 @@ void App::Impl::updateEval() {
         if ((!reviewed && !busy) || set.engineLines || coachWantsLive()) live->setPosition(game->nodes[cur].fen, set.liveDepth);
         else live->halt();
     }
+    if (!reviewed && !(reviewer && reviewer->running())) liveCls(*game, clsMemo, cur, true, true);  // a move off the review
     std::optional<Score> s;
     if (reviewed) s = review->evals[lineIdx[cur]].best;
     else if (live) {
@@ -734,8 +771,10 @@ void App::Impl::drawSidebar(float w) {
     if (slim) {
         dl->AddCircleFilled({p.x + iw / 2, p.y + 12}, 5, theme::accent);
     } else {
-        ImGui::PushFont(f.mono, 22);
-        dl->AddText({p.x + 8, p.y}, theme::text, "opcan");
+        ImGui::PushFont(f.bold, 24);  // wordmark: the splash's bold name with its accent underline
+        ImVec2 ts = ImGui::CalcTextSize("opcan");
+        dl->AddText({p.x + 10, p.y - 5}, theme::text, "opcan");
+        dl->AddRectFilled({p.x + 10, p.y + ts.y - 1}, {p.x + 10 + ts.x * 0.4f, p.y + ts.y + 2}, theme::accent, 2);
         ImGui::PopFont();
     }
     ImGui::Dummy({iw, 40});
@@ -746,10 +785,10 @@ void App::Impl::drawSidebar(float w) {
         Icon icon;
         const char* label;
         int act;  // 0 library, 1 analyze, 2 stats, 3 settings, 4 openings, 5 train, 7 tournaments, 8 social (6: navRect's profile)
-    } items[] = {{Icon::Library, "Library", 0}, {Icon::Analyze, "Analyze", 1}, {Icon::Openings, "Openings", 4},
-                 {Icon::Train, "Train", 5}, {Icon::Tournaments, "Tournaments", 7}, {Icon::Stats, "Stats", 2},
-                 {Icon::Share, "Social", 8}, {Icon::Settings, "Settings", 3}};
-    for (auto& it : items) {
+    } items[] = {{Icon::Library, "Library", 0}, {Icon::Analyze, "Analyze", 1}, {Icon::Stats, "Stats", 2},
+                 {Icon::Openings, "Openings", 4}, {Icon::Train, "Train", 5}, {Icon::Tournaments, "Tournaments", 7},
+                 {Icon::Share, "Social", 8}, {Icon::Settings, "Settings", 3}};  // Settings: pinned above the profile
+    auto navItem = [&](const Item& it) {
         ImGui::PushID(it.act);
         p = ImGui::GetCursorScreenPos();
         bool disabled = (it.act == 2 || it.act == 4 || it.act == 5 || it.act == 7) && prof && prof->guest;
@@ -784,28 +823,41 @@ void App::Impl::drawSidebar(float w) {
         }
         ImGui::Dummy({0, 2});
         ImGui::PopID();
-    }
+    };
+    for (auto& it : items)
+        if (it.act != 3) navItem(it);
 
-    // bottom: background status + profile
+    // bottom: background status, Settings, profile
     float bottom = wp.y + ws.y - 20;
-    float y = std::max(bottom - 48, ImGui::GetCursorScreenPos().y + 38);  // short windows: below the nav, not over it
+    float y = std::max(bottom - 48, ImGui::GetCursorScreenPos().y + 38 + 30 + 44);  // short windows: below the nav, not over it
+    ImGui::SetCursorScreenPos({wp.x + 12, y - 44});
+    navItem(items[7]);
+    y -= 44;  // the status line sits above Settings
     std::string status;
+    bool paused = false;
     if (syncer && syncer->running()) status = "Syncing…";
     else if (overnight.on && overnight.startAt > std::time(nullptr)) status = "Overnight run waiting…";
     else if (runner && !runner->paused() && queueCount > 0)
         status = "Analyzing " + std::to_string(queueCount) + (queueCount == 1 ? " game…" : " games…");
-    else if (queueCount > 0) status = std::to_string(queueCount) + " queued (paused)";
+    else if (queueCount > 0) status = std::to_string(queueCount) + " queued (paused)", paused = true;
     if (!status.empty()) {
         ImGui::PushFont(f.ui, 13);
         float sy = y - 30;
-        spinner(dl, {slim ? p.x + iw / 2 : wp.x + 26, sy + 9}, 6, theme::accent);
+        ImVec2 ic{slim ? p.x + iw / 2 : wp.x + 26, sy + 9};
+        if (paused) {  // two still bars, not a spinner: nothing is running
+            dl->AddRectFilled({ic.x - 5, ic.y - 6}, {ic.x - 1.5f, ic.y + 6}, theme::dim, 1);
+            dl->AddRectFilled({ic.x + 1.5f, ic.y - 6}, {ic.x + 5, ic.y + 6}, theme::dim, 1);
+        } else {
+            spinner(dl, ic, 6, theme::accent);
+        }
         if (!slim) dl->AddText({wp.x + 40, sy + 9 - ImGui::GetFontSize() / 2}, theme::dim, status.c_str());
         ImGui::SetCursorScreenPos({wp.x + 12, sy});
         if (ImGui::InvisibleButton("status", {iw, 18}) && !(syncer && syncer->running())) showAnalysis = true;  // the queue
-        if (ImGui::IsItemHovered() && (slim || syncer->running())) ImGui::SetTooltip("%s", syncer && syncer->running() && !syncer->status().empty() ? syncer->status().c_str() : status.c_str());
+        if (ImGui::IsItemHovered() && (slim || (syncer && syncer->running()))) ImGui::SetTooltip("%s", syncer && syncer->running() && !syncer->status().empty() ? syncer->status().c_str() : status.c_str());
         ImGui::PopFont();
-        animUntil = ImGui::GetTime() + 0.1;
+        if (!paused) animUntil = ImGui::GetTime() + 0.1;
     }
+    y += 44;
     ImGui::SetCursorScreenPos({wp.x + 12, y});
     p = ImGui::GetCursorScreenPos();
     navRect[6] = {p.x, p.y, p.x + iw, p.y + 48};
@@ -860,18 +912,19 @@ void App::Impl::drawHome() {
     ImGui::PopFont();
     ImGui::Dummy({0, 8});
     if (accentButton("Review game", {w, 40}) && !paste.empty()) loadText(paste);
-    float hw = (w - 8) / 2;
+    float hw = (w - 16) / 3;  // the other ways in, one row
     if (ImGui::Button("Analysis board", {hw, 36})) open(*gameFromFen(Board().getFen()));
     ImGui::SameLine(0, 8);
     if (ImGui::Button("Open PGN file…", {hw, 36})) openFileDialog();
-    if (ImGui::Button("Set up position", {w, 36})) openPosEditor("", false);
+    if (ImGui::IsItemHovered() && !keyHint(Act::Open).empty()) ImGui::SetTooltip("%s", keyHint(Act::Open).c_str());
+    ImGui::SameLine(0, 8);
+    if (ImGui::Button("Set up position", {hw, 36})) openPosEditor("", false);
     if (game && ImGui::Button("Back to current game", {w, 36})) view = review || reviewer ? View::Summary : View::Review;
     ImGui::Dummy({0, 16});
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + w);
     ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
-    ImGui::TextWrapped("%s pastes anywhere  ·  %s opens a file  ·  drop a .pgn on the window  ·  %s shows shortcuts",
-                       keyHint(Act::Paste).c_str(), keyHint(Act::Open).c_str(),
-                       keyHint(Act::Help).c_str());
+    ImGui::TextWrapped("%s pastes anywhere  ·  drop a .pgn on the window  ·  %s for shortcuts",
+                       keyHint(Act::Paste).c_str(), keyHint(Act::Help).c_str());
     if (enginePath.empty()) ImGui::TextWrapped("No engine found. Open Settings with %s", keyHint(Act::Settings).c_str());
     ImGui::PopStyleColor();
     ImGui::PopTextWrapPos();
@@ -942,8 +995,7 @@ void App::Impl::drawBoardArea(ImVec2 avail) {
     ImGui::SetCursorPos({x0, y0 + kStripH});
     drawEvalBar(kBarW, boardSize);
     ImGui::SetCursorPos({x0 + kBarW + kGap, y0 + kStripH});
-    auto* mr = curReview();
-    Cls badge = mr ? mr->cls : Cls::None;
+    Cls badge = nodeCls(cur);
     if (retry.on) {  // no arrows or engine hints while the user looks for the move
         badge = retry.phase == RetryState::Correct ? (retry.san == review->forNode(retry.node)->bestSan ? Cls::Best : Cls::Excellent) : Cls::None;
         board.interactive = retry.phase == RetryState::Waiting || (retry.phase == RetryState::Wrong && retry.revertAt == 0);
@@ -1009,19 +1061,30 @@ void App::Impl::drawDocked() {
 
 std::vector<Arrow> App::Impl::arrows() {
     std::vector<Arrow> out;
-    auto add = [&](const std::string& u, ImU32 c) {
-        if (u.size() >= 4) out.push_back({Square(u.substr(0, 2)), Square(u.substr(2, 2)), c});
+    auto addSq = [&](Square from, Square to, ImU32 c, ArrowIcon icon) {
+        bool dup = std::any_of(out.begin(), out.end(), [&](const Arrow& a) { return a.from == from && a.to == to; });
+        if (!dup) out.push_back({from, to, c, icon});  // the first one (best, refutation) wins
+    };
+    auto add = [&](const std::string& u, ImU32 c, ArrowIcon icon) {
+        if (u.size() >= 4) addSq(Square(u.substr(0, 2)), Square(u.substr(2, 2)), c, icon);
     };
     if (auto* mr = curReview()) {
         bool show = isBad(mr->cls) || mr->cls == Cls::Excellent || mr->cls == Cls::Good;
-        if (set.bestArrow && show) add(mr->bestUci, theme::arrowBest);
-        if (set.threatArrow && isBad(mr->cls) && lineIdx.count(cur)) add(review->evals[lineIdx[cur]].bestUci, theme::arrowThreat);
+        if (set.bestArrow && show) add(mr->bestUci, theme::arrowBest, ArrowIcon::Best);
+        if (set.threatArrow && isBad(mr->cls) && lineIdx.count(cur))
+            add(review->evals[lineIdx[cur]].bestUci, theme::arrowThreat, ArrowIcon::Threat);
     }
     if (set.engineLines && live) {
         auto s = live->snapshot();
         if (s.fen == game->nodes[cur].fen && !s.lines.empty() && !s.lines[0].pv.empty())
-            add(s.lines[0].pv[0], theme::arrowEngine);
+            add(s.lines[0].pv[0], theme::arrowEngine, ArrowIcon::Engine);
     }
+    if (set.tacticArrows || set.threatArrow)
+        for (auto& t : findTactics(game->board(cur))) {
+            if (t.kind == Tactic::Fork && set.tacticArrows) addSq(t.from, t.to, theme::arrowFork, ArrowIcon::Fork);
+            if (t.kind == Tactic::Pin && set.tacticArrows) addSq(t.from, t.to, theme::arrowPin, ArrowIcon::Pin);
+            if (t.kind == Tactic::Threat && set.threatArrow) addSq(t.from, t.to, theme::arrowThreat, ArrowIcon::Threat);
+        }
     std::vector<Arrow> chat;
     board.marks.clear();
     coachAnnotations(chat, board.marks);  // the chat's board tags (and a hovered chip) replace the review arrows
@@ -1089,9 +1152,11 @@ void App::Impl::drawEvalBar(float w, float h) {
                                           wh > h - 5 ? ImDrawFlags_RoundCornersAll : ImDrawFlags_RoundCornersBottom);
     else dl->AddRectFilled(p, {p.x + w, p.y + wh}, theme::evalWhite, 5,
                            wh > h - 5 ? ImDrawFlags_RoundCornersAll : ImDrawFlags_RoundCornersTop);
-    ImGui::PushFont(f.mono, 11);
     std::string t = evalText;
     if (!t.empty() && (t[0] == '+' || t[0] == '-') && t != "-") t = t.substr(1);
+    float fs = 13;  // as large as the bar's width allows
+    while (fs > 9 && f.bold->CalcTextSizeA(fs, FLT_MAX, 0, t.c_str()).x > w - 4) fs--;
+    ImGui::PushFont(f.bold, fs);
     ImVec2 ts = ImGui::CalcTextSize(t.c_str());
     bool whiteAhead = evalTarget >= 50;
     bool atBottom = whiteAhead != board.flipped;
@@ -1119,19 +1184,27 @@ void App::Impl::drawPanel() {
     ImGui::PopFont();
     float right = ImGui::GetWindowContentRegionMax().x;
     ImGui::SameLine();
-    float pw = ImGui::CalcTextSize("Play vs engine").x + 20, ew = ImGui::CalcTextSize("Edit").x + 20, sw = ImGui::CalcTextSize("Share").x + 20;
+    // full labels when they fit beside the back button, short ones in a narrow panel
+    auto bw3 = [](const char* a, const char* b, const char* c) {
+        return ImGui::CalcTextSize(a).x + ImGui::CalcTextSize(b).x + ImGui::CalcTextSize(c).x + 60 + 28 + 18;
+    };
+    bool full = right - ImGui::GetCursorPosX() - 12 >= bw3("Share", "Edit position", "Play vs engine");
+    const char* el = full ? "Edit position" : "Edit";
+    const char* pl = full ? "Play vs engine" : "Play";
+    float pw = ImGui::CalcTextSize(pl).x + 20, ew = ImGui::CalcTextSize(el).x + 20, sw = ImGui::CalcTextSize("Share").x + 20;
     ImGui::SetCursorPosX(right - 28 - 6 - pw - 6 - ew - 6 - sw);
     if (ImGui::Button("Share", {sw, 28})) openShare(cur);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Image, GIF or annotated PGN of this game");
     ImGui::SameLine(0, 6);
-    if (ImGui::Button("Edit", {ew, 28})) openPosEditor((retry.on ? retry.board : game->board(cur)).getFen(), board.flipped);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Edit position: set up a new position from this one");
+    if (ImGui::Button(el, {ew, 28})) openPosEditor((retry.on ? retry.board : game->board(cur)).getFen(), board.flipped);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open this position in the board editor");
     ImGui::SameLine(0, 6);
-    if (ImGui::Button("Play vs engine", {pw, 28})) openPlaySetup();
+    if (ImGui::Button(pl, {pw, 28})) openPlaySetup();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Play the engine from this position  (%s)", keyHint(Act::PlayEngine).c_str());
     ImGui::SameLine(0, 6);
     if (ImGui::Button("?", {28, 28})) showHelp = true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Keyboard shortcuts  (?)");
     ImGui::Dummy({0, 2});
     ImGui::PushFont(f.bold, 18);
     ImGui::TextUnformatted(view == View::Summary ? "Game Review" : (review ? "Review" : "Analysis"));
@@ -1567,10 +1640,14 @@ void App::Impl::drawEngineLines() {
         ImGui::Text("%6s", ev.c_str());
         ImGui::PopStyleColor();
         ImGui::SameLine();
-        ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
         std::string line = pvSan(fen, l.pv, 12);
-        ImGui::TextUnformatted(line.c_str(), nullptr);
+        ImVec2 lp = ImGui::GetCursorScreenPos();
+        float lr = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;  // ends in "…" at the panel's edge
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::dim);
+        ImGui::RenderTextEllipsis(ImGui::GetWindowDrawList(), lp, {lr, lp.y + ImGui::GetTextLineHeight()}, lr, line.c_str(), nullptr, nullptr);
         ImGui::PopStyleColor();
+        ImGui::Dummy({std::max(0.f, lr - lp.x), ImGui::GetTextLineHeight()});
+        if (ImGui::IsItemHovered() && ImGui::CalcTextSize(line.c_str()).x > lr - lp.x) ImGui::SetTooltip("%s", line.c_str());
     }
     if (!s.lines.empty() && s.fen == fen) {
         ImGui::TextDisabled("depth %d", s.lines[0].depth);
@@ -1591,7 +1668,7 @@ void App::Impl::drawEngineLines() {
 
 bool App::Impl::moveCell(int n, float width) {
     auto& nd = game->nodes[n];
-    auto* mr = review ? review->forNode(n) : nullptr;
+    Cls cls = nodeCls(n);  // the review's, or live for a move it doesn't cover
     ImGui::PushID(n);
     ImVec2 p = ImGui::GetCursorScreenPos();
     bool sel = n == cur;
@@ -1600,12 +1677,12 @@ bool App::Impl::moveCell(int n, float width) {
     if (sel) dl->AddRectFilled(p, {p.x + width, p.y + 24}, alpha(theme::accent, 60), 5);
     else if (ImGui::IsItemHovered()) dl->AddRectFilled(p, {p.x + width, p.y + 24}, theme::line, 5);
     float x = p.x + 6;
-    if (mr && mr->cls != Cls::None && mr->cls != Cls::Best && mr->cls != Cls::Excellent && mr->cls != Cls::Good) {
-        drawBadge(dl, {x + 7, p.y + 12}, 7, mr->cls);
+    if (cls != Cls::None && cls != Cls::Best && cls != Cls::Excellent && cls != Cls::Good) {
+        drawBadge(dl, {x + 7, p.y + 12}, 7, cls);
         x += 18;
     }
     ImGui::PushFont(sel ? f.bold : f.ui, 14);
-    dl->AddText({x, p.y + 4}, mr && isBad(mr->cls) ? theme::clsText(mr->cls) : theme::text, nd.san.c_str());
+    dl->AddText({x, p.y + 4}, isBad(cls) ? theme::clsText(cls) : theme::text, nd.san.c_str());
     ImGui::PopFont();
     if (auto it = spent.find(n); it != spent.end()) {
         std::string t = spentText(it->second);
@@ -1637,9 +1714,12 @@ void App::Impl::drawVariations(int mainNode) {
         ImGui::PushFont(f.ui, 13);
         for (auto& [n, t] : toks) {
             ImVec2 ts = ImGui::CalcTextSize(t.c_str());
+            Cls c = n > 0 ? nodeCls(n) : Cls::None;  // live: the review doesn't cover side lines
+            bool mark = c != Cls::None && c != Cls::Best && c != Cls::Excellent && c != Cls::Good;
+            float bw = mark ? 16 : 0;
             if (!first) {
                 ImGui::SameLine(0, 4);
-                if (ImGui::GetCursorScreenPos().x + ts.x > right) ImGui::NewLine();
+                if (ImGui::GetCursorScreenPos().x + ts.x + bw > right) ImGui::NewLine();
             }
             first = false;
             if (n < 0) {
@@ -1648,11 +1728,12 @@ void App::Impl::drawVariations(int mainNode) {
             }
             ImGui::PushID(n);
             ImVec2 p = ImGui::GetCursorScreenPos();
-            if (ImGui::InvisibleButton("v", {ts.x + 6, ts.y + 4})) go(n);
+            if (ImGui::InvisibleButton("v", {ts.x + 6 + bw, ts.y + 4})) go(n);
             auto* dl = ImGui::GetWindowDrawList();
-            if (n == cur) dl->AddRectFilled(p, {p.x + ts.x + 6, p.y + ts.y + 4}, alpha(theme::accent, 60), 4);
-            else if (ImGui::IsItemHovered()) dl->AddRectFilled(p, {p.x + ts.x + 6, p.y + ts.y + 4}, theme::line, 4);
-            dl->AddText({p.x + 3, p.y + 2}, n == cur ? theme::text : theme::dim, t.c_str());
+            if (n == cur) dl->AddRectFilled(p, {p.x + ts.x + 6 + bw, p.y + ts.y + 4}, alpha(theme::accent, 60), 4);
+            else if (ImGui::IsItemHovered()) dl->AddRectFilled(p, {p.x + ts.x + 6 + bw, p.y + ts.y + 4}, theme::line, 4);
+            dl->AddText({p.x + 3, p.y + 2}, isBad(c) ? theme::clsText(c) : n == cur ? theme::text : theme::dim, t.c_str());
+            if (mark) drawBadge(dl, {p.x + ts.x + 6 + 7, p.y + 2 + ts.y / 2}, 6, c);
             if (n == cur && scrollToCur) {
                 ImGui::SetScrollHereY(0.4f);
                 scrollToCur = false;
