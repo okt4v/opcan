@@ -1,4 +1,4 @@
-# Builds installers for Windows (NSIS + zip), macOS (.dmg, arm64 and x86_64) and Linux (.tar.gz),
+# Builds installers for Windows (packaging/opcan.nsi installer + zip), macOS (.dmg, arm64 and x86_64) and Linux (.tar.gz),
 # runs the self-checks, and uploads the packages as artifacts. Runs on version tags (v*) or by hand.
 # A tag also publishes a GitHub Release with the packages (the in-app updater reads those): tags with a
 # "-" (v0.3.0-beta.1) are pre-releases. Release: bump nothing, just `git tag v0.2.0 && git push origin v0.2.0`.
@@ -75,6 +75,11 @@ jobs:
       - name: Package
         working-directory: build
         run: cpack -C Release
+      # the per-user installer from packaging/opcan.nsi (what the in-app updater expects), made from the same install
+      # tree as the zip; CPack's own NSIS installer (admin, Program Files) isn't used
+      - name: Installer (Windows)
+        if: runner.os == 'Windows'
+        run: cmake --build build --config Release --target installer
 
       - uses: actions/upload-artifact@v4
         with:

@@ -57,5 +57,9 @@ void checkUpdate() {
     CHECK(assetFor(named, "linux-x86_64")->name == "opcan-0.2.0-linux-x86_64.tar.gz");
     CHECK(parseReleases("not json").empty() && parseReleases("{}").empty());
     CHECK(std::string(appVersion()).size() > 0);
+    // helper script quoting: PowerShell doubles quotes (incl. U+2019), sh closes and reopens the string
+    CHECK(psQuote("C:\\Users\\O'Neil\\x") == "'C:\\Users\\O''Neil\\x'" && psQuote("") == "''");
+    CHECK(psQuote("a\xE2\x80\x99" "b \xE2\x80\x9D") == "'a\xE2\x80\x99\xE2\x80\x99" "b \xE2\x80\x9D'");  // U+201D is a " quote: kept
+    CHECK(shQuote("/home/o'neil") == "'/home/o'\\''neil'");
     std::puts("update checks passed");
 }

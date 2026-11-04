@@ -75,28 +75,39 @@ void runDetached(std::vector<std::string> argv, std::string input = "") {
     }).detach();
 }
 
-// Puts a PNG file on the system clipboard as an image. False if this system has no way to.
-bool copyPngToClipboard(const std::string& path) {
+// Puts a PNG file on the system clipboard as an image. Returns "" or why it couldn't.
+std::string copyPngToClipboard(const std::string& path) {
 #if defined(_WIN32)
-    runDetached({"powershell", "-NoProfile", "-NonInteractive", "-STA", "-Command",
-                 "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
-                 "[System.Windows.Forms.Clipboard]::SetImage([System.Drawing.Image]::FromFile('" + path + "'))"});
-    return true;
+    // waited for (PowerShell takes about a second) so a failure isn't reported as "copied"
+    std::string cmd = "try { Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
+                      "[System.Windows.Forms.Clipboard]::SetImage([System.Drawing.Image]::FromFile(" + psQuote(path) + ")) } catch { exit 1 }";
+    const char* argv[] = {"powershell", "-NoProfile", "-NonInteractive", "-STA", "-Command", cmd.c_str(), nullptr};
+    subprocess_s p{};
+    int opts = subprocess_option_inherit_environment | subprocess_option_search_user_path | subprocess_option_no_window;
+    if (subprocess_create(argv, opts, &p)) return "Couldn't start PowerShell to copy the image";
+    std::fclose(subprocess_stdin(&p));  // PowerShell waits for the end of a redirected stdin
+    p.stdin_file = nullptr;
+    int code = 1;
+    subprocess_join(&p, &code);
+    subprocess_destroy(&p);
+    return code == 0 ? "" : "Couldn't copy the image to the clipboard";
 #elif defined(__APPLE__)
-    runDetached({"osascript", "-e", "set the clipboard to (read (POSIX file \"" + path + "\") as «class PNGf»)"});
-    return true;
+    std::string esc;  // AppleScript string literal
+    for (char c : path) esc += c == '"' || c == '\\' ? std::string("\\") + c : std::string(1, c);
+    runDetached({"osascript", "-e", "set the clipboard to (read (POSIX file \"" + esc + "\") as «class PNGf»)"});
+    return "";
 #else
     if (std::getenv("WAYLAND_DISPLAY") && !onPath("wl-copy").empty()) {
         std::ifstream in(path, std::ios::binary);
         std::string bytes((std::istreambuf_iterator<char>(in)), {});
         runDetached({"wl-copy", "--type", "image/png"}, bytes);
-        return true;
+        return "";
     }
     if (!onPath("xclip").empty()) {
         runDetached({"xclip", "-selection", "clipboard", "-t", "image/png", "-i", path});
-        return true;
+        return "";
     }
-    return false;
+    return "No clipboard tool found: install wl-clipboard or xclip";
 #endif
 }
 
@@ -350,8 +361,11 @@ void App::Impl::afterRender() {
 
     bool ok = job->gif ? writeGif(job->path, w, h, frames, job->delaysCs) : writePng(job->path, w, h, frames[0]);
     if (!ok) return notify("Couldn't write " + job->path);
-    if (job->copy) notify(copyPngToClipboard(job->path) ? "Image copied to the clipboard" : "No clipboard tool found: install wl-clipboard or xclip");
-    else notify("Saved " + fs::path(job->path).filename().string());
+    if (job->copy) {
+        std::string err = copyPngToClipboard(job->path);
+        notify(err.empty() ? "Image copied to the clipboard" : err);
+    } else
+        notify("Saved " + fs::path(job->path).filename().string());
 }
 
 // ---------- page ----------

@@ -56,6 +56,11 @@ bool replacesInPlace(InstallKind k);         // the update replaces this copy (a
 const Release::Asset* assetFor(const Release& r, const std::string& platform);
 std::string thisPlatform();  // "windows-x86_64", "macos-arm64", "macos-x86_64", "linux-x86_64"
 
+// Quoted string literals for the helper scripts: PowerShell 'it''s' (also doubles the curly quotes PowerShell treats
+// as ' ), POSIX sh 'it'\''s'.
+std::string psQuote(const std::string& s);
+std::string shQuote(const std::string& s);
+
 // Downloads (Nix: builds) r's package and starts a helper that waits for opcan to exit, installs it and (relaunch) starts the new
 // version. silent: no installer UI (Windows). Returns "" when the helper is running; the caller should quit
 // (now, or whenever the user does). Blocking (the download): run it off the UI thread.

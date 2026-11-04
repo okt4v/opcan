@@ -23,6 +23,27 @@ using json = nlohmann::json;
 
 const char* appVersion() { return OPCAN_VERSION; }
 
+std::string psQuote(const std::string& s) {
+    std::string r = "'";
+    for (size_t i = 0; i < s.size(); i++) {
+        size_t n = 1;
+        bool quote = s[i] == '\'';
+        // PowerShell also ends a '...' string at the curly quotes U+2018..U+201B (UTF-8 E2 80 98..9B): double those too
+        if (s.compare(i, 2, "\xE2\x80") == 0 && i + 2 < s.size() && (unsigned char)s[i + 2] >= 0x98 && (unsigned char)s[i + 2] <= 0x9B)
+            n = 3, quote = true;
+        std::string c = s.substr(i, n);
+        r += quote ? c + c : c;
+        i += n - 1;
+    }
+    return r + "'";
+}
+
+std::string shQuote(const std::string& s) {
+    std::string r = "'";
+    for (char c : s) r += c == '\'' ? std::string("'\\''") : std::string(1, c);
+    return r + "'";
+}
+
 namespace {
 std::string stripV(const std::string& s) { return !s.empty() && (s[0] == 'v' || s[0] == 'V') ? s.substr(1) : s; }
 bool isVersion(const std::string& s) { return !s.empty() && std::isdigit((unsigned char)s[0]); }
@@ -30,11 +51,13 @@ std::string str(const json& j, const char* k) {
     auto it = j.find(k);
     return it != j.end() && it->is_string() ? it->get<std::string>() : "";
 }
-// 'it''s' -> shell single-quoted
+// the helper script's quoting: PowerShell on Windows, sh elsewhere
 std::string sq(const std::string& s) {
-    std::string r = "'";
-    for (char c : s) r += c == '\'' ? std::string("'\\''") : std::string(1, c);
-    return r + "'";
+#ifdef _WIN32
+    return psQuote(s);
+#else
+    return shQuote(s);
+#endif
 }
 bool writable(const fs::path& dir) {
     auto probe = dir / ".opcan-write-test";
@@ -236,7 +259,8 @@ const Release::Asset* portableZip(const Release& r) {
 }
 }  // namespace
 
-InstallKind installKind() {
+namespace {
+InstallKind detectInstallKind() {
     std::error_code ec;
     fs::path exe = exeDir();
     if (devBuild(exe)) {
@@ -246,7 +270,8 @@ InstallKind installKind() {
         return InstallKind::Separate;
     }
 #if defined(_WIN32)
-    if (fs::exists(exe / "Uninstall.exe", ec)) return InstallKind::Installer;
+    // opcan.nsi's per-user install; an old CPack install in Program Files (not writable) updates as Separate, i.e. per-user
+    if (fs::exists(exe / "Uninstall.exe", ec) && writable(exe)) return InstallKind::Installer;
     if (fs::exists(exe / "opcan.exe", ec) && writable(exe)) return InstallKind::Portable;
 #elif defined(__APPLE__)
     fs::path app = exe.parent_path().parent_path();  // opcan.app/Contents/MacOS
@@ -258,6 +283,13 @@ InstallKind installKind() {
     if (exe.filename() == "bin" && fs::is_directory(root / "share/opcan/assets", ec) && writable(root)) return InstallKind::Tarball;
 #endif
     return InstallKind::Separate;
+}
+}  // namespace
+
+// the layout doesn't change while opcan runs; detecting it probes writability with a file (the UI asks every frame)
+InstallKind installKind() {
+    static const InstallKind k = detectInstallKind();
+    return k;
 }
 
 bool installable(const Release& r) {
@@ -338,15 +370,20 @@ std::string prepareInstall(const Release& r, bool silent, bool relaunch) {
     // PowerShell (Windows 10+): wait for opcan to exit, install, start the new opcan
     std::string ps = "Wait-Process -Id " + std::to_string(pid) + " -ErrorAction SilentlyContinue; ";
     if (kind == InstallKind::Portable) {  // unzip, then copy the folder holding opcan.exe over this one
+        // -LiteralPath: '[' in a path is a wildcard for -Path
         std::string x = (dir / "x").string();
-        ps += "Remove-Item -Recurse -Force -ErrorAction SilentlyContinue " + sq(x) + "; Expand-Archive -Force -Path " + sq(pkg.string()) +
-              " -DestinationPath " + sq(x) + "; $s = (Get-ChildItem -Recurse -Filter opcan.exe " + sq(x) +
-              " | Select-Object -First 1).DirectoryName; if ($s) { Copy-Item -Recurse -Force \"$s\\*\" " + sq(exe.string()) + " }; " +
-              (relaunch ? "Start-Process -FilePath " + sq((exe / "opcan.exe").string()) : std::string());
-    } else {  // Installer, or Separate: the per-user installer (to its own directory), then start that copy
+        ps += "Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -LiteralPath " + sq(x) + "; Expand-Archive -Force -LiteralPath " +
+              sq(pkg.string()) + " -DestinationPath " + sq(x) + "; $s = (Get-ChildItem -Recurse -Filter opcan.exe -LiteralPath " + sq(x) +
+              " | Select-Object -First 1).DirectoryName; if ($s) { Get-ChildItem -LiteralPath $s | Copy-Item -Recurse -Force -Destination " +
+              sq(exe.string()) + " }; " + (relaunch ? "Start-Process -FilePath " + sq((exe / "opcan.exe").string()) : std::string());
+    } else if (kind == InstallKind::Installer) {  // packaging/opcan.nsi over this install: /D= keeps it in this directory
+        // (Start-Process joins the arguments unquoted, which is what NSIS wants: /D= last, spaces and all)
+        ps += "Start-Process -Wait -FilePath " + sq(pkg.string()) + " -ArgumentList " + sq(std::string(silent ? "/S " : "") + "/D=" + exe.string()) +
+              "; " + (relaunch ? "Start-Process -FilePath " + sq((exe / "opcan.exe").string()) : std::string());
+    } else {  // Separate: the per-user installer to its own directory (opcan.nsi: HKCU\Software\opcan InstallDir, else
+              // %LOCALAPPDATA%\Programs\opcan), then start that copy
         ps += "Start-Process -Wait -FilePath " + sq(pkg.string()) + (silent ? " -ArgumentList '/S'" : "") + "; ";
-        if (relaunch && kind == InstallKind::Installer) ps += "Start-Process -FilePath " + sq((exe / "opcan.exe").string());
-        else if (relaunch)
+        if (relaunch)
             ps += "$d = (Get-ItemProperty -Path 'HKCU:\\Software\\opcan' -ErrorAction SilentlyContinue).InstallDir; "
                   "if (-not $d) { $d = \"$env:LOCALAPPDATA\\Programs\\opcan\" }; Start-Process -FilePath \"$d\\opcan.exe\"";
     }

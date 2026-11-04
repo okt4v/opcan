@@ -62,8 +62,9 @@ foreach(o LLAMA_BUILD_COMMON LLAMA_BUILD_TESTS LLAMA_BUILD_TOOLS LLAMA_BUILD_EXA
           LLAMA_OPENSSL LLAMA_CURL GGML_BUILD_TESTS GGML_BUILD_EXAMPLES)
   set(${o} OFF CACHE BOOL "" FORCE)
 endforeach()
-if(MINGW)
-  # portable Windows build (packaging/build-windows.sh): x86-64-v2 baseline (SSE4.2/POPCNT, any CPU that runs
+if(WIN32 OR DEFINED ENV{CI})
+  # release builds (Windows, and every CI build: the runner's CPU, often AVX-512, isn't the user's; GGML_NATIVE would
+  # bake it in and the coach crashes with an illegal instruction elsewhere): x86-64-v2 baseline (SSE4.2/POPCNT, any CPU that runs
   # Windows 11). Per-CPU variants (GGML_CPU_ALL_VARIANTS) need GGML_BACKEND_DL, i.e. ggml as DLLs. No OpenMP: no libgomp.
   set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
   set(GGML_SSE42 ON CACHE BOOL "" FORCE)
