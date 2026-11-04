@@ -6,6 +6,14 @@
 #include <ctime>
 #include <filesystem>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 namespace fs = std::filesystem;
 using namespace chess;
 
@@ -36,7 +44,19 @@ std::string App::Impl::tbDir() const {
 }
 
 void App::Impl::applyTablebases() {
-    setDefaultUciOption("SyzygyPath", tbDir());
+    std::string dir = tbDir();
+#ifdef _WIN32
+    // stockfish.exe opens files with ANSI APIs: pass the 8.3 short form of a non-ASCII path (when there is one)
+    if (std::any_of(dir.begin(), dir.end(), [](char ch) { return (unsigned char)ch >= 0x80; })) {
+        std::wstring w = fs::path((const char8_t*)dir.c_str()).wstring();
+        std::wstring sh(GetShortPathNameW(w.c_str(), nullptr, 0), L'\0');
+        if (!sh.empty() && GetShortPathNameW(w.c_str(), sh.data(), (DWORD)sh.size())) {
+            sh.resize(wcslen(sh.c_str()));
+            if (std::all_of(sh.begin(), sh.end(), [](wchar_t ch) { return ch < 0x80; })) dir.assign(sh.begin(), sh.end());
+        }
+    }
+#endif
+    setDefaultUciOption("SyzygyPath", dir);
     if (!enginePath.empty()) resolveEngine();
 }
 

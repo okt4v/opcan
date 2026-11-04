@@ -193,6 +193,7 @@ public:
     // Loads (or reloads with different settings) on the worker; jobs wait for it.
     void load(const std::string& path, bool gpu, int threads);
     void unload();
+    bool settled() const;  // the worker has applied the last load()/unload() (model freed after unload)
     State state() const;
     std::string error() const;
     std::string loadedPath() const;

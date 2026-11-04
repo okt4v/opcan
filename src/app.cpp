@@ -150,7 +150,7 @@ void App::Impl::loadSettings() {
     s.autoAnalyze = num("autoAnalyze", s.autoAnalyze);
     set = s;
     syzygyPath = store.setting("syzygyPath");
-    setDefaultUciOption("SyzygyPath", tbDir());
+    applyTablebases();  // sets SyzygyPath (the engine isn't resolved yet, so nothing restarts)
 }
 
 void App::Impl::saveSettings() {

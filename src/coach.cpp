@@ -1751,6 +1751,10 @@ void Coach::load(const std::string& path, bool gpu, int threads) {
 }
 
 void Coach::unload() { load("", true, 1); }
+bool Coach::settled() const {
+    std::lock_guard l(d->m);
+    return d->wantGen == d->haveGen;
+}
 
 Coach::State Coach::state() const {
     std::lock_guard l(d->m);

@@ -1,5 +1,6 @@
 // Stats page: filter bar, KPI tiles and a grid of hand-drawn chart cards.
 #include "app_impl.hpp"
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -38,11 +39,19 @@ std::string fmt(const char* f, double v) {
 std::string strTime(int64_t t, const char* f) {
     std::time_t tt = (std::time_t)t;
     std::tm tm{};
+    if (t < 0) {  // pre-1970: localtime fails on Windows, use the UTC civil date
+        using namespace std::chrono;
+        sys_days d = floor<days>(sys_seconds{seconds{t}});
+        year_month_day ymd{d};
+        tm.tm_year = (int)ymd.year() - 1900, tm.tm_mon = (int)(unsigned)ymd.month() - 1, tm.tm_mday = (int)(unsigned)ymd.day();
+        tm.tm_wday = (int)weekday{d}.c_encoding();
+    } else {
 #ifdef _WIN32
-    localtime_s(&tm, &tt);
+        localtime_s(&tm, &tt);
 #else
-    localtime_r(&tt, &tm);
+        localtime_r(&tt, &tm);
 #endif
+    }
     char b[48];
     std::strftime(b, sizeof b, f, &tm);
     return b;

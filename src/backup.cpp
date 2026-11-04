@@ -172,7 +172,11 @@ std::string restoreBackup(const std::string& backupPath, const std::string& dbPa
     if (fs::exists(u8(dbPath), ec)) {
         fs::remove(u8(before), ec);
         fs::rename(u8(dbPath), u8(before), ec);
-        if (ec) return fs::remove(u8(tmp), ec), "Couldn't move the current library aside: " + ec.message();
+        if (ec) {
+            std::string e = ec.message();  // before remove() resets ec
+            fs::remove(u8(tmp), ec);
+            return "Couldn't move the current library aside: " + e;
+        }
     }
     for (const char* x : {"-wal", "-shm"}) fs::remove(u8(dbPath + x), ec);
     fs::rename(u8(tmp), u8(dbPath), ec);

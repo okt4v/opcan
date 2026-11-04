@@ -63,6 +63,7 @@ struct CoachState {
     Coach coach;
     ModelDownload dl;
     int dlModel = -1;
+    std::string delPath;  // model file to delete once the worker has unloaded it (Windows can't delete a mapped file)
     bool on = true, gpu = true;
     std::string model;  // curated id, or a path to a custom .gguf
     std::string modelsDir;
@@ -223,7 +224,16 @@ void App::Impl::explainCurrent(bool regenerate) {
 
 void App::Impl::coachFrame() {
     auto& c = *cs;
-    if (coachReady()) c.coach.load(coachModelPath(), c.gpu, physicalCores());
+    if (!c.delPath.empty()) {
+        bool inUse = coachModelPath() == c.delPath || c.coach.loadedPath() == c.delPath;
+        if (inUse) c.coach.unload();
+        if (!inUse || c.coach.settled()) {
+            std::error_code ec;
+            fs::remove(c.delPath, ec);
+            if (ec) notify("Couldn't delete the model: " + ec.message());
+            c.delPath.clear();
+        }
+    } else if (coachReady()) c.coach.load(coachModelPath(), c.gpu, physicalCores());
     else c.coach.unload();
     c.coach.hold(reviewer && reviewer->running());  // the foreground review gets the cores first
 
@@ -1208,10 +1218,7 @@ void App::Impl::settingsCoach(float) {
         if (dling) {
             if (btn("Cancel", false)) c.dl.cancel();
         } else if (have) {
-            if (btn("Delete", false)) {
-                if (sel) c.coach.unload();
-                fs::remove(path, ec);
-            }
+            if (btn("Delete", false)) c.delPath = path;  // coachFrame unloads it first if it's in use
             if (!sel && btn("Use", true)) c.model = m.id, coachSave();
             else if (sel) {
                 ImGui::SetCursorScreenPos({bx - 60, a.y + 20});

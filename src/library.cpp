@@ -176,13 +176,11 @@ int64_t parseDate(const Game& g) {
     if (std::sscanf(d.c_str(), "%d.%d.%d", &y, &mo, &da) != 3 || y < 1800) return std::time(nullptr);
     std::string t = g.header("UTCTime");
     if (!t.empty()) std::sscanf(t.c_str(), "%d:%d:%d", &h, &mi, &s);
-    std::tm tm{};
-    tm.tm_year = y - 1900, tm.tm_mon = mo - 1, tm.tm_mday = da, tm.tm_hour = h, tm.tm_min = mi, tm.tm_sec = s;
-#ifdef _WIN32
-    return _mkgmtime(&tm);
-#else
-    return timegm(&tm);
-#endif
+    // civil-date math, not _mkgmtime/timegm: _mkgmtime returns -1 before 1970
+    using namespace std::chrono;
+    year_month_day ymd{year{y}, month{(unsigned)mo}, day{(unsigned)da}};
+    if (!ymd.month().ok() || da < 1 || da > 31) return std::time(nullptr);
+    return (sys_days{ymd} + hours{h} + minutes{mi} + seconds{s}).time_since_epoch().count();
 }
 
 std::string timeClassOf(const std::string& tc) {
@@ -232,6 +230,11 @@ std::string fmtDate(int64_t t, bool relative) {
         if (d < 3600) std::snprintf(b, sizeof b, "%dm ago", int(d / 60));
         else if (d < 86400) std::snprintf(b, sizeof b, "%dh ago", int(d / 3600));
         else std::snprintf(b, sizeof b, "%dd ago", int(d / 86400));
+        return b;
+    }
+    if (t < 0) {  // pre-1970 (old imported games): localtime fails on Windows, print the UTC civil date
+        std::chrono::year_month_day ymd{std::chrono::floor<std::chrono::days>(std::chrono::sys_seconds{std::chrono::seconds{t}})};
+        std::snprintf(b, sizeof b, "%04d-%02u-%02u", (int)ymd.year(), (unsigned)ymd.month(), (unsigned)ymd.day());
         return b;
     }
     std::time_t tt = (std::time_t)t;
