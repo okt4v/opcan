@@ -577,8 +577,12 @@ void App::Impl::settingsEngine(float) {
     cardEnd();
     cardBegin("analysis", "Analysis");
     if (rowsBegin("rows")) {
-        row("Analyze games automatically", "Reviews new library games in the background with a quarter of the cores.");
+        row("Queue new games for analysis automatically",
+            "Newly synced and imported games join the analysis queue, which runs in the background at light power.");
         if (toggleSwitch("auto", &set.autoAnalyze)) saveSettings();
+        row("Analysis queue", "Queued games, pause, and the overnight run at full power.");
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 180);
+        if (ImGui::Button("Open analysis queue", {180, 0})) showAnalysis = true;
         row("Engine lines", "Top engine lines under the coach in the review.");
         if (toggleSwitch("lines", &set.engineLines)) saveSettings();
         rowsEnd();

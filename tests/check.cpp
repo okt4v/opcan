@@ -17,6 +17,7 @@ void checkGif();
 void checkSpeech();
 void checkBackup();
 void checkVerify();
+void checkAnalysis();
 int main() {
     checkCore();
     checkReview();
@@ -35,5 +36,6 @@ int main() {
     checkSpeech();
     checkBackup();
     checkVerify();
+    checkAnalysis();
     std::puts("all checks passed");
 }

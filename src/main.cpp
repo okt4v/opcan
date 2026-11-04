@@ -1,3 +1,4 @@
+#include "analysis.hpp"
 #include "app.hpp"
 #include "engine.hpp"
 #include "devscript.hpp"
@@ -11,6 +12,10 @@
 #include <cfloat>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <ctime>
+#include <filesystem>
+#include <thread>
 #include <lunasvg.h>
 #include <nfd.h>
 
@@ -36,7 +41,75 @@ static void applyStyle() {
 
 bool g_nfdOk = false;
 
+// opcan --analyze [--overnight] [--at HH:MM] [--then shutdown]: works through the analysis queue (every profile's)
+// without a window, then exits. For Task Scheduler / cron, or to keep going after the app is closed. The app may run
+// at the same time: games are claimed, never analysed twice. Progress goes to stdout and <data dir>/analysis.log.
+static int analyzeHeadless(int argc, char** argv) {
+    bool full = false, shutdown = false;
+    int atH = -1, atM = 0;
+    for (int i = 2; i < argc; i++) {
+        if (!std::strcmp(argv[i], "--overnight")) full = true;
+        else if (!std::strcmp(argv[i], "--at") && i + 1 < argc) std::sscanf(argv[++i], "%d:%d", &atH, &atM);
+        else if (!std::strcmp(argv[i], "--then") && i + 1 < argc) shutdown = !std::strcmp(argv[++i], "shutdown");
+        else return std::fprintf(stderr, "usage: opcan --analyze [--overnight] [--at HH:MM] [--then shutdown]\n"), 2;
+    }
+    const char* db = std::getenv("OPCAN_DB");
+    std::filesystem::path dbFile = db ? std::filesystem::path(db) : std::filesystem::path(App::configDir()) / "opcan.db";
+    std::FILE* logf = std::fopen((dbFile.parent_path() / "analysis.log").string().c_str(), "a");
+    auto log = [&](const std::string& m) {
+        char ts[32];
+        std::time_t t = std::time(nullptr);
+        std::strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", std::localtime(&t));
+        for (std::FILE* f : {stdout, logf})
+            if (f) std::fprintf(f, "%s  %s\n", ts, m.c_str()), std::fflush(f);
+    };
+    Store store;
+    if (!store.open(dbFile.string())) return log("cannot open " + dbFile.string() + ": " + store.error()), 1;
+    Openings book;
+    book.load(resDir() + "/assets/openings/openings.tsv");
+    std::string engine = store.setting("enginePath");
+    if (engine.empty()) engine = findEngine();
+    if (engine.empty()) return log("no chess engine found: set one in opcan's Settings"), 1;
+    KeepAwake awake;
+    awake.set(true);
+    if (atH >= 0) {
+        std::time_t t = std::time(nullptr);
+        std::tm tm = *std::localtime(&t);
+        tm.tm_hour = atH, tm.tm_min = atM, tm.tm_sec = 0;
+        std::time_t at = std::mktime(&tm);
+        if (at <= t) at += 86400;  // that time tomorrow
+        log("waiting until " + std::to_string(atH) + ":" + (atM < 10 ? "0" : "") + std::to_string(atM));
+        while (std::time(nullptr) < at) std::this_thread::sleep_for(std::chrono::seconds(5));
+    }
+    int total = store.queueCount(0);
+    log("analyzing " + std::to_string(total) + " queued games" + (full ? " at full power" : ""));
+    AnalysisRunner runner;
+    runner.start(store, book, engine, full ? AnalysisPower::overnight() : AnalysisPower::light(), 0);
+    int lastDone = -1;
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        auto st = runner.status();
+        int left = store.queueCount(0);
+        if (st.done != lastDone) {
+            lastDone = st.done;
+            log(std::to_string(st.done) + " analyzed, " + std::to_string(left) + " left" +
+                (st.failed ? ", " + std::to_string(st.failed) + " engine errors" : ""));
+        }
+        if (!st.error.empty() && st.done == 0 && st.failed >= 3) return log("engine error: " + st.error), 1;
+        if (left == 0 && st.active.empty()) break;  // games other runners still hold count as left: wait for them
+    }
+    runner.stop();
+    log("done");
+    if (shutdown) {
+        log("shutting down in 60 s (end this process to cancel)");
+        std::this_thread::sleep_for(std::chrono::seconds(60));
+        if (auto err = shutdownComputer(); !err.empty()) return log("could not shut down: " + err), 1;
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
+    if (argc > 1 && !std::strcmp(argv[1], "--analyze")) return analyzeHeadless(argc, argv);
     if (!glfwInit()) return 1;
     g_nfdOk = NFD_Init() == NFD_OKAY;  // fails without a D-Bus session (Linux portal backend)
 #ifdef __APPLE__

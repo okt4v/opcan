@@ -309,6 +309,12 @@ bool Store::open(const std::string& path) {
                             "CREATE INDEX IF NOT EXISTS tournament_entries_t ON tournament_entries(tournament_id);"
                             "PRAGMA user_version=4; COMMIT;"))
         return d->exec("ROLLBACK"), false;
+    // added without a schema bump: an older opcan opening this database just ignores the table
+    if (!d->exec("CREATE TABLE IF NOT EXISTS analysis_queue(game_id INTEGER PRIMARY KEY REFERENCES games(id) ON DELETE "
+                 "CASCADE, profile_id INTEGER NOT NULL, depth INTEGER NOT NULL, added INTEGER NOT NULL, claimed_by TEXT NOT "
+                 "NULL DEFAULT '', claimed_at INTEGER NOT NULL DEFAULT 0);"
+                 "CREATE INDEX IF NOT EXISTS analysis_queue_order ON analysis_queue(profile_id, added);"))
+        return false;
     Stmt q(d->db, "SELECT 1 FROM profiles WHERE guest=1");
     if (!q.row()) return d->exec("INSERT INTO profiles(name,avatar,guest) VALUES('Guest','preset:guest',1)");
     return true;
@@ -624,6 +630,100 @@ std::vector<std::string> Store::tags(int64_t profileId) {
         }
     }
     return {s.begin(), s.end()};
+}
+
+std::vector<int64_t> Store::gameIds(int64_t profileId, GameFilter f) {
+    std::lock_guard l(d->m);
+    std::string where;
+    std::vector<std::pair<bool, std::string>> args;
+    Impl::filterSql(profileId, f, where, args);
+    Stmt q(d->db, "SELECT id FROM games" + where + " ORDER BY played_at DESC, id DESC");
+    Impl::bindArgs(q, args);
+    std::vector<int64_t> r;
+    while (q.row()) r.push_back(q.i(0));
+    return r;
+}
+
+int Store::enqueue(int64_t profileId, const std::vector<int64_t>& ids, int depth) {
+    std::lock_guard l(d->m);
+    int n = 0;
+    d->exec("BEGIN");
+    int64_t next = 1;
+    if (Stmt m(d->db, "SELECT IFNULL(MAX(added),0)+1 FROM analysis_queue"); m.row()) next = m.i(0);
+    for (int64_t id : ids) {
+        // only games of this profile that lack a review this deep; an already queued game keeps the deeper depth
+        Stmt q(d->db, "INSERT INTO analysis_queue(game_id,profile_id,depth,added) SELECT id,profile_id,?,? FROM games "
+                      "WHERE id=? AND profile_id=? AND review_depth<? ON CONFLICT(game_id) DO UPDATE SET depth=max(depth,excluded.depth)");
+        q.bind(depth, next, id, profileId, depth);
+        q.run();
+        if (sqlite3_changes(d->db) > 0) n++, next++;
+    }
+    d->exec("COMMIT");
+    return n;
+}
+
+void Store::dequeue(const std::vector<int64_t>& gameIds) {
+    std::lock_guard l(d->m);
+    d->exec("BEGIN");
+    for (int64_t id : gameIds) Stmt(d->db, "DELETE FROM analysis_queue WHERE game_id=?").bind(id).run();
+    d->exec("COMMIT");
+}
+
+void Store::clearQueue(int64_t profileId) {
+    std::lock_guard l(d->m);
+    Stmt(d->db, "DELETE FROM analysis_queue WHERE profile_id=?").bind(profileId).run();
+}
+
+std::vector<Store::QueueItem> Store::queue(int64_t profileId, int limit) {
+    std::lock_guard l(d->m);
+    Stmt q(d->db, "SELECT game_id,profile_id,depth,claimed_by<>'' FROM analysis_queue WHERE ?=0 OR profile_id=? "
+                  "ORDER BY added LIMIT ?");
+    q.bind(profileId, profileId, limit);
+    std::vector<QueueItem> r;
+    while (q.row()) r.push_back({q.i(0), q.i(1), (int)q.i(2), q.i(3) != 0});
+    return r;
+}
+
+int Store::queueCount(int64_t profileId) {
+    std::lock_guard l(d->m);
+    Stmt q(d->db, "SELECT count(*) FROM analysis_queue WHERE ?=0 OR profile_id=?");
+    q.bind(profileId, profileId);
+    return q.row() ? (int)q.i(0) : 0;
+}
+
+bool Store::queued(int64_t gameId) {
+    std::lock_guard l(d->m);
+    Stmt q(d->db, "SELECT 1 FROM analysis_queue WHERE game_id=?");
+    q.bind(gameId);
+    return q.row();
+}
+
+std::optional<Store::QueueItem> Store::claimNext(const std::string& owner, int64_t now, int64_t staleBefore, int64_t profileId) {
+    std::lock_guard l(d->m);
+    // IMMEDIATE: takes the write lock first, so another process (`opcan --analyze`) can't claim the same row between
+    // our SELECT and UPDATE
+    if (!d->exec("BEGIN IMMEDIATE")) return std::nullopt;
+    std::optional<QueueItem> r;
+    {
+        Stmt q(d->db, "SELECT game_id,profile_id,depth FROM analysis_queue WHERE (claimed_by='' OR claimed_at<?) AND "
+                      "(?=0 OR profile_id=?) ORDER BY added LIMIT 1");
+        q.bind(staleBefore, profileId, profileId);
+        if (q.row()) r = QueueItem{q.i(0), q.i(1), (int)q.i(2), true};
+    }
+    if (r) Stmt(d->db, "UPDATE analysis_queue SET claimed_by=?, claimed_at=? WHERE game_id=?").bind(owner, now, r->gameId).run();
+    d->exec("COMMIT");
+    return r;
+}
+
+void Store::touchClaims(const std::string& owner, int64_t now) {
+    std::lock_guard l(d->m);
+    Stmt(d->db, "UPDATE analysis_queue SET claimed_at=? WHERE claimed_by=?").bind(now, owner).run();
+}
+
+void Store::releaseClaims(const std::string& owner, int64_t gameId) {
+    std::lock_guard l(d->m);
+    Stmt q(d->db, "UPDATE analysis_queue SET claimed_by='', claimed_at=0 WHERE claimed_by=? AND (?=0 OR game_id=?)");
+    q.bind(owner, gameId, gameId).run();
 }
 
 std::vector<int64_t> Store::unreviewed(int64_t profileId, int limit) {

@@ -159,6 +159,25 @@ public:
     void deleteEntry(int64_t id);
     std::vector<std::string> tags(int64_t profileId);
     std::vector<int64_t> unreviewed(int64_t profileId, int limit);  // newest first
+    std::vector<int64_t> gameIds(int64_t profileId, GameFilter f);  // every game matching f (limit/offset ignored), newest first
+
+    // Analysis queue (see analysis.hpp). Queuing a game at depth d means "have a review of depth >= d": games that
+    // already have one are skipped, a queued game keeps the deeper depth. Returns how many are now queued from ids.
+    int enqueue(int64_t profileId, const std::vector<int64_t>& ids, int depth);
+    void dequeue(const std::vector<int64_t>& gameIds);
+    void clearQueue(int64_t profileId);
+    struct QueueItem {
+        int64_t gameId = 0, profileId = 0;
+        int depth = 0;
+        bool claimed = false;  // a runner (this app or `opcan --analyze`) is on it
+    };
+    std::vector<QueueItem> queue(int64_t profileId, int limit);  // in order (oldest queued first); profileId 0 = all
+    int queueCount(int64_t profileId);                          // profileId 0 = all
+    bool queued(int64_t gameId);
+    // Atomically takes the next free (or stale: claimed before staleBefore) game for owner. profileId 0 = any.
+    std::optional<QueueItem> claimNext(const std::string& owner, int64_t now, int64_t staleBefore, int64_t profileId);
+    void touchClaims(const std::string& owner, int64_t now);
+    void releaseClaims(const std::string& owner, int64_t gameId = 0);  // 0 = all of owner's
 
     // Also renames the game's opening to r.openingEco/openingName (our openings database) when known.
     void saveReview(int64_t gameId, int depth, const std::vector<PosEval>& evals, const ReviewResult& r);

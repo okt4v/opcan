@@ -357,7 +357,7 @@ void App::Impl::open(Game g, int64_t id) {
         return;
     }
     if (enginePath.empty()) return;
-    bg.reset();  // the foreground review gets every core
+    if (runner) runner->setPaused(true);  // the foreground review gets every core (backgroundWork resumes it)
     reviewer = std::make_unique<Reviewer>();
     reviewer->start(*game, enginePath, set.reviewDepth, set.workers);
     view = View::Summary;
@@ -620,6 +620,7 @@ void App::Impl::frame() {
     drawPicker();
     drawPlaySetup();
     drawHelp();
+    if (prof) drawAnalysisWindow();
     if (prof && tourStep >= 0) drawTour();
     drawToast();
     if (splashAt == -2) updateFrame();  // after the opening animation
@@ -790,15 +791,17 @@ void App::Impl::drawSidebar(float w) {
     float y = std::max(bottom - 48, ImGui::GetCursorScreenPos().y + 38);  // short windows: below the nav, not over it
     std::string status;
     if (syncer && syncer->running()) status = "Syncing…";
-    else if (bg || (set.autoAnalyze && unreviewedCount > 0 && !enginePath.empty()))
-        status = "Analyzing " + std::to_string(std::max(1, unreviewedCount)) + (unreviewedCount == 1 ? " game…" : " games…");
+    else if (overnight.on && overnight.startAt > std::time(nullptr)) status = "Overnight run waiting…";
+    else if (runner && !runner->paused() && queueCount > 0)
+        status = "Analyzing " + std::to_string(queueCount) + (queueCount == 1 ? " game…" : " games…");
+    else if (queueCount > 0) status = std::to_string(queueCount) + " queued (paused)";
     if (!status.empty()) {
         ImGui::PushFont(f.ui, 13);
         float sy = y - 30;
         spinner(dl, {slim ? p.x + iw / 2 : wp.x + 26, sy + 9}, 6, theme::accent);
         if (!slim) dl->AddText({wp.x + 40, sy + 9 - ImGui::GetFontSize() / 2}, theme::dim, status.c_str());
         ImGui::SetCursorScreenPos({wp.x + 12, sy});
-        ImGui::Dummy({iw, 18});
+        if (ImGui::InvisibleButton("status", {iw, 18}) && !(syncer && syncer->running())) showAnalysis = true;  // the queue
         if (ImGui::IsItemHovered() && (slim || syncer->running())) ImGui::SetTooltip("%s", syncer && syncer->running() && !syncer->status().empty() ? syncer->status().c_str() : status.c_str());
         ImGui::PopFont();
         animUntil = ImGui::GetTime() + 0.1;
@@ -1149,7 +1152,7 @@ void App::Impl::drawSummary() {
         ImGui::Dummy({0, 10});
         if (accentButton("Retry", {-1, 32}) && !enginePath.empty()) {
             reviewErr.clear();
-            bg.reset();
+            if (runner) runner->setPaused(true);
             reviewer = std::make_unique<Reviewer>();
             reviewer->start(*game, enginePath, set.reviewDepth, set.workers);
         }

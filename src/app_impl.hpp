@@ -1,5 +1,6 @@
 #pragma once
 // Internals shared by app.cpp (shell, analysis + review screens) and library.cpp (profiles, library, background work).
+#include "analysis.hpp"
 #include "app.hpp"
 #include "audio.hpp"
 #include "speech.hpp"
@@ -480,13 +481,31 @@ struct App::Impl {
     double statsAt = -100;
     int statsPattern = -1;  // expanded mistake pattern
 
-    // background analysis
-    std::unique_ptr<Reviewer> bg;
-    int64_t bgId = 0;
-    std::optional<Game> bgGame;
-    std::set<int64_t> bgFailed;
-    int unreviewedCount = 0;
-    double unreviewedAt = -100;
+    // analysis queue (analysis.hpp). backgroundWork() (library.cpp) runs it: light power whenever the profile's queue
+    // has games, an overnight run at full power. UI: analysis_ui.cpp (the Analysis window) + library multi-select.
+    std::unique_ptr<AnalysisRunner> runner;
+    bool runnerOvernight = false;  // the running runner's power preset
+    KeepAwake keepAwake;
+    struct OvernightRun {
+        bool on = false;          // armed or running: full power, the PC kept awake, whenDone once the queue is empty
+        int64_t startAt = 0;      // unix s: waits until then (0 = now)
+        int whenDone = 0;         // 0 nothing, 1 quit opcan, 2 shut the computer down
+        double countdownEnd = 0;  // ImGui time when whenDone fires (60 s countdown, cancelable); 0 = none
+    } overnight;
+    bool analysisPaused = false;  // the user paused the queue (this session)
+    bool showAnalysis = false;    // the Analysis window
+    int queueCount = 0;           // the profile's queued games, refreshed every few s
+    std::set<int64_t> queuedIds;  // the same games (row chips)
+    std::set<int64_t> analyzingIds;  // the runner's current games, every frame
+    double queueAt = -100;        // when queueCount was refreshed (-100: refresh now)
+    int64_t autoQueuedId = -1;    // auto-analyze: games with a higher id get queued (profile setting "autoQueuedId")
+    std::set<int64_t> libSel;     // library multi-select (ctrl/shift-click)
+    int64_t libSelAnchor = 0;     // shift-click range start
+    // Queues ids at set.reviewDepth (games already reviewed that deep are skipped) and refreshes the counts.
+    int queueGames(const std::vector<int64_t>& ids);
+    void startOvernight(int64_t startAt, int whenDone);
+    void stopOvernight();
+    void drawAnalysisWindow();  // analysis_ui.cpp: the Analysis window + the end-of-queue countdown, every frame
 
     Impl();
     ~Impl();

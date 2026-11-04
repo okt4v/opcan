@@ -423,8 +423,9 @@ void App::Impl::selectProfile(const Profile& p) {
     statsStale = true;
     statsAcc = 0, statsPattern = -1;
     ex = ExplorerUi{};
-    bgFailed.clear();
-    unreviewedAt = -100;
+    queueAt = -100;
+    autoQueuedId = -1;  // read from the profile's setting in backgroundWork
+    libSel.clear(), libSelAnchor = 0;
     syncer = std::make_unique<Syncer>();
     if (!p.accounts.empty()) startSync(false);
     tr = TrainUi();
@@ -453,9 +454,8 @@ void App::Impl::tagEventGames() {
 
 void App::Impl::leaveProfile() {
     syncer.reset();
-    bg.reset();
-    bgGame.reset();
-    bgId = 0;
+    runner.reset();  // its games go back to the queue (the next session or `opcan --analyze` picks them up)
+    stopOvernight();
     reviewer.reset();
     review.reset();
     game.reset();
@@ -984,7 +984,7 @@ void App::Impl::pollSync() {
     }
     if (!run && syncWasRunning) {
         libDirty = true;
-        unreviewedAt = -100;
+        queueAt = -100;
         if (!syncer->error().empty()) notify("Sync: " + syncer->error());
         if (auto p = store.profile(prof->id)) prof = *p;
     }
@@ -1025,6 +1025,38 @@ void App::Impl::drawLibrary() {
     dl->AddText({p.x + tw + 12, p.y + 11}, theme::dim, cnt);
     ImGui::PopFont();
     bool syncing = syncer && syncer->running();
+    // Analysis (the queue window) + a menu to queue everything the filters show; left of Sync
+    float ax = p.x + W - (prof->accounts.empty() ? 0 : 96 + 8) - 104 - 26;
+    {
+        ImGui::SetCursorScreenPos({ax, p.y});
+        if (ImGui::Button("Analysis", {104, 32})) showAnalysis = true;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The analysis queue and the overnight run");
+        if (queueCount > 0) {  // badge: queued games
+            ImGui::PushFont(f.mono, 11);
+            std::string q = queueCount > 999 ? "999+" : std::to_string(queueCount);
+            ImVec2 ts = ImGui::CalcTextSize(q.c_str());
+            float bw = std::max(18.f, ts.x + 10), bx = ax + 104 - bw / 2 - 4;
+            dl->AddRectFilled({bx - bw / 2, p.y - 6}, {bx + bw / 2, p.y + 12}, theme::accent, 9);
+            dl->AddText({bx - ts.x / 2, p.y + 3 - ts.y / 2}, theme::onAccent, q.c_str());
+            ImGui::PopFont();
+        }
+        ImGui::SetCursorScreenPos({ax + 104 + 2, p.y});
+        if (ImGui::Button("##anmenu", {24, 32})) ImGui::OpenPopup("anmenu");
+        ImVec2 c{ax + 104 + 2 + 12, p.y + 16};
+        dl->AddTriangleFilled({c.x - 4, c.y - 2}, {c.x + 4, c.y - 2}, {c.x, c.y + 3}, theme::soft);
+        if (ImGui::BeginPopup("anmenu")) {
+            std::string lbl = "Analyze all " + std::to_string(total) + (total == 1 ? " game" : " games") +
+                              (total < allGames ? " matching the filters" : " in the library");
+            if (ImGui::MenuItem(lbl.c_str(), nullptr, false, total > 0)) {
+                auto ids = store.gameIds(prof->id, filter);
+                int q = queueGames(ids);
+                notify(q == (int)ids.size() ? "Queued " + std::to_string(q) + " games"
+                                            : "Queued " + std::to_string(q) + " games (" + std::to_string((int)ids.size() - q) + " already analyzed)");
+            }
+            if (ImGui::MenuItem("Open the analysis queue…")) showAnalysis = true;
+            ImGui::EndPopup();
+        }
+    }
     if (!prof->accounts.empty()) {
         float bw = 96;
         ImGui::SetCursorScreenPos({p.x + W - bw, p.y});
@@ -1034,18 +1066,18 @@ void App::Impl::drawLibrary() {
         std::string st = syncing ? syncer->status() : syncer && !syncer->error().empty() ? syncer->error() : "";
         if (syncing && syncer->added()) st += "  ·  " + std::to_string(syncer->added()) + " new";
         if (syncing && st.empty()) st = "Connecting…";
-        float sx = p.x + W - bw - 16;
+        float sx = ax - 16;
         if (!st.empty()) {
             ImGui::PushFont(f.ui, 13);
-            st = ellipsize(st, W * 0.4f);
+            st = ellipsize(st, W * 0.35f);
             ImVec2 ts = ImGui::CalcTextSize(st.c_str());
             dl->AddText({sx - ts.x, p.y + 16 - ts.y / 2}, syncing ? theme::dim : theme::loss, st.c_str());
             ImGui::PopFont();
             if (syncing) spinner(dl, {sx - ts.x - 14, p.y + 16}, 6, theme::accent);
         }
         if (syncing) animUntil = ImGui::GetTime() + 0.1;
-        ImGui::SetCursorScreenPos({p.x, p.y + 40});
     }
+    ImGui::SetCursorScreenPos({p.x, p.y + 40});
     ImGui::Dummy({0, 12});
 
     // filters (wrap when narrow)
@@ -1130,8 +1162,12 @@ void App::Impl::drawLibrary() {
         textCentered(dl, {c.x + W / 2, c.y + 28}, theme::dim, sub);
         return;
     }
+    if (!libSel.empty() && ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !ImGui::GetIO().WantTextInput &&
+        !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel))
+        libSel.clear(), libSelAnchor = 0;
+    const float selBarH = 48;
     ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::rgb(0, 0));
-    ImGui::BeginChild("games", {0, 0});
+    ImGui::BeginChild("games", {0, libSel.empty() ? 0.f : -selBarH});
     ImGui::PopStyleColor();
     float lw = ImGui::GetContentRegionAvail().x;
     ImGuiListClipper clip;
@@ -1152,6 +1188,41 @@ void App::Impl::drawLibrary() {
         ImGui::Dummy({0, 16});
     }
     ImGui::EndChild();
+
+    // multi-select bar, under the list
+    if (!libSel.empty()) {
+        ImVec2 b = ImGui::GetCursorScreenPos();
+        b.y += 4;
+        float bh = selBarH - 4;
+        dl->AddRectFilled(b, {b.x + W, b.y + bh}, theme::panel2, 10);
+        dl->AddRect(b, {b.x + W, b.y + bh}, alpha(theme::accent, 120), 10);
+        std::string t = std::to_string(libSel.size()) + " selected";
+        ImGui::PushFont(f.bold, 15);
+        ImVec2 ts = ImGui::CalcTextSize(t.c_str());
+        dl->AddText({b.x + 16, b.y + bh / 2 - ts.y / 2}, theme::text, t.c_str());
+        ImGui::PopFont();
+        float bw1 = 96, bw2 = ImGui::CalcTextSize("Remove from queue").x + 24, bw3 = 72, by = b.y + (bh - 30) / 2;
+        float x = b.x + W - 8 - bw3 - 8 - bw2 - 8 - bw1;
+        ImGui::SetCursorScreenPos({x, by});
+        if (accentButton("Analyze", {bw1, 30})) {
+            std::vector<int64_t> ids(libSel.begin(), libSel.end());
+            int q = queueGames(ids);
+            int rest = (int)ids.size() - q;
+            std::string msg = q == 1 ? "Queued 1 game" : "Queued " + std::to_string(q) + " games";
+            if (rest > 0) msg += " (" + std::to_string(rest) + " already analyzed)";
+            notify(msg);
+            libSel.clear(), libSelAnchor = 0;
+        }
+        ImGui::SameLine(0, 8);
+        if (ImGui::Button("Remove from queue", {bw2, 30})) {
+            store.dequeue(std::vector<int64_t>(libSel.begin(), libSel.end()));
+            queueAt = -100;
+        }
+        ImGui::SameLine(0, 8);
+        if (ImGui::Button("Clear", {bw3, 30})) libSel.clear(), libSelAnchor = 0;
+        ImGui::SetCursorScreenPos({b.x, b.y + bh});
+        ImGui::Dummy({0, 0});
+    }
 }
 
 void App::Impl::drawGameRow(const GameRow& g, float w) {
@@ -1168,7 +1239,9 @@ void App::Impl::drawGameRow(const GameRow& g, float w) {
         ImGui::EndPopup();
     }
     bool menuOpen = ImGui::IsPopupOpen("ctx");
-    if (hov || menuOpen) dl->AddRectFilled(p, {p.x + w, p.y + h}, theme::panel, 8);
+    bool sel = libSel.count(g.id) > 0;
+    if (sel) dl->AddRectFilled(p, {p.x + w, p.y + h}, alpha(theme::accent, hov ? 56 : 38), 8);
+    else if (hov || menuOpen) dl->AddRectFilled(p, {p.x + w, p.y + h}, theme::panel, 8);
     else dl->AddLine({p.x + 12, p.y + h - 0.5f}, {p.x + w - 12, p.y + h - 0.5f}, alpha(theme::line, 120));
 
     // result pill
@@ -1229,8 +1302,8 @@ void App::Impl::drawGameRow(const GameRow& g, float w) {
                 textLimit -= 17;
                 drawBadge(dl, {textLimit + 7.5f, cy}, 6.5f, c);
             }
-    } else {
-        bool analyzing = g.id == bgId || (g.id == gameId && reviewer && reviewer->running());
+    } else if (bool analyzing = analyzingIds.count(g.id) || (g.id == gameId && reviewer && reviewer->running());
+               analyzing || queuedIds.count(g.id)) {
         const char* t = analyzing ? "analyzing" : "queued";
         ImGui::PushFont(f.ui, 12);
         ImVec2 ts = ImGui::CalcTextSize(t);
@@ -1298,7 +1371,26 @@ void App::Impl::drawGameRow(const GameRow& g, float w) {
     ImGui::SetCursorScreenPos({p.x, p.y + h});
     ImGui::Dummy({w, 0});
     ImGui::PopID();
-    if (click && !starClick) openStored(g.id);
+    if (click && !starClick) {
+        // ctrl/cmd-click toggles, shift-click selects the range from the anchor (list order), a plain click opens
+        auto& io = ImGui::GetIO();
+        bool ctrl = io.KeyCtrl || io.KeySuper;
+        auto idx = [&](int64_t id) {
+            auto it = std::find_if(rows.begin(), rows.end(), [&](const GameRow& r) { return r.id == id; });
+            return it == rows.end() ? -1 : int(it - rows.begin());
+        };
+        if (io.KeyShift && libSelAnchor && idx(libSelAnchor) >= 0) {
+            int a = idx(libSelAnchor), b = idx(g.id);
+            if (!ctrl) libSel.clear();
+            for (int i = std::min(a, b); i <= std::max(a, b); i++) libSel.insert(rows[i].id);
+        } else if (ctrl || io.KeyShift) {
+            if (!libSel.erase(g.id)) libSel.insert(g.id);
+            libSelAnchor = g.id;
+        } else {
+            libSel.clear(), libSelAnchor = 0;
+            openStored(g.id);
+        }
+    }
 }
 
 void App::Impl::drawRowMenu(GameRow& g) {
@@ -1359,7 +1451,7 @@ void App::Impl::drawLibraryModals() {
             store.deleteGame(deleteId);
             if (deleteId == gameId) gameId = 0, meta.reset();
             libDirty = true;
-            unreviewedAt = -100;
+            queueAt = -100;
             done = true;
         }
         ImGui::PopStyleColor(2);
@@ -1441,7 +1533,7 @@ int64_t App::Impl::importGame(const Game& g, bool vsBot) {
     for (auto& t : eventTags(g)) r.tags = withTag(r.tags, t);
     int64_t id = store.upsertGame(r);
     libDirty = true;
-    unreviewedAt = -100;
+    queueAt = -100;
     return id;
 }
 
@@ -1563,45 +1655,97 @@ void App::Impl::drawGameInfo(float h) {
 
 // ---------- background work ----------
 
+int App::Impl::queueGames(const std::vector<int64_t>& ids) {
+    int n = prof ? store.enqueue(prof->id, ids, set.reviewDepth) : 0;
+    queueAt = -100;
+    libDirty = true;  // row chips
+    return n;
+}
+
+void App::Impl::startOvernight(int64_t startAt, int whenDone) {
+    if (!prof || store.queueCount(prof->id) == 0) return notify("The analysis queue is empty: add games first");
+    overnight = {true, startAt, whenDone, 0};
+    queueAt = -100;
+}
+
+void App::Impl::stopOvernight() {
+    overnight = {};
+    keepAwake.set(false);
+}
+
 void App::Impl::backgroundWork() {
     pollSync();
     double now = ImGui::GetTime();
+    int64_t nowSec = std::time(nullptr);
+    if (autoQueuedId < 0) {
+        auto v = store.setting(pkey("autoQueuedId"));
+        autoQueuedId = v.empty() ? 0 : std::atoll(v.c_str());
+    }
+    if (now - queueAt > 5) {
+        queueAt = now;
+        // auto-analyze: games added since the last look (ids only grow) join the queue. The first time that is every
+        // game without a review, like the old background analysis; a game the user takes off the queue stays off.
+        if (set.autoAnalyze && !enginePath.empty()) {
+            std::vector<int64_t> fresh;
+            for (int64_t id : store.unreviewed(prof->id, 1 << 30))
+                if (id > autoQueuedId) fresh.push_back(id);
+            if (!fresh.empty()) {
+                queueGames(fresh);
+                queueAt = now;
+                autoQueuedId = *std::max_element(fresh.begin(), fresh.end());
+                store.setSetting(pkey("autoQueuedId"), std::to_string(autoQueuedId));
+            }
+        }
+        queuedIds.clear();
+        for (auto& q : store.queue(prof->id, 1 << 30)) queuedIds.insert(q.gameId);
+        queueCount = (int)queuedIds.size();
+    }
+
+    // overnight run: the countdown after the queue ran dry
+    if (overnight.countdownEnd > 0 && now >= overnight.countdownEnd) {
+        int what = overnight.whenDone;
+        stopOvernight();
+        runner.reset();  // nothing is running, but give any claim back before we go
+        if (what == 2) {
+            if (auto err = shutdownComputer(); !err.empty()) notify("Could not shut down: " + err);
+            else quit = true;
+        } else if (what == 1) {
+            quit = true;
+        }
+        return;
+    }
+    bool waiting = overnight.on && overnight.startAt > nowSec;
+    bool full = overnight.on && !waiting;
+    keepAwake.set(overnight.on);  // also while waiting: the PC has to be awake at the start time
     bool fg = reviewer && reviewer->running();
-    if (bg) {
-        if (fg) {
-            bg.reset(), bgGame.reset(), bgId = 0;
-        } else if (bg->finished()) {
-            auto ev = bg->evals();
-            store.saveReview(bgId, set.reviewDepth, ev, buildReview(*bgGame, ev, book));
-            if (bgId == gameId && game && !review && !reviewer) setReview(ev);
-            bg.reset(), bgGame.reset(), bgId = 0;
+    bool busy = runner && !runner->status().active.empty();
+    if (!enginePath.empty() && (queueCount > 0 || busy)) {
+        if (!runner || runnerOvernight != full) {  // (re)start at the right power; claimed games go back and are retaken
+            runner = std::make_unique<AnalysisRunner>();
+            runner->start(store, book, enginePath, full ? AnalysisPower::overnight() : AnalysisPower::light(), prof->id);
+            runnerOvernight = full;
+        }
+    } else if (runner && !overnight.on) {
+        runner.reset();  // queue empty: no idle polling
+    }
+    analyzingIds.clear();
+    if (runner) {
+        runner->setPaused(analysisPaused || fg);
+        auto st = runner->status();
+        for (auto& a : st.active) analyzingIds.insert(a.gameId);
+        for (int64_t id : runner->takeSaved()) {
             libDirty = true;
-            unreviewedAt = -100;
-        } else if (!bg->running() && !bg->error().empty()) {
-            bgFailed.insert(bgId);
-            bg.reset(), bgGame.reset(), bgId = 0;
+            queueAt = -100;
+            if (id == gameId && game && !review && !reviewer)  // the open game: show its fresh review
+                if (auto ev = store.reviewEvals(id); ev && ev->size() == game->mainline().size()) setReview(*ev);
         }
-    }
-    if (now - unreviewedAt > 5) {
-        unreviewedAt = now;
-        unreviewedCount = 0;
-        for (int64_t id : store.unreviewed(prof->id, 1000)) unreviewedCount += !bgFailed.count(id);
-    }
-    if (bg || fg || !set.autoAnalyze || enginePath.empty() || unreviewedCount == 0) return;
-    for (int64_t id : store.unreviewed(prof->id, (int)bgFailed.size() + 1)) {
-        if (bgFailed.count(id)) continue;
-        auto row = store.game(id);
-        auto games = row ? parsePgn(row->pgn) : std::vector<Game>{};
-        if (games.empty() || games[0].mainline().size() <= 1) {
-            bgFailed.insert(id);
-            unreviewedAt = -100;
-            continue;
+        if (full && queueCount == 0 && st.active.empty() && queueAt > 0 && overnight.countdownEnd == 0) {
+            if (overnight.whenDone == 0) {
+                stopOvernight();
+                notify("Overnight analysis finished");
+            } else {
+                overnight.countdownEnd = now + 60;  // analysis_ui.cpp shows it, with Cancel
+            }
         }
-        bgGame = std::move(games[0]);
-        bgId = id;
-        bg = std::make_unique<Reviewer>();
-        bg->start(*bgGame, enginePath, set.reviewDepth, std::max(1, (int)std::thread::hardware_concurrency() / 4));
-        libDirty = true;  // row chip turns to "analyzing"
-        break;
     }
 }
