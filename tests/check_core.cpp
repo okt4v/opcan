@@ -32,6 +32,12 @@ void checkCore() {
     CHECK(!parseInfo("info depth 9 multipv 1 score cp 20 upperbound pv e2e4", k, l));
     CHECK(!parseInfo("info depth 0 score mate 0", k, l));
     CHECK(!parseInfo("info string NNUE evaluation enabled", k, l));
+    // PGN layouts chess-library alone truncates: comment/NAG/!? starting a line, comment after a move number
+    for (auto [pgn, plies] : {std::pair{"1. e4 e5\n{c} 2. Nf3 Nc6 *", 4}, {"1. e4 e5 2. Nf3\n$1 Nc6 3. Bb5 *", 5},
+                              {"1. e4 {c1}\n{c2} e5 2. Nf3 *", 3}, {"1. {pre} e4 e5 2. Nf3 *", 3}, {"1. e4 e5 2. Nf3\n!? Nc6 *", 4}}) {
+        auto g = parsePgn(pgn);
+        CHECK(g.size() == 1 && (int)g[0].mainline().size() - 1 == plies);
+    }
 
     Openings op;
     CHECK(op.load(OPCAN_SOURCE_DIR "/assets/openings/openings.tsv") && op.size() > 1000);

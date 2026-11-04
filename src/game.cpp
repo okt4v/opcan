@@ -1,6 +1,7 @@
 #include "game.hpp"
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <sstream>
 
 using namespace chess;
@@ -296,7 +297,47 @@ std::vector<Game> parsePgn(std::string_view text) {
     static const std::string dummy = "[OpcanDummy \"\"]\n\n";
     size_t first = text.find_first_not_of(" \t\r\n\xEF\xBB\xBF");
     bool bare = first != std::string_view::npos && text[first] != '[';
-    std::istringstream in{(bare ? dummy : "") + std::string(text)};
+    // chess-library reads a {comment}, $NAG or !? at the start of a line as a move (and drops the rest of the game),
+    // and a comment between a move number and its move ("1. {x} e4") as the end of the movetext: move both out of the way
+    std::string s;
+    s.reserve(text.size());
+    int depth = 0;
+    bool tag = false;  // inside a [Header "..."] (left as is)
+    for (size_t i = 0; i < text.size(); i++) {
+        char c = text[i];
+        if (depth == 0 && (tag || c == '[')) {
+            tag = c != ']';
+            s += c;
+            continue;
+        }
+        if (depth == 0 && std::strchr(" \t\r\n", c)) {
+            size_t j = text.find_first_not_of(" \t\r\n", i);
+            if (j != std::string_view::npos && (text[j] == '!' || text[j] == '?') && !s.empty() && s.back() != ' ')
+                continue;  // "Nf3 !?" -> "Nf3!?": a detached glyph would be read as a move
+            if (j != std::string_view::npos && std::strchr("{$", text[j])) c = ' ';
+        }
+        if (depth == 0 && c == '{' && !s.empty()) {  // "12. {" / "12... {": the comment goes before the number
+            size_t e = s.find_last_not_of(' ');
+            if (e != std::string::npos && s[e] == '.') {
+                size_t b = s.find_last_not_of('.', e);
+                while (b != std::string::npos && std::isdigit((unsigned char)s[b])) b--;
+                b = b == std::string::npos ? 0 : b + 1;
+                if (b <= e && std::isdigit((unsigned char)s[b])) {
+                    size_t close = text.find('}', i);
+                    if (close != std::string_view::npos) {
+                        std::string num = s.substr(b);
+                        s.erase(b);
+                        s.append(text.substr(i, close - i + 1)).append(" ").append(num);
+                        i = close;
+                        continue;
+                    }
+                }
+            }
+        }
+        depth += c == '{' ? 1 : c == '}' && depth ? -1 : 0;
+        s += c;
+    }
+    std::istringstream in{(bare ? dummy : "") + s};
     Builder b;
     pgn::StreamParser parser(in);
     parser.setParseVariations(true);
