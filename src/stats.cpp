@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <ctime>
 #include <map>
+#include <mutex>
+#include <sstream>
 
 using namespace chess;
 
@@ -182,20 +184,123 @@ std::vector<GameRating> opcanRatings(const std::vector<GameRow>& rows) {
     return out;
 }
 
-Stats computeStats(Store& store, int64_t profileId, const StatsFilter& f, const Openings& book,
-                   const std::atomic<bool>* cancel, bool renameOpenings) {
+std::shared_ptr<const CountedGames> countedGames(Store& store, int64_t profileId) {
+    struct Slot { Store* store; int64_t pid; uint64_t ver; std::shared_ptr<const CountedGames> cg; };
+    static std::mutex m;
+    static std::vector<Slot> slots;  // most recently used last; a couple of profiles (and a friend's store)
+    uint64_t ver = store.version();  // before loading: a write during the load leaves this entry stale
+    {
+        std::lock_guard l(m);
+        for (size_t i = 0; i < slots.size(); i++)
+            if (slots[i].store == &store && slots[i].pid == profileId) {
+                if (slots[i].ver == ver) {
+                    std::rotate(slots.begin() + i, slots.begin() + i + 1, slots.end());
+                    return slots.back().cg;
+                }
+                slots.erase(slots.begin() + i);
+                break;
+            }
+    }
+    auto cg = std::make_shared<CountedGames>();
+    cg->games = store.statsGames(profileId, GameFilter{});
+    std::vector<GameRow> rows;
+    rows.reserve(cg->games.size());
+    for (auto& g : cg->games) rows.push_back(g.row);
+    cg->ratings = opcanRatings(rows);
+    std::lock_guard l(m);
+    if (slots.size() >= 3) slots.erase(slots.begin());
+    slots.push_back({&store, profileId, ver, cg});
+    return cg;
+}
+
+Streaks streaksOf(const std::vector<int>& outcomes) {
+    Streaks s;
+    int run = 0;  // > 0 wins, < 0 losses
+    for (int o : outcomes) {
+        if (o < 0) continue;
+        run = o == 0 ? std::max(run, 0) + 1 : o == 2 ? std::min(run, 0) - 1 : 0;
+        s.longestWin = std::max(s.longestWin, run), s.longestLoss = std::max(s.longestLoss, -run);
+    }
+    s.current = run;
+    return s;
+}
+
+Tilt tiltOf(const std::vector<SeqGame>& games) {
+    Tilt r;
+    double sum[2] = {};
+    for (size_t i = 1; i < games.size(); i++) {
+        auto &a = games[i - 1], &b = games[i];
+        if (b.acc < 0 || b.t - a.t > kTiltGap || (a.outcome != 0 && a.outcome != 2)) continue;
+        int k = a.outcome == 2;
+        sum[k] += b.acc;
+        (k ? r.lossN : r.winN)++;
+    }
+    if (r.winN) r.afterWin = sum[0] / r.winN;
+    if (r.lossN) r.afterLoss = sum[1] / r.lossN;
+    return r;
+}
+
+double scoreOf(const int wdl[3]) {
+    int n = wdl[0] + wdl[1] + wdl[2];
+    return n ? (wdl[0] + 0.5 * wdl[1]) / n : -1;
+}
+
+std::vector<Stats::OpeningStat> repertoireGaps(const std::vector<Stats::OpeningStat>& os) {
+    std::vector<Stats::OpeningStat> r;
+    for (auto& o : os)
+        if (o.wdl[0] + o.wdl[1] + o.wdl[2] >= kGapMinGames && scoreOf(o.wdl) < kGapMaxScore) r.push_back(o);
+    std::stable_sort(r.begin(), r.end(), [](auto& a, auto& b) { return scoreOf(a.wdl) < scoreOf(b.wdl); });
+    return r;
+}
+
+std::vector<Move> familyLine(const Openings& book, const std::string& family) {
+    const struct Opening* best = nullptr;
+    for (auto& o : book.all()) {
+        bool own = o.name == family, line = o.name.rfind(family + ":", 0) == 0;
+        if (!own && !line) continue;
+        bool bestOwn = best && best->name == family;
+        if (!best || (own && !bestOwn) || (own == bestOwn && o.pgn.size() < best->pgn.size())) best = &o;
+    }
+    std::vector<Move> r;
+    if (!best) return r;
+    Board b;
+    std::istringstream in(best->pgn);
+    for (std::string t; in >> t;) {
+        if (t.back() == '.') continue;
+        Move m = Move::NO_MOVE;
+        try {
+            m = uci::parseSan(b, t);
+        } catch (...) {
+        }
+        if (m == Move::NO_MOVE) break;
+        b.makeMove(m), r.push_back(m);
+    }
+    return r;
+}
+
+Stats::Headline Stats::headline() const {
+    Headline h;
+    h.games = games, h.analyzed = analyzed, h.decided = wdl[0] + wdl[1] + wdl[2];
+    if (h.decided) h.winRate = 100.0 * wdl[0] / h.decided, h.score = 100 * scoreOf(wdl);
+    h.accuracy = accuracy, h.blundersPerGame = blundersPerGame;
+    h.performance = performance, h.perfGames = perfGames;
+    return h;
+}
+
+namespace {
+
+struct Renamed { int64_t id; std::string eco, name; };
+
+// full = false: the headline numbers only (no openings, clocks or patterns)
+Stats computeImpl(const CountedGames& cg, const StatsFilter& f, const Openings& book, const std::atomic<bool>* cancel,
+                  std::vector<Renamed>* renames, bool full) {
     Stats s;
     std::map<int64_t, GameRating> opcan;  // over every counted game: the filter mustn't change the history
-    for (auto& g : opcanRatings(store.countedRows(profileId, {}))) opcan[g.gameId] = g;
+    for (auto& g : cg.ratings) opcan[g.gameId] = g;
     double perfSum[kTimeClassCount] = {};
     int perfN[kTimeClassCount] = {};
-    GameFilter gf;
-    gf.timeClass = f.timeClass, gf.color = f.color, gf.site = f.site, gf.since = f.since, gf.until = f.until;
-    auto games = store.statsGames(profileId, gf);
     std::string wantUser = lower(f.username);
 
-    struct Renamed { int64_t id; std::string eco, name; };
-    std::vector<Renamed> renames;
     std::map<std::string, Stats::OpeningStat> open[2];
     double accSum = 0, phaseSum[2][3] = {}, timeSum[3] = {}, accMv[2] = {};
     int timeN[3] = {}, blunders = 0;
@@ -204,7 +309,10 @@ Stats computeStats(Store& store, int64_t profileId, const StatsFilter& f, const 
     std::vector<Analyzed> analyzed;
     static const Cls kBadCls[4] = {Cls::Inaccuracy, Cls::Mistake, Cls::Miss, Cls::Blunder};
 
-    for (auto& sg : games) {
+    std::vector<int> results;
+    std::vector<SeqGame> seq;
+
+    for (auto& sg : cg.games) {
         if (cancel && *cancel) {
             s.cancelled = true;
             return s;
@@ -212,6 +320,9 @@ Stats computeStats(Store& store, int64_t profileId, const StatsFilter& f, const 
         const GameRow& row = sg.row;
         int uc = row.userColor;
         if (uc < 0 || uc > 1) continue;
+        if ((!f.timeClass.empty() && row.timeClass != f.timeClass) || (f.color >= 0 && uc != f.color) ||
+            (!f.site.empty() && row.site != f.site) || (f.since && row.playedAt < f.since) || (f.until && row.playedAt >= f.until))
+            continue;
         const std::string& me = uc == 0 ? row.white : row.black;
         if (!wantUser.empty() && lower(me) != wantUser) continue;
         const std::string& opp = uc == 0 ? row.black : row.white;
@@ -240,19 +351,22 @@ Stats computeStats(Store& store, int64_t profileId, const StatsFilter& f, const 
         // lichess "Time forfeit", chess.com "X won on time"
         if (g && oc == 2 && lower(g->header("Termination")).find("time") != std::string::npos) s.lostOnTime++;
 
-        // opening, named from our book (chess.com rows carry URL slugs)
-        std::string opening = row.opening;
-        if (g && book.size()) {
-            if (auto* o = book.of(*g)) {
-                opening = o->name;
-                if (o->name != row.opening || o->eco != row.eco) renames.push_back({row.id, o->eco, o->name});
-            }
-        }
         double gameAcc = row.acc(uc);
         // a side with too few moves has no accuracy (also for reviews stored before that rule)
         bool reviewed = row.reviewDepth > 0 && sg.summary && !sg.evals.empty() && gameAcc >= 0 &&
                         userMoves >= kMinMovesForAccuracy;
-        if (auto fam = openingFamily(opening); !fam.empty()) {
+        results.push_back(oc);
+        seq.push_back({row.playedAt, oc, reviewed ? gameAcc : -1});
+
+        // opening, named from our book (chess.com rows carry URL slugs)
+        std::string opening = row.opening;
+        if (full && book.size()) {
+            if (auto* o = book.of(*g)) {
+                opening = o->name;
+                if (renames && (o->name != row.opening || o->eco != row.eco)) renames->push_back({row.id, o->eco, o->name});
+            }
+        }
+        if (auto fam = openingFamily(opening); full && !fam.empty()) {
             auto& os = open[uc][fam];
             os.name = fam;
             os.games++;
@@ -275,12 +389,13 @@ Stats computeStats(Store& store, int64_t profileId, const StatsFilter& f, const 
             for (int p = 0; p < 3; p++)
                 if (double pa = sg.summary->phaseAccuracy[uc][p]; pa >= 0) phaseSum[uc][p] += pa, s.phaseN[uc][p]++;
         }
+        if (!full) continue;
         // walk the mainline: phases, clocks, per-move accuracy and mistake patterns
         auto ml = g->mainline();
         int base = -1, inc = 0;
         if (auto tcs = g->header("TimeControl"); !tcs.empty() && tcs.find('/') == std::string::npos)
             if (std::sscanf(tcs.c_str(), "%d+%d", &base, &inc) < 1) base = -1;
-        int prevClock = base;
+        int prevClock = base, minClock = base;
         bool timed = false, trouble = false, allBook = true;
         Phase phase = Opening;
         Board before(g->nodes[0].fen);
@@ -299,7 +414,7 @@ Stats computeStats(Store& store, int64_t profileId, const StatsFilter& f, const 
                     troubleMove = prevClock >= 0 && prevClock < kTroubleFrac * base;
                     if (prevClock >= 0) timeSum[phase] += std::max(0, prevClock - nd.clockSec + inc), timeN[phase]++;
                     if (nd.clockSec < kTroubleFrac * base) trouble = true;
-                    prevClock = nd.clockSec;
+                    prevClock = nd.clockSec, minClock = std::min(minClock, nd.clockSec);
                 }
                 if (i + 1 < nEval) {
                     const PosEval &e = sg.evals[i], &nx = sg.evals[i + 1];
@@ -324,7 +439,10 @@ Stats computeStats(Store& store, int64_t profileId, const StatsFilter& f, const 
             before = std::move(after);
         }
         if (timed) s.timedGames++, s.timeTrouble += trouble;
+        if (timed && oc >= 0 && base >= kLowClockMinBase && minClock < kLowClockSec) s.lowClockGames++, s.lowClockLosses += oc == 2;
     }
+    s.streaks = streaksOf(results);
+    s.tilt = tiltOf(seq);
 
     if (s.analyzed) {
         s.accuracy = accSum / s.analyzed;
@@ -377,11 +495,58 @@ Stats computeStats(Store& store, int64_t profileId, const StatsFilter& f, const 
         }
     }
 
+    return s;
+}
+
+}  // namespace
+
+Stats computeStats(Store& store, int64_t profileId, const StatsFilter& f, const Openings& book,
+                   const std::atomic<bool>* cancel, bool renameOpenings) {
+    auto cg = countedGames(store, profileId);
+    std::vector<Renamed> renames;
+    Stats s = computeImpl(*cg, f, book, cancel, &renames, true);
+    if (s.cancelled) return s;
+    if (f.since) {
+        int64_t until = f.until ? f.until : (int64_t)std::time(nullptr);
+        StatsFilter pf = f;
+        s.priorSpan = std::max<int64_t>(1, until - f.since);
+        pf.until = f.since, pf.since = f.since - s.priorSpan;
+        Stats ps = computeImpl(*cg, pf, book, cancel, nullptr, false);
+        if (ps.cancelled) return ps;
+        s.prior = ps.headline();
+    }
     if (renameOpenings && !(cancel && *cancel)) {
         for (auto& r : renames) store.setOpening(r.id, r.eco, r.name);
         s.renamedOpenings = (int)renames.size();
     }
     return s;
+}
+
+Stats::Digest weeklyDigest(Store& store, int64_t profileId, const Openings& book, int64_t now, const std::atomic<bool>* cancel) {
+    Stats::Digest d;
+    auto cg = countedGames(store, profileId);
+    StatsFilter f;
+    f.since = now - 7 * 86400, f.until = now + 1;
+    Stats s = computeImpl(*cg, f, book, cancel, nullptr, true);
+    if (s.cancelled) return d;
+    d.games = s.games, d.analyzed = s.analyzed;
+    for (int k = 0; k < 3; k++) d.wdl[k] = s.wdl[k];
+    std::map<int64_t, const GameRow*> rows;
+    for (auto& g : cg->games) rows[g.row.id] = &g.row;
+    auto fill = [&](Stats::Digest::G& g, const Stats::AccPoint& a) {
+        g.id = a.gameId, g.t = a.t, g.acc = a.acc;
+        if (auto* r = rows[a.gameId]) g.opp = r->userColor == 0 ? r->black : r->white;
+    };
+    for (auto& a : s.accTrend) {
+        d.analyzedIds.push_back(a.gameId);
+        if (d.best.acc < 0 || a.acc > d.best.acc) fill(d.best, a);
+        if (d.worst.acc < 0 || a.acc < d.worst.acc) fill(d.worst, a);
+    }
+    if (s.accTrend.size() < 2) d.worst = {};  // with one game it's only the best
+    for (int p = 0; p < (int)Pattern::Count; p++)
+        if (s.patterns[p].count > d.patternN) d.pattern = p, d.patternN = s.patterns[p].count;
+    for (auto& p : s.periods) d.puzzles += p.cls[1] + p.cls[2] + p.cls[3];
+    return d;
 }
 
 // ---------- trends ----------
@@ -425,16 +590,13 @@ GameMetrics gameMetrics(const Game& g, const std::vector<PosEval>& evals, const 
     return m;
 }
 
-// ponytail: reloads the counted games each call (23 ms for ~500 on a worker thread); cache per profile if libraries grow 100x
 GameTrends computeTrends(Store& store, int64_t profileId, int64_t excludeGameId, const GameMetrics& game) {
     GameTrends t;
-    auto games = store.statsGames(profileId, GameFilter{});  // oldest first
-    if (excludeGameId) {
-        std::vector<GameRow> rows;
-        for (auto& g : games) rows.push_back(g.row);
-        for (auto& g : opcanRatings(rows))
+    auto cg = countedGames(store, profileId);
+    auto& games = cg->games;  // oldest first
+    if (excludeGameId)
+        for (auto& g : cg->ratings)
             if (g.gameId == excludeGameId) t.rating = g;
-    }
     std::vector<double> xs[3];
     int used = 0;
     for (auto it = games.rbegin(); it != games.rend() && used < kTrendGames; ++it) {

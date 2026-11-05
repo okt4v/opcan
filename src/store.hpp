@@ -121,6 +121,9 @@ public:
     ~Store();
     bool open(const std::string& path);  // creates/migrates the schema; ensures the Guest profile exists
     std::string error() const;
+    // Changes whenever games or reviews may have changed (any write to them here, or another connection's commit,
+    // e.g. `opcan --analyze`); unique across Store objects. Caches of game data key on it.
+    uint64_t version();
 
     static std::string hashPin(const std::string& pin);
 

@@ -167,6 +167,121 @@ void checkStats() {
     std::atomic<bool> stop{true};
     CHECK(computeStats(s, p.id, {}, none, &stop).cancelled);
     CHECK(openingFamily("Sicilian Defense: Open") == "Sicilian Defense" && openingFamily("Bird Opening") == "Bird Opening");
+
+    // the prior window: [t0+2d, t0+4d) against [t0, t0+2d): a win and a draw before (bots, aborted, coach left out)
+    CHECK(!computeStats(s, p.id, {}, none).prior);  // all time: nothing before
+    f = {};
+    f.since = t0 + 2 * day, f.until = t0 + 4 * day;
+    st = computeStats(s, p.id, f, none);
+    CHECK(st.games == 3 && st.prior && st.priorSpan == 2 * day);
+    CHECK(st.prior->games == 2 && st.prior->decided == 2 && st.prior->winRate == 50 && st.prior->score == 75);
+    CHECK(st.prior->analyzed == 0 && st.prior->accuracy == -1);  // no accuracy, not 0
+    auto hl = st.headline();
+    CHECK(hl.games == 3 && std::abs(hl.winRate - 100.0 / 3) < 1e-9 && hl.accuracy == st.accuracy && hl.analyzed == 1);
+    // streaks over the filter (b loss, m loss, q win, oldest first) and the low clock rate: "b" starts at 60 s, too short
+    CHECK(st.streaks.current == 1 && st.streaks.longestLoss == 2 && st.streaks.longestWin == 1);
+    CHECK(computeStats(s, p.id, {}, none).lowClockGames == 0);
+
+    // weekly digest: the last 7 days before t0+3d, whatever the filter
+    {
+        auto d = weeklyDigest(s, p.id, none, t0 + 3 * day);
+        CHECK(d.games == 5 && d.wdl[0] == 2 && d.wdl[1] == 1 && d.wdl[2] == 2 && d.analyzed == 1);
+        CHECK(d.best.id == m && d.best.opp == "oppm" && d.worst.id == 0);  // one analyzed game: only a best
+        CHECK(d.pattern == (int)Pattern::AllowedMate && d.patternN == 1 && d.puzzles == 1);
+        CHECK(d.analyzedIds.size() == 1 && d.analyzedIds[0] == m);
+        CHECK(weeklyDigest(s, p.id, none, t0 + 30 * day).games == 0);
+    }
+
+    // the cache: one load until a write to games or reviews (here, or by another connection)
+    {
+        auto a = countedGames(s, p.id), b = countedGames(s, p.id);
+        CHECK(a == b && a->games.size() == 5 + 1);  // + the aborted "z": computeStats drops it
+        int64_t n = addGame(s, p.id, "n", 0, "1-0", 1500, 1500, "blitz", t0 + 4 * day, "\n1. e4 e5 2. Nf3 Nc6 1-0");
+        auto c = countedGames(s, p.id);
+        CHECK(c != a && c->games.size() == a->games.size() + 1 && c->ratings.size() == a->ratings.size() + 1);
+        CHECK(computeStats(s, p.id, {}, none).games == 6);
+        GameRow r = *s.game(n);
+        r.countsInStats = false;
+        s.updateGameMeta(r);
+        CHECK(countedGames(s, p.id)->games.size() == a->games.size());
+        CHECK(computeStats(s, p.id, {}, none).games == 5);
+        auto e = countedGames(s, p.id);
+        s.clearReview(q);
+        CHECK(countedGames(s, p.id) != e && !countedGames(s, p.id)->games.empty());
+        e = countedGames(s, p.id);
+        s.setAccountSync(p.accounts[0].id, 1, 1);  // not a game write: still cached
+        CHECK(countedGames(s, p.id) == e);
+        s.deleteGame(n);
+        CHECK(countedGames(s, p.id) != e);
+        e = countedGames(s, p.id);
+        {
+            Store other;  // `opcan --analyze` and friends: another connection's commit
+            CHECK(other.open(path.string()));
+            addGame(other, p.id, "o", 0, "1-0", 1500, 1500, "blitz", t0 + 4 * day, "\n1. e4 e5 2. Nf3 Nc6 1-0");
+        }
+        CHECK(countedGames(s, p.id) != e && countedGames(s, p.id)->games.size() == e->games.size() + 1);
+    }
+
+    // time trouble: decided games starting with 3+ minutes where the user's clock fell under 30 s
+    {
+        Profile c;
+        c.name = "Clock";
+        s.saveProfile(c);
+        auto clk = [](int a, int b, int c2, int d) {
+            auto t = [](int sec) { return std::string("{[%clk 0:0") + std::to_string(sec / 60) + ":" + (sec % 60 < 10 ? "0" : "") +
+                                          std::to_string(sec % 60) + "]}"; };
+            return "1. e4 " + t(a) + " 1... e5 " + t(b) + " 2. Nf3 " + t(c2) + " 2... Nc6 " + t(d);
+        };
+        addGame(s, c.id, "l1", 0, "0-1", 1500, 1500, "blitz", t0, "[TimeControl \"180+0\"]\n\n" + clk(170, 175, 25, 170) + " 0-1");
+        addGame(s, c.id, "l2", 0, "1-0", 1500, 1500, "blitz", t0 + 1, "[TimeControl \"180+0\"]\n\n" + clk(170, 175, 20, 170) + " 1-0");
+        addGame(s, c.id, "l3", 0, "0-1", 1500, 1500, "blitz", t0 + 2, "[TimeControl \"180+0\"]\n\n" + clk(170, 175, 150, 170) + " 0-1");
+        addGame(s, c.id, "l4", 0, "0-1", 1500, 1500, "bullet", t0 + 3, "[TimeControl \"60+0\"]\n\n" + clk(50, 55, 10, 50) + " 0-1");
+        addGame(s, c.id, "l5", 0, "0-1", 1500, 1500, "blitz", t0 + 4, "[TimeControl \"180+0\"]\n\n" + clk(170, 175, 5, 170) + " 0-1",
+                true, true);  // vs a bot: never counts
+        Stats cs = computeStats(s, c.id, {}, none);
+        CHECK(cs.games == 4 && cs.timedGames == 4);
+        CHECK(cs.lowClockGames == 2 && cs.lowClockLosses == 1);
+        CHECK(cs.streaks.current == -2 && cs.streaks.longestLoss == 2 && cs.streaks.longestWin == 1);
+    }
+
+    // streaks, tilt, repertoire gaps (pure)
+    {
+        auto k = streaksOf({0, 0, 1, 2, 2, 2, 0});
+        CHECK(k.current == 1 && k.longestWin == 2 && k.longestLoss == 3);
+        k = streaksOf({0, 2, 2, -1});  // unfinished: skipped
+        CHECK(k.current == -2 && k.longestLoss == 2 && k.longestWin == 1);
+        k = streaksOf({0, 0, 1});
+        CHECK(k.current == 0 && k.longestWin == 2);
+        CHECK(streaksOf({}).current == 0);
+
+        const int64_t hr = 3600;
+        Tilt t = tiltOf({{0, 0, 70},             // win
+                         {hr, 2, 80},            // after the win: 80; a loss
+                         {2 * hr, 0, 60},        // after the loss: 60; a win
+                         {2 * hr + 10, 2, -1},   // after the win but n/a: skipped; a loss
+                         {6 * hr, 0, 99},        // 4 h after the loss: another session, skipped
+                         {6 * hr + 60, 1, 90},   // after the win: 90; a draw
+                         {6 * hr + 120, 0, 50}});  // after a draw: neither
+        CHECK(t.winN == 2 && t.afterWin == 85 && t.lossN == 1 && t.afterLoss == 60);
+        CHECK(tiltOf({}).winN == 0 && tiltOf({}).afterWin == -1);
+
+        auto op = [](const char* n, int w, int d, int l) {
+            Stats::OpeningStat o;
+            o.name = n, o.games = w + d + l, o.wdl[0] = w, o.wdl[1] = d, o.wdl[2] = l;
+            return o;
+        };
+        int wdl[3] = {1, 1, 2};
+        CHECK(scoreOf(wdl) == 0.375);
+        auto gaps = repertoireGaps({op("A", 1, 1, 3), op("B", 1, 0, 3), op("C", 2, 0, 3), op("D", 0, 2, 4), op("E", 5, 0, 0)});
+        CHECK(gaps.size() == 2 && gaps[0].name == "D" && gaps[1].name == "A");  // B: 4 games; C: exactly 40%
+    }
+    {
+        Openings book;
+        CHECK(book.load(std::string(OPCAN_SOURCE_DIR) + "/assets/openings/openings.tsv"));
+        auto line = familyLine(book, "Sicilian Defense");
+        CHECK(line.size() == 2 && chess::uci::moveToUci(line[1]) == "c7c5");
+        CHECK(familyLine(book, "No Such Opening").empty() && familyLine(none, "Sicilian Defense").empty());
+    }
     std::puts("stats checks passed");
 
     // trends: the opening score against the usual of a separate profile's 5 reviewed games (72 +- 2)

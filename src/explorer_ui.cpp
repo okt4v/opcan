@@ -8,8 +8,6 @@
 using namespace chess;
 
 namespace {
-const char* kRanges[] = {"30 days", "90 days", "1 year", "All time"};
-const int kRangeDays[] = {30, 90, 365, 0};
 const char* kTcLabel[] = {"All time controls", "Bullet", "Blitz", "Rapid", "Classical", "Daily"};
 Move hoverMove = Move::NO_MOVE;  // row under the mouse last frame: shown as an arrow
 
@@ -74,6 +72,15 @@ void App::Impl::startExplorer() {
     if (ex.tc > 0) gf.timeClass = kTimeClasses[ex.tc - 1];
     if (int d = kRangeDays[ex.range]) gf.since = (int64_t)std::time(nullptr) - (int64_t)d * 86400;
     ex.job.run([st = &store, pid = prof->id, gf] { return buildExplorer(st->countedRows(pid, gf)); });
+}
+
+void App::Impl::exploreOpening(int color, const std::string& family) {
+    auto line = familyLine(book, family);
+    if (line.empty()) return notify("The " + family + " isn't in the openings book");
+    ex.color = color;
+    ex.line = line, ex.pos = (int)line.size();
+    hoverMove = Move::NO_MOVE;
+    view = View::Openings;
 }
 
 void App::Impl::showExplorerGames(const std::vector<int64_t>& ids, const std::string& line) {
@@ -169,8 +176,8 @@ void App::Impl::drawExplorer() {
     place(200);
     int c = pageSegmented("excolor", colors, 2, color, 200);
     if (c != color) ex.color = color = c, node = nullptr, hoverMove = Move::NO_MOVE;
-    place(320);
-    int r = pageSegmented("exrange", kRanges, 4, ex.range, 320);
+    place(400);
+    int r = pageSegmented("exrange", kRangeLabels, kRangeCount, ex.range, 400);
     if (r != ex.range) ex.range = r, changed = true;
     place(168);
     ImGui::SetNextItemWidth(168);

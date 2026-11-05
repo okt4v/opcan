@@ -1,0 +1,21 @@
+# stats: weekly digest, tiles with deltas vs the prior window, 7 days / since sync, then the cards further down
+#needs-db
+#env OPCAN_PROFILE=2 OPCAN_PAGE=stats
+wait 5s
+shot st-all.png
+click 359 92
+wait 5s
+shot st-30d.png
+click 279 92
+wait 5s
+shot st-7d.png
+move 800 600
+scroll -12
+wait 10
+shot st-mid.png
+scroll -12
+wait 10
+shot st-mid2.png
+scroll -30
+wait 10
+shot st-bottom.png

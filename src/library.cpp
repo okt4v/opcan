@@ -8,6 +8,7 @@
 #include <stb_image.h>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -443,6 +444,7 @@ void App::Impl::selectProfile(const Profile& p) {
     statsJob.reset();
     statsStale = true;
     statsAcc = 0, statsPattern = -1;
+    syncPrev = std::atoll(store.setting(pkey("syncPrev"), "-1").c_str());
     ex = ExplorerUi{};
     queueAt = -100;
     autoQueuedId = -1;  // read from the profile's setting in backgroundWork
@@ -990,6 +992,8 @@ void App::Impl::startSync(bool older) {
     if (prof->accounts.empty()) return;
     if (!syncer) syncer = std::make_unique<Syncer>();
     lastAdded = 0;
+    syncOlder = older, syncFrom = 0;
+    for (auto& a : prof->accounts) syncFrom = std::max(syncFrom, a.newest);
     syncer->start(store, *prof, older, &book);
     syncWasRunning = true;
 }
@@ -1007,6 +1011,10 @@ void App::Impl::pollSync() {
         libDirty = true;
         queueAt = -100;
         if (!syncer->error().empty()) notify("Sync: " + syncer->error());
+        if (!syncOlder && syncer->added() > 0) {  // "Since sync" on the Stats page: games newer than before this sync
+            syncPrev = syncFrom ? syncFrom + 1 : 0;
+            store.setSetting(pkey("syncPrev"), std::to_string(syncPrev));
+        }
         if (auto p = store.profile(prof->id)) prof = *p;
     }
     syncWasRunning = run;

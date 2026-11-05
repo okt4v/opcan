@@ -2,6 +2,7 @@
 #include "app_impl.hpp"
 #include <nlohmann/json.hpp>
 #include <cctype>
+#include <cstdlib>
 #include <ctime>
 #include <functional>
 #include <map>
@@ -128,7 +129,7 @@ void App::Impl::drawTrain() {
         tr.puzzlesSynced = true;
         Store* st = &store;
         int64_t pid = prof->id;
-        tr.gen.run([st, pid] { return st->addCards(mistakePuzzles(st->statsGames(pid, {}), pid, nowS())); });
+        tr.gen.run([st, pid] { return st->addCards(mistakePuzzles(countedGames(*st, pid)->games, pid, nowS())); });
     }
     if (tr.gen.busy()) animUntil = ImGui::GetTime() + 0.2;
     if (tr.stale) trainLoad();
@@ -362,20 +363,41 @@ void App::Impl::trainCourses() {
             std::string deck = courseDeck(c, fam.name);
             bool has = started.count(deck);
             std::string label = std::string(has ? "Practice as " : "Learn as ") + colorWord(c);
-            if (ImGui::Button(label.c_str(), {150, 32})) {
-                if (!has) {
-                    int n = store.addCards(courseCards(book, fam.name, c, prof->id, nowS()));
-                    notify("Added " + std::to_string(n) + " lines of the " + fam.name);
-                }
-                trainLoad();
-                trainStart(practiceQueue(inDeck(tr.all, deck)), fam.name + " as " + colorWord(c));
-            }
+            if (ImGui::Button(label.c_str(), {150, 32})) trainCourse(c, fam.name);
         }
         ImGui::SetCursorScreenPos({p.x, p.y + 48});
         ImGui::Dummy({W, 0});
         ImGui::PopID();
     }
     ImGui::EndChild();
+}
+
+void App::Impl::trainCourse(int color, const std::string& family) {
+    std::string deck = courseDeck(color, family);
+    trainLoad();
+    if (inDeck(tr.all, deck).empty()) {
+        int n = store.addCards(courseCards(book, family, color, prof->id, nowS()));
+        if (!n) return notify("No book lines for the " + family);
+        notify("Added " + std::to_string(n) + " lines of the " + family);
+        trainLoad();
+    }
+    view = View::Train;
+    trainStart(practiceQueue(inDeck(tr.all, deck)), family + " as " + colorWord(color));
+}
+
+void App::Impl::trainGames(const std::vector<int64_t>& ids, const std::string& title) {
+    std::set<int64_t> want(ids.begin(), ids.end());
+    std::vector<StatsGame> games;
+    for (auto& g : countedGames(store, prof->id)->games)
+        if (want.count(g.row.id)) games.push_back(g);
+    store.addCards(mistakePuzzles(games, prof->id, nowS()));  // usually there already (the Train page adds them)
+    std::vector<Card> q;
+    for (auto& c : store.cards(prof->id, "mistakes"))
+        if (c.deck == "mistakes" && want.count(std::atoll(c.key.c_str()))) q.push_back(c);  // key: "<game id>:<ply>"
+    if (q.empty()) return notify("No puzzles in these games");
+    tr.stale = true;
+    view = View::Train;
+    trainStart(q, title);
 }
 
 // ---------- session ----------

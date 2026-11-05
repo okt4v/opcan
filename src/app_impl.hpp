@@ -217,7 +217,7 @@ struct PlaySession {
 };
 // Opening explorer page (explorer_ui.cpp): a line through the tree of the user's games.
 struct ExplorerUi {
-    int color = -1, range = 3, tc = 0;  // color -1: not chosen yet (the one with more games)
+    int color = -1, range = kRangeAll, tc = 0;  // color -1: not chosen yet (the one with more games); range: kRangeLabels
     std::vector<chess::Move> line;      // moves from the start; the first `pos` are played
     int pos = 0;
     std::optional<Explorer> tree;
@@ -480,12 +480,14 @@ struct App::Impl {
     int total = 0, allGames = 0, lastAdded = 0;
     double lastSyncPoll = 0;
     std::unique_ptr<Syncer> syncer;
-    bool syncWasRunning = false;
+    bool syncWasRunning = false, syncOlder = false;
+    int64_t syncFrom = 0;   // newest synced game when the running sync started
+    int64_t syncPrev = -1;  // Stats "Since sync": games from here on (setting p<id>.syncPrev); -1 = no sync brought games yet
     int64_t editMetaId = 0, deleteId = 0;
     char editTags[256] = "", editNotes[2048] = "";
 
     // stats page
-    int statsRange = 3, statsTc = 0, statsColor = 0, statsAcc = 0;  // UI selections (0 = any/all)
+    int statsRange = kRangeAll, statsTc = 0, statsColor = 0, statsAcc = 0;  // UI selections (0 = any/all)
     std::optional<Stats> stats;
     Async<Stats> statsJob;
     // trends of the open game vs the user's usual (computed once per opened review)
@@ -680,6 +682,13 @@ struct App::Impl {
     void startStats();
     void drawStats();
     void drawStatsCards(const Stats& s, float W);
+    float drawDigest(const Stats::Digest& d, ImVec2 at, float W);  // returns its bottom
+    // Stats page links: puzzles from these games' mistakes, an opening course, the explorer at an opening family,
+    // a practice game vs the engine at minutes+inc (never counts)
+    void trainGames(const std::vector<int64_t>& ids, const std::string& title);
+    void trainCourse(int color, const std::string& family);
+    void exploreOpening(int color, const std::string& family);
+    void practiceClock(int minutes, int inc);
 
     // play_ui.cpp
     std::string tbDir() const;  // the tablebase folder in use ("" if none)

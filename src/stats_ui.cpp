@@ -9,8 +9,6 @@
 
 namespace {
 
-const char* kRanges[] = {"30 days", "90 days", "1 year", "All time"};
-const int kRangeDays[] = {30, 90, 365, 0};
 const char* kTcLabel[] = {"All time controls", "Bullet", "Blitz", "Rapid", "Classical", "Daily"};
 const char* kTcName[] = {"Bullet", "Blitz", "Rapid", "Classical", "Daily"};
 const char* kColLabel[] = {"Both colors", "White", "Black"};
@@ -235,7 +233,8 @@ void ring(ImDrawList* dl, ImVec2 c, ImU32 col) {
 StatsFilter App::Impl::statsFilter() const {
     StatsFilter f;
     if (statsTc > 0) f.timeClass = kTimeClasses[statsTc - 1];
-    if (int d = kRangeDays[statsRange]) f.since = (int64_t)std::time(nullptr) - (int64_t)d * 86400;
+    if (statsRange == kRangeSync) f.since = std::max<int64_t>(0, syncPrev);
+    else if (int d = kRangeDays[statsRange]) f.since = (int64_t)std::time(nullptr) - (int64_t)d * 86400;
     f.color = statsColor - 1;
     if (statsAcc > 0 && statsAcc <= (int)prof->accounts.size()) {
         f.site = prof->accounts[statsAcc - 1].site;
@@ -250,7 +249,9 @@ void App::Impl::startStats() {
     statsStale = false;
     statsAt = ImGui::GetTime();
     statsJob.run([st = &store, bk = &book, pid = prof->id, f = statsFilter(), c = statsCancel] {
-        return computeStats(*st, pid, f, *bk, c.get());
+        Stats s = computeStats(*st, pid, f, *bk, c.get());
+        if (!s.cancelled) s.digest = weeklyDigest(*st, pid, *bk, (int64_t)std::time(nullptr), c.get());
+        return s;
     });
 }
 
@@ -301,21 +302,28 @@ void App::Impl::drawStats() {
         firstF = false;
     };
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {12, 8});
-    place(320);
+    // "Since sync" once a sync brought games
+    int nRanges = kRangeCount + (!prof->accounts.empty() && syncPrev >= 0);
+    if (statsRange >= nRanges) statsRange = kRangeAll, changed = true;
+    float rw = 80.f * nRanges;
+    place(rw);
     {
         ImVec2 sp = ImGui::GetCursorScreenPos();
-        float sw = 320.f / 4, sh = ImGui::GetFrameHeight();
+        float sw = rw / nRanges, sh = ImGui::GetFrameHeight();
         ImGui::BeginGroup();
-        dl->AddRectFilled(sp, {sp.x + 320, sp.y + sh}, theme::panel2, 8);
-        for (int i = 0; i < 4; i++) {
+        dl->AddRectFilled(sp, {sp.x + rw, sp.y + sh}, theme::panel2, 8);
+        for (int i = 0; i < nRanges; i++) {
             ImGui::SetCursorScreenPos({sp.x + i * sw, sp.y});
             ImGui::PushID(i);
             if (ImGui::InvisibleButton("range", {sw, sh}) && statsRange != i) statsRange = i, changed = true;
             bool hov = ImGui::IsItemHovered();
+            if (hov && i == kRangeSync)
+                ImGui::SetTooltip("Games played since %s: the new ones from your last sync",
+                                  syncPrev > 0 ? strTime(syncPrev, "%b %d, %H:%M").c_str() : "you started syncing");
             ImVec2 a{sp.x + i * sw + 3, sp.y + 3}, b{sp.x + (i + 1) * sw - 3, sp.y + sh - 3};
             if (i == statsRange) dl->AddRectFilled(a, b, theme::line, 6);
             else if (hov) dl->AddRectFilled(a, b, theme::hover, 6);
-            textCentered(dl, {(a.x + b.x) / 2, (a.y + b.y) / 2}, i == statsRange ? theme::text : theme::dim, kRanges[i]);
+            textCentered(dl, {(a.x + b.x) / 2, (a.y + b.y) / 2}, i == statsRange ? theme::text : theme::dim, kRangeLabels[i]);
             ImGui::PopID();
         }
         ImGui::EndGroup();
@@ -376,7 +384,7 @@ void App::Impl::drawStats() {
 
     if (s.games == 0) {
         ImVec2 c = ImGui::GetCursorScreenPos();
-        bool filtered = statsRange != 3 || statsTc || statsColor || statsAcc;
+        bool filtered = statsRange != kRangeAll || statsTc || statsColor || statsAcc;
         ImGui::Dummy({0, 48});
         ImGui::PushFont(f.bold, 18);
         textCentered(dl, {c.x + W / 2, c.y + 48}, theme::text, filtered ? "No games in this selection" : "No games to count yet");
@@ -406,21 +414,102 @@ void App::Impl::drawStatsFor(const Stats& s, float W) {  // a friend's stats (fr
     statsTc = tc, statsColor = col;
 }
 
+// The weekly digest: a full-width panel at y. Returns its bottom.
+float App::Impl::drawDigest(const Stats::Digest& d, ImVec2 o, float W) {
+    auto* dl = ImGui::GetWindowDrawList();
+    bool train = d.puzzles > 0;
+    int cols = W >= 760 ? 4 : 2, rows = 4 / cols;
+    float head = 48, cellH = 64, h = kPad + head + rows * cellH + kPad - 8;
+    dl->AddRectFilled(o, {o.x + W, o.y + h}, theme::panel, 10);
+    text(dl, f.bold, 15, {o.x + kPad, o.y + kPad}, theme::text, "This week");
+    text(dl, f.ui, 13, {o.x + kPad, o.y + kPad + 20}, theme::dim, "Your last 7 days, whatever the filters");
+    if (train) {
+        std::string bl = "Train these (" + std::to_string(d.puzzles) + ")";
+        ImGui::SetCursorScreenPos({o.x + W - kPad - 150, o.y + kPad});
+        if (accentButton(bl.c_str(), {150, 32})) trainGames(d.analyzedIds, "This week's mistakes");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Puzzles from this week's mistakes, misses and blunders (Train page)");
+    }
+    auto date = [](int64_t t) { return strTime(t, "%a %b %d"); };
+    struct Cell { std::string label, value, sub; ImU32 col; int64_t game; };
+    Cell c[4] = {
+        {"Games", std::to_string(d.games), std::to_string(d.wdl[0]) + "W  " + std::to_string(d.wdl[1]) + "D  " + std::to_string(d.wdl[2]) + "L",
+         theme::text, 0},
+        {"Best game", d.best.id ? fmt("%.1f", d.best.acc) : "–", d.best.id ? "vs " + d.best.opp + " · " + date(d.best.t) : "No analyzed games",
+         d.best.id ? theme::win : theme::dim, d.best.id},
+        {"Worst game", d.worst.id ? fmt("%.1f", d.worst.acc) : "–",
+         d.worst.id ? "vs " + d.worst.opp + " · " + date(d.worst.t) : d.analyzed ? "Needs 2 analyzed games" : "No analyzed games",
+         d.worst.id ? theme::loss : theme::dim, d.worst.id},
+        {"Most common mistake", d.pattern >= 0 ? patternName((Pattern)d.pattern) : "–",
+         d.pattern >= 0 ? std::to_string(d.patternN) + (d.patternN == 1 ? " time" : " times") : d.analyzed ? "No mistakes" : "No analyzed games",
+         theme::text, 0},
+    };
+    float cw = (W - 2 * kPad - kGap * (cols - 1)) / cols;
+    for (int i = 0; i < 4; i++) {
+        ImVec2 a{o.x + kPad + (i % cols) * (cw + kGap), o.y + kPad + head + (i / cols) * cellH};
+        bool hov = false;
+        if (c[i].game) {
+            ImGui::PushID(i);
+            ImGui::SetCursorScreenPos({a.x - 8, a.y - 6});
+            if (ImGui::InvisibleButton("dg", {cw + 8, cellH - 6})) openStored(c[i].game);
+            hov = ImGui::IsItemHovered();
+            if (hov) dl->AddRectFilled({a.x - 8, a.y - 6}, {a.x + cw, a.y + cellH - 12}, theme::panel2, 6), ImGui::SetTooltip("Open this game");
+            ImGui::PopID();
+        }
+        bool word = i == 3;  // a pattern name, not a number
+        ImGui::PushFont(word ? f.bold : f.mono, word ? 16 : 20);
+        std::string v = ellipsize(c[i].value, cw);
+        ImGui::PopFont();
+        ImGui::PushFont(f.ui, 12);
+        std::string sb = ellipsize(c[i].sub, cw);
+        ImGui::PopFont();
+        text(dl, f.ui, 13, {a.x, a.y}, theme::dim, c[i].label);
+        text(dl, word ? f.bold : f.mono, word ? 16 : 20, {a.x, a.y + (word ? 19 : 17)}, c[i].col, v);
+        text(dl, f.ui, 12, {a.x, a.y + 42}, hov ? theme::accent : theme::dim, sb);
+    }
+    ImGui::SetCursorScreenPos({o.x, o.y + h});
+    return o.y + h;
+}
+
 void App::Impl::drawStatsCards(const Stats& s, float W) {
     auto* dl = ImGui::GetWindowDrawList();
     ImVec2 origin = ImGui::GetCursorScreenPos();
     float y = origin.y;
 
+    if (s.digest && s.digest->games > 0) y = drawDigest(*s.digest, {origin.x, y}, W) + kGap;
+
     // ---- KPI tiles ----
     {
-        struct Tile { std::string label, value, sub; ImU32 subCol = theme::dim; std::string tip; };
+        struct Tile { std::string label, value, sub; ImU32 subCol = theme::dim; std::string tip, note; ImU32 noteCol = theme::dim; };
         std::vector<Tile> tiles;
         int n = s.wdl[0] + s.wdl[1] + s.wdl[2];
-        tiles.push_back({"Games", std::to_string(s.games),
-                         std::to_string(s.wdl[0]) + "W  " + std::to_string(s.wdl[1]) + "D  " + std::to_string(s.wdl[2]) + "L"});
-        tiles.push_back({"Win rate", pct(s.wdl[0], n), "Draws " + pct(s.wdl[1], n)});
-        tiles.push_back({"Avg accuracy", s.accuracy >= 0 ? fmt("%.1f", s.accuracy) : "–",
-                         s.analyzed ? std::to_string(s.analyzed) + " analyzed" : "No analyzed games yet"});
+        // vs the prior window: shown when both sides rest on enough games; better = higher unless lowerBetter
+        auto h = s.headline();
+        static const char* kPrior[] = {"vs prior 7 days", "vs prior 30 days", "vs prior 90 days", "vs prior year", "", "vs the span before"};
+        std::string priorLabel = statsRange >= 0 && statsRange <= kRangeSync ? kPrior[statsRange] : "vs before";
+        auto delta = [&](Tile& t, double now, double before, int nNow, int nBefore, const char* f, double eps, bool lowerBetter,
+                         const char* unit = "") {
+            if (nNow > 0 && nNow < kLowSample) {
+                t.note = std::to_string(nNow) + (nNow == 1 ? " game" : " games") + " · low confidence";
+                return;
+            }
+            if (!s.prior || now < 0 || before < 0 || nBefore < kLowSample) return;
+            double d = now - before;
+            t.note = fmt(f, d) + unit + " " + priorLabel;
+            bool better = lowerBetter ? d < -eps : d > eps, worse = lowerBetter ? d > eps : d < -eps;
+            t.noteCol = better ? theme::win : worse ? theme::loss : theme::dim;
+        };
+        Tile gt{"Games", std::to_string(s.games),
+                std::to_string(s.wdl[0]) + "W  " + std::to_string(s.wdl[1]) + "D  " + std::to_string(s.wdl[2]) + "L"};
+        if (s.prior) gt.note = fmt("%+.0f", (double)(s.games - s.prior->games)) + " " + priorLabel;
+        tiles.push_back(gt);
+        Tile wt{"Win rate", pct(s.wdl[0], n), "Draws " + pct(s.wdl[1], n)};
+        if (h.score >= 0) wt.tip = "Score " + fmt("%.0f%%", h.score) + " (a draw counts half)";
+        delta(wt, h.winRate, s.prior ? s.prior->winRate : -1, n, s.prior ? s.prior->decided : 0, "%+.0f", 0.5, false, " pts");
+        tiles.push_back(wt);
+        Tile at{"Avg accuracy", s.accuracy >= 0 ? fmt("%.1f", s.accuracy) : "–",
+                s.analyzed ? std::to_string(s.analyzed) + " analyzed" : "No analyzed games yet"};
+        delta(at, s.accuracy, s.prior ? s.prior->accuracy : -1, s.analyzed, s.prior ? s.prior->analyzed : 0, "%+.1f", 0.05, false);
+        tiles.push_back(at);
         Tile rt{"Rating", s.currentRating ? std::to_string(s.currentRating) : "–", "No rated games"};
 
         if (s.ratingClass >= 0 && !s.ratings[s.ratingClass].empty()) {
@@ -433,11 +522,21 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
         if (s.opcanRating)
             rt.tip = "opcan rating " + std::to_string(s.opcanRating) + "\nPerformance " + std::to_string(s.performance) + " over " +
                    std::to_string(s.perfGames) + (s.perfGames == 1 ? " game" : " games");
+        if (s.perfGames) {
+            delta(rt, s.performance, s.prior && s.prior->perfGames ? s.prior->performance : -1, s.perfGames,
+                  s.prior ? s.prior->perfGames : 0, "%+.0f", 0.5, false);
+            if (!rt.note.empty()) rt.note = (s.perfGames < kLowSample ? "Performance: " : "Performance ") + rt.note;
+        }
         tiles.push_back(rt);
-        tiles.push_back({"Blunders per game", s.blundersPerGame >= 0 ? fmt("%.2f", s.blundersPerGame) : "–",
-                         s.analyzed ? "in analyzed games" : "No analyzed games yet"});
+        Tile bt{"Blunders per game", s.blundersPerGame >= 0 ? fmt("%.2f", s.blundersPerGame) : "–",
+                s.analyzed ? "in analyzed games" : "No analyzed games yet"};
+        delta(bt, s.blundersPerGame, s.prior ? s.prior->blundersPerGame : -1, s.analyzed, s.prior ? s.prior->analyzed : 0, "%+.2f",
+              0.005, true);
+        tiles.push_back(bt);
+        bool notes = false;
+        for (auto& t : tiles) notes |= !t.note.empty();
         int per = W >= 640 ? 5 : W >= 480 ? 3 : 2;
-        float tw = (W - kGap * (per - 1)) / per, th = 88;
+        float tw = (W - kGap * (per - 1)) / per, th = notes ? 104 : 88;
         for (size_t i = 0; i < tiles.size(); i++) {
             int col = (int)i % per, row = (int)i / per;
             ImVec2 a{origin.x + col * (tw + kGap), y + row * (th + kGap)};
@@ -449,6 +548,13 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
             ImGui::PopFont();
             text(dl, f.ui, 12, {a.x + kPad, a.y + 64}, tiles[i].subCol, sub);
             std::string tip = sub != tiles[i].sub ? tiles[i].sub : "";
+            if (!tiles[i].note.empty()) {
+                ImGui::PushFont(f.ui, 12);
+                std::string note = ellipsize(tiles[i].note, tw - 2 * kPad);
+                ImGui::PopFont();
+                text(dl, f.ui, 12, {a.x + kPad, a.y + 81}, tiles[i].noteCol, note);
+                if (note != tiles[i].note) tip += (tip.empty() ? "" : "\n") + tiles[i].note;
+            }
             if (!tiles[i].tip.empty()) tip += (tip.empty() ? "" : "\n") + tiles[i].tip;
             if (!tip.empty() && ImGui::IsMouseHoveringRect(a, {a.x + tw, a.y + th})) ImGui::SetTooltip("%s", tip.c_str());
         }
@@ -659,7 +765,7 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
     }});
 
     // time usage
-    cards.push_back({"Time usage", "From the clock times in your games", 196, [&](ImVec2 p, float w, float h) {
+    cards.push_back({"Time usage", "From the clock times in your games", 196 + 62, [&](ImVec2 p, float w, float h) {
         if (!s.timedGames) return emptyNote(dl, p, w, h, "No clock data", "These games have no [%clk] times");
         int losses = s.wdl[2];
         struct Mini { std::string label, value, sub; };
@@ -697,6 +803,42 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
             textRight(dl, f.mono, 12, {p.x + w, yy - 2}, t >= 0 ? theme::text : theme::dim,
                       t < 0 ? "–" : t < 60 ? fmt("%.1fs", t) : fmt("%.1fm", t / 60));
             yy += 26;
+        }
+        // low clock: how often it costs the game, and a faster practice game vs the engine (never counts)
+        yy += 4;
+        dl->AddLine({p.x, yy}, {p.x + w, yy}, theme::line);
+        yy += 12;
+        bool practice = view != View::Friend;
+        float pbw = practice ? 178 : 0, tx = w - pbw - (practice ? 12 : 0);
+        std::string l1, l2;
+        if (s.lowClockGames) {
+            l1 = "You lose " + pct(s.lowClockLosses, s.lowClockGames) + " of games where your clock got under " +
+                 std::to_string(kLowClockSec) + " s";
+            l2 = std::to_string(s.lowClockLosses) + " of " + std::to_string(s.lowClockGames) + " games started with " +
+                 std::to_string(kLowClockMinBase / 60) + "+ minutes" +
+                 (s.lowClockGames < kLowSample ? " · low confidence" : "");
+        } else {
+            l1 = "Your clock never got under " + std::to_string(kLowClockSec) + " s";
+            l2 = "in games started with " + std::to_string(kLowClockMinBase / 60) + "+ minutes";
+        }
+        ImGui::PushFont(f.ui, 13);
+        std::string e1 = ellipsize(l1, tx);
+        ImGui::PopFont();
+        ImGui::PushFont(f.ui, 12);
+        std::string e2 = ellipsize(l2, tx);
+        ImGui::PopFont();
+        text(dl, f.ui, 13, {p.x, yy}, s.lowClockGames ? theme::text : theme::dim, e1);
+        text(dl, f.ui, 12, {p.x, yy + 19}, theme::dim, e2);
+        if (e1 != l1 && ImGui::IsMouseHoveringRect({p.x, yy}, {p.x + tx, yy + 34})) ImGui::SetTooltip("%s\n%s", l1.c_str(), l2.c_str());
+        if (practice) {
+            static const int kFast[][2] = {{1, 0}, {3, 0}, {5, 0}, {10, 0}, {5, 0}};  // minutes + s per class
+            const int* fc = kFast[std::clamp(s.ratingClass, 0, kTimeClassCount - 1)];
+            ImGui::SetCursorScreenPos({p.x + w - pbw, yy + 1});
+            std::string bl = "Practice " + std::to_string(fc[0]) + "+" + std::to_string(fc[1]) + " vs engine";
+            if (ImGui::Button(bl.c_str(), {pbw, 30})) practiceClock(fc[0], fc[1]);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("A game against the engine on a faster clock, to get used to playing quickly.\n"
+                                  "Games against the engine never count in your stats.");
         }
     }});
 
@@ -823,6 +965,110 @@ void App::Impl::drawStatsCards(const Stats& s, float W) {
             ImGui::PopID();
         }
     }});
+
+    // streaks, and accuracy right after a loss / a win
+    cards.push_back({"Streaks", "Wins and losses in a row, and how you play in the next game", 196, [&](ImVec2 p, float w, float h) {
+        if (!s.games) return emptyNote(dl, p, w, h, "No games", nullptr);
+        auto& k = s.streaks;
+        auto games = [](int n) { return std::to_string(n) + (n == 1 ? " game" : " games"); };
+        struct Mini { std::string label, value; ImU32 col; };
+        Mini m[3] = {
+            {"Current streak", k.current > 0 ? std::to_string(k.current) + (k.current == 1 ? " win" : " wins")
+                               : k.current < 0 ? std::to_string(-k.current) + (k.current == -1 ? " loss" : " losses") : "–",
+             k.current > 0 ? theme::win : k.current < 0 ? theme::loss : theme::dim},
+            {"Longest winning", k.longestWin ? std::to_string(k.longestWin) : "–", theme::text},
+            {"Longest losing", k.longestLoss ? std::to_string(k.longestLoss) : "–", theme::text},
+        };
+        float cw = (w - 2 * kGap) / 3;
+        for (int i = 0; i < 3; i++) {
+            float x = p.x + i * (cw + kGap);
+            ImGui::PushFont(f.ui, 13);
+            std::string l = ellipsize(m[i].label, cw);
+            ImGui::PopFont();
+            text(dl, f.ui, 13, {x, p.y}, theme::dim, l);
+            text(dl, f.mono, 20, {x, p.y + 18}, m[i].col, m[i].value);
+        }
+        float yy = p.y + 62;
+        auto& t = s.tilt;
+        text(dl, f.ui, 13, {p.x, yy}, theme::dim, "Accuracy in your next game (within 2 hours)");
+        yy += 24;
+        struct Row { const char* label; double acc; int n; };
+        Row rows[2] = {{"After a win", t.afterWin, t.winN}, {"After a loss", t.afterLoss, t.lossN}};
+        float lw = 96, vw = 150, bw = w - lw - vw;
+        for (auto& r : rows) {
+            text(dl, f.ui, 14, {p.x, yy - 3}, theme::text, r.label);
+            dl->AddRectFilled({p.x + lw, yy}, {p.x + lw + bw, yy + 10}, theme::panel2, 4);
+            if (r.acc >= 0) dl->AddRectFilled({p.x + lw, yy}, {p.x + lw + std::max(4.f, bw * (float)r.acc / 100), yy + 10}, theme::accent, 4);
+            std::string v = r.acc >= 0 ? fmt("%.1f", r.acc) : "–";
+            textRight(dl, f.mono, 12, {p.x + w, yy - 2}, r.n && r.n < kLowSample ? theme::dim : theme::text,
+                      v + "  " + games(r.n) + (r.n && r.n < kLowSample ? "*" : ""));
+            yy += 26;
+        }
+        std::string verdict;
+        if (t.winN >= kLowSample && t.lossN >= kLowSample) {
+            double d = t.afterLoss - t.afterWin;
+            verdict = d <= -3 ? "You play worse right after a loss: a short break may help."
+                    : d >= 3  ? "You play better right after a loss: losses sharpen you."
+                              : "A loss doesn't change how well you play the next game.";
+        } else if (t.winN || t.lossN) {
+            verdict = "* low confidence: fewer than " + std::to_string(kLowSample) + " games";
+        } else {
+            verdict = "Needs analyzed games played within 2 hours of each other";
+        }
+        ImGui::PushFont(f.ui, 12);
+        std::string ve = ellipsize(verdict, w);
+        ImGui::PopFont();
+        text(dl, f.ui, 12, {p.x, yy + 2}, theme::dim, ve);
+    }});
+
+    // openings to work on: 5+ games, scoring under 40%
+    {
+        std::vector<Stats::OpeningStat> gaps[2];
+        int nGaps = 0;
+        for (int c = 0; c < 2; c++)
+            if (statsColor != 2 - c) {
+                gaps[c] = repertoireGaps(s.openings[c]);
+                if (gaps[c].size() > 5) gaps[c].resize(5);
+                nGaps += (int)gaps[c].size() + !gaps[c].empty();  // rows + a color header
+            }
+        cards.push_back({"Openings to work on", "Played " + std::to_string(kGapMinGames) + "+ times, scoring under " +
+                                                    fmt("%.0f%%", 100 * kGapMaxScore) + " (a draw counts half)",
+                         std::max(nGaps, 3) * 34.f, [&, gaps, nGaps](ImVec2 p, float w, float h) {
+            if (!nGaps) return emptyNote(dl, p, w, h, "No weak spots", "No opening you've played 5+ times scores under 40%");
+            bool links = view != View::Friend;  // a friend's openings: no navigation
+            float bw = links ? 74 : 0, sw = 52, gw = 72, nw = w - 2 * bw - sw - gw - 24;
+            float yy = p.y;
+            for (int c = 0; c < 2; c++) {
+                if (gaps[c].empty()) continue;
+                text(dl, f.ui, 12, {p.x, yy + 8}, theme::dim, c ? "As Black" : "As White");
+                yy += 34;
+                for (auto& o : gaps[c]) {
+                    ImGui::PushID(c * 100 + (int)(&o - gaps[c].data()));
+                    int n = o.wdl[0] + o.wdl[1] + o.wdl[2];
+                    ImGui::PushFont(f.ui, 14);
+                    std::string nm = ellipsize(o.name, nw);
+                    ImGui::PopFont();
+                    text(dl, f.ui, 14, {p.x, yy + 5}, theme::text, nm);
+                    if (nm != o.name && ImGui::IsMouseHoveringRect({p.x, yy}, {p.x + nw, yy + 28})) ImGui::SetTooltip("%s", o.name.c_str());
+                    float x = p.x + nw + 8;
+                    textRight(dl, f.mono, 12, {x + gw, yy + 7}, theme::dim, std::to_string(n) + (n == 1 ? " game" : " games"));
+                    textRight(dl, f.mono, 13, {x + gw + 8 + sw, yy + 6}, theme::loss, fmt("%.0f%%", 100 * scoreOf(o.wdl)));
+                    if (ImGui::IsMouseHoveringRect({x, yy}, {x + gw + 8 + sw, yy + 28}))
+                        ImGui::SetTooltip("Won %d, drew %d, lost %d", o.wdl[0], o.wdl[1], o.wdl[2]);
+                    if (links) {
+                        ImGui::SetCursorScreenPos({p.x + w - 2 * bw - 4, yy});
+                        if (ImGui::Button("Explore", {bw, 28})) exploreOpening(c, o.name);
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Your games in this opening, move by move (Openings page)");
+                        ImGui::SetCursorScreenPos({p.x + w - bw, yy});
+                        if (ImGui::Button("Learn", {bw, 28})) trainCourse(c, o.name);
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Practice its main lines as %s (Train page)", c ? "Black" : "White");
+                    }
+                    ImGui::PopID();
+                    yy += 34;
+                }
+            }
+        }});
+    }
 
     // openings per color
     for (int c = 0; c < 2; c++) {

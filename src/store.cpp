@@ -2,6 +2,7 @@
 #include <nlohmann/json.hpp>
 #include <sqlite3.h>
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <set>
@@ -129,10 +130,14 @@ std::optional<ReviewSummary> parseSummary(const std::string& text) try {
 
 }  // namespace
 
+std::atomic<uint64_t> gVersion{0};  // shared by every Store: a version value is never reused
+
 struct Store::Impl {
     sqlite3* db = nullptr;
     std::mutex m;
     std::string err;
+    uint64_t ver = ++gVersion;
+    void bump() { ver = ++gVersion; }  // games or reviews written (under m)
 
     bool exec(const char* sql) {
         char* e = nullptr;
@@ -265,6 +270,7 @@ Store::~Store() {
 
 bool Store::open(const std::string& path) {
     std::lock_guard l(d->m);
+    d->bump();
     if (d->db) sqlite3_close(d->db), d->db = nullptr;
     if (sqlite3_open(path.c_str(), &d->db) != SQLITE_OK) {
         d->err = d->db ? sqlite3_errmsg(d->db) : "cannot open database";
@@ -318,6 +324,16 @@ bool Store::open(const std::string& path) {
     Stmt q(d->db, "SELECT 1 FROM profiles WHERE guest=1");
     if (!q.row()) return d->exec("INSERT INTO profiles(name,avatar,guest) VALUES('Guest','preset:guest',1)");
     return true;
+}
+
+uint64_t Store::version() {
+    std::lock_guard l(d->m);
+    int64_t dv = 0;  // bumped by other connections' commits only
+    if (d->db) {
+        Stmt q(d->db, "PRAGMA data_version");
+        if (q.row()) dv = q.i(0);
+    }
+    return (d->ver << 32) ^ (uint64_t)dv;
 }
 
 std::string Store::error() const {
@@ -394,6 +410,7 @@ void Store::saveProfile(Profile& p) {
 
 void Store::deleteProfile(int64_t id) {
     std::lock_guard l(d->m);
+    d->bump();
     Stmt q(d->db, "DELETE FROM profiles WHERE id=? AND guest=0");
     q.bind(id).run();
     d->noteErr();
@@ -408,6 +425,7 @@ void Store::setAccountSync(int64_t accountId, int64_t newest, int64_t oldest) {
 
 int64_t Store::upsertGame(GameRow& g, bool* inserted) {
     std::lock_guard l(d->m);
+    d->bump();
     int64_t id = 0;
     if (!g.siteId.empty()) {
         Stmt q(d->db, "SELECT id FROM games WHERE profile_id=? AND site=? AND site_id=?");
@@ -519,6 +537,7 @@ std::vector<GameRow> Store::countedRows(int64_t profileId, GameFilter f) {
 
 void Store::setOpening(int64_t gameId, const std::string& eco, const std::string& name) {
     std::lock_guard l(d->m);
+    d->bump();
     Stmt q(d->db, "UPDATE games SET eco=?,opening=? WHERE id=?");
     q.bind(eco, name, gameId).run();
     d->noteErr();
@@ -526,6 +545,7 @@ void Store::setOpening(int64_t gameId, const std::string& eco, const std::string
 
 void Store::updateGameMeta(const GameRow& g) {
     std::lock_guard l(d->m);
+    d->bump();
     // vs_bot only turns on; a bot game never counts (evaluated against the old vs_bot too)
     Stmt q(d->db, "UPDATE games SET favorite=?,tags=?,notes=?,user_color=?,counts=? AND NOT max(vs_bot,?),"
                   "vs_bot=max(vs_bot,?) WHERE id=?");
@@ -535,6 +555,7 @@ void Store::updateGameMeta(const GameRow& g) {
 
 void Store::clearReview(int64_t gameId) {
     std::lock_guard l(d->m);
+    d->bump();
     Stmt a(d->db, "DELETE FROM reviews WHERE game_id=?");
     a.bind(gameId).run();
     Stmt b(d->db, "UPDATE games SET review_depth=0,acc_white=0,acc_black=0,est_white=0,est_black=0,brill_white=0,"
@@ -545,6 +566,7 @@ void Store::clearReview(int64_t gameId) {
 
 void Store::deleteGame(int64_t id) {
     std::lock_guard l(d->m);
+    d->bump();
     Stmt q(d->db, "DELETE FROM games WHERE id=?");
     q.bind(id).run();
     d->noteErr();
@@ -737,6 +759,7 @@ std::vector<int64_t> Store::unreviewed(int64_t profileId, int limit) {
 
 void Store::saveReview(int64_t gameId, int depth, const std::vector<PosEval>& evals, const ReviewResult& r) {
     std::lock_guard l(d->m);
+    d->bump();
     std::string pgn;
     {
         Stmt q(d->db, "SELECT pgn FROM games WHERE id=?");

@@ -5,8 +5,15 @@
 #include "store.hpp"
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
+
+// Date ranges of the Stats and Openings pages (days 0: all time). kRangeSync is the Stats page's extra choice:
+// games since the sync before the newest one that brought games.
+inline const char* const kRangeLabels[] = {"7 days", "30 days", "90 days", "1 year", "All time", "Since sync"};
+inline const int kRangeDays[] = {7, 30, 90, 365, 0, 0};
+constexpr int kRangeCount = 5, kRangeAll = 4, kRangeSync = 5;
 
 struct StatsFilter {
     std::string timeClass;          // "" = any
@@ -43,6 +50,24 @@ struct GameRating {
 };
 // rows oldest first, as from Store::countedRows; aborted games (< kMinPliesForStats) are skipped
 std::vector<GameRating> opcanRatings(const std::vector<GameRow>& rows);
+
+// Every counted game of a profile (Store::statsGames, no filter: never bots, oldest first) and their opcan ratings,
+// cached per profile until Store::version() changes. Every stat below is computed from these.
+struct CountedGames {
+    std::vector<StatsGame> games;
+    std::vector<GameRating> ratings;
+};
+std::shared_ptr<const CountedGames> countedGames(Store& store, int64_t profileId);
+
+// Streaks over results oldest first (0 win, 1 draw, 2 loss, -1 unfinished: skipped); a draw ends a streak.
+struct Streaks { int current = 0, longestWin = 0, longestLoss = 0; };  // current > 0: wins in a row, < 0: losses
+Streaks streaksOf(const std::vector<int>& outcomes);
+
+// Tilt: the user's accuracy in the next game after a loss / a win, when it ended within kTiltGap of it.
+constexpr int64_t kTiltGap = 2 * 3600;
+struct SeqGame { int64_t t; int outcome; double acc; };  // oldest first; acc -1: n/a (not analyzed, too few moves)
+struct Tilt { double afterLoss = -1, afterWin = -1; int lossN = 0, winN = 0; };
+Tilt tiltOf(const std::vector<SeqGame>& games);
 
 struct Stats {
     // counted games in the filter (never bot games, never aborted ones: < kMinPliesForStats plies), of which
@@ -84,6 +109,8 @@ struct Stats {
 
     // time usage (games with clock data)
     int timedGames = 0, timeTrouble = 0, lostOnTime = 0;
+    // decided games starting with >= kLowClockMinBase s where the user's clock fell under kLowClockSec, and the lost ones
+    int lowClockGames = 0, lowClockLosses = 0;
     double avgMoveTime[3] = {-1, -1, -1};  // seconds per user move, by phase
     double accNormal = -1, accTrouble = -1;  // mean per-move accuracy (analyzed games)
     int movesNormal = 0, movesTrouble = 0;
@@ -104,15 +131,55 @@ struct Stats {
     PatternStat patterns[(int)Pattern::Count];
     int badMoves = 0;  // user's Inaccuracy/Mistake/Miss/Blunder moves (sum of pattern counts)
 
+    Streaks streaks;
+    Tilt tilt;
+
+    // the filter's headline numbers, and those of the equal-length window just before it (finite ranges only)
+    struct Headline {
+        int games = 0, analyzed = 0, decided = 0;
+        double winRate = -1, score = -1;  // percent of decided games; score counts a draw as half
+        double accuracy = -1, blundersPerGame = -1;
+        int performance = 0, perfGames = 0;
+    };
+    Headline headline() const;
+    std::optional<Headline> prior;
+    int64_t priorSpan = 0;  // seconds
+
+    // last 7 days, whatever the filter (Stats page only, see weeklyDigest)
+    struct Digest {
+        int games = 0, wdl[3] = {}, analyzed = 0;
+        struct G { int64_t id = 0, t = 0; double acc = -1; std::string opp; } best, worst;  // by the user's accuracy
+        int pattern = -1, patternN = 0;  // the most common mistake pattern
+        int puzzles = 0;                 // the user's Mistake / Miss / Blunder moves (Train page puzzles)
+        std::vector<int64_t> analyzedIds;
+    };
+    std::optional<Digest> digest;
+
     int renamedOpenings = 0;  // rows whose opening name was corrected from the book
     bool cancelled = false;
 };
+
+constexpr int kLowSample = 5;  // fewer games than this behind a number: low confidence
+constexpr int kLowClockSec = 30, kLowClockMinBase = 180;
+
+// Openings (one color's) worth work: >= kGapMinGames decided games scoring under kGapMaxScore, worst first.
+constexpr int kGapMinGames = 5;
+constexpr double kGapMaxScore = 0.4;
+double scoreOf(const int wdl[3]);  // (W + D/2) / decided, -1 if none
+std::vector<Stats::OpeningStat> repertoireGaps(const std::vector<Stats::OpeningStat>& os);
+// The moves of an opening family's main line in the book (its own entry, else its shortest named line).
+std::vector<chess::Move> familyLine(const Openings& book, const std::string& family);
+
+// The last 7 days before now: games, results, best / worst game and the most common mistake pattern.
+Stats::Digest weeklyDigest(Store& store, int64_t profileId, const Openings& book, int64_t now,
+                           const std::atomic<bool>* cancel = nullptr);
 
 // Opening family of a full opening name ("Sicilian Defense: Open" -> "Sicilian Defense").
 std::string openingFamily(const std::string& name);
 
 // Computes stats for profileId. Openings from the book are written back to rows whose stored name
-// differs (chess.com URL names), when renameOpenings is set. Checks *cancel between games.
+// differs (chess.com URL names), when renameOpenings is set. Checks *cancel between games. With f.since set, also
+// fills prior from [since - span, since), span = (until or now) - since.
 Stats computeStats(Store& store, int64_t profileId, const StatsFilter& f, const Openings& book,
                    const std::atomic<bool>* cancel = nullptr, bool renameOpenings = true);
 

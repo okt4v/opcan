@@ -298,6 +298,13 @@ void App::Impl::openPlaySetup() {
     playSetup.open = true;
 }
 
+void App::Impl::practiceClock(int minutes, int inc) {
+    if (enginePath.empty()) return notify("No engine to play against. Set one in Settings");
+    open(*gameFromFen(Board().getFen()));  // an analysis board to play from
+    openPlaySetup();
+    playSetup.clock = 3, playSetup.minutes = minutes, playSetup.inc = inc;
+}
+
 void App::Impl::drawPlaySetup() {
     if (playSetup.open && !ImGui::IsPopupOpen("Play vs engine")) ImGui::OpenPopup("Play vs engine");
     ImGui::SetNextWindowSize({400, 0}, ImGuiCond_Appearing);
