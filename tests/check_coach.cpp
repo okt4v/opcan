@@ -28,7 +28,7 @@ void checkCoach() {
     if (std::getenv("OPCAN_COACH_DUMP")) std::puts(f.text.c_str());
     CHECK(has(f.text, "Black just played 3... Nf6. Classification: blunder."));
     CHECK(has(f.text, "Evaluation before Nf6: about equal. After Nf6: White has a forced mate in 1.\n"));
-    CHECK(has(f.text, "Better for Black was 3... g6 instead of Nf6. Engine line: Black: g6 / White: Qf3 / Black: Nf6\n"));
+    CHECK(has(f.text, "Better for Black was 3... g6 instead of Nf6. Engine line: Black: 3... g6 / White: 4. Qf3 / Black: 4... Nf6\n"));
     CHECK(has(f.text, "Now White can checkmate at once with 4. Qxf7#."));
     CHECK(has(f.text, "Material: even."));
     CHECK(has(f.text, "White pieces attacked and undefended: white pawn on e4, white queen on h5."));
@@ -64,7 +64,16 @@ void checkCoach() {
     in.userColor = 1;
     Facts uf = buildFacts(in);
     CHECK(has(uf.text, "Sides: you play Black, your opponent plays White."));
-    CHECK(has(uf.text, "Black (you) just played 3... Nf6."));
+    CHECK(has(uf.text, "You (Black) just played 3... Nf6."));
+    CHECK(has(uf.text, "Side to move now: White (your opponent).\n"));
+    CHECK(has(uf.text, "Better for you (Black) was 3... g6 instead of Nf6. Engine line: you (Black): 3... g6 / your opponent (White): 4. Qf3 / you (Black): 4... Nf6\n"));
+    CHECK(has(uf.text, "Now your opponent (White) can checkmate at once with 4. Qxf7#."));
+    {  // the prompts restate the user's color and the side to move, and label the move with its color and player
+        std::string card = cardPrompt(uf, "Nf6").back().content, chat = chatTurn(uf, "", "Why?");
+        for (auto& p : {card, chat}) CHECK(has(p, "You play Black, your opponent plays White. White (your opponent) is to move now."));
+        CHECK(has(card, "Nf6, played by you (Black)"));
+        CHECK(has(cardPrompt(f, "Nf6").back().content, "White is to move now.\nExplain the move just played, Nf6, played by Black,"));
+    }
     CHECK(uf.summary == "Your Nf6 is a blunder: it allows your opponent's Qxf7#, which is checkmate. You should have played g6 instead. Your opponent has a forced mate.");
     in.userColor = -1;
 

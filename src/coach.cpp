@@ -266,7 +266,7 @@ int betterSide(Score s, Color stm, bool* win = nullptr) {
     return std::abs(cp) < 40 ? -1 : cp > 0 ? 0 : 1;
 }
 
-// "White: Bxf7+ / Black: Kxf7 / White: Ng5+" (each move with its side); records the moves in f.
+// "White: 5. Bxf7+ / Black: 5... Kxf7 / White: 6. Ng5+" (each move with its side and number); records the moves in f.
 std::string sideLine(const std::string& fen, const std::vector<std::string>& pv, size_t maxPlies, Facts& f,
                      const std::function<std::string(int)>& who, std::string* uciOut = nullptr) {
     Board b(fen);
@@ -279,7 +279,7 @@ std::string sideLine(const std::string& fen, const std::vector<std::string>& pv,
         f.sans.insert(stripCheck(s));
         f.moves.insert({stripCheck(s), side});
         if (uciOut) *uciOut += (uciOut->empty() ? "" : " ") + pv[i];
-        out += (out.empty() ? "" : " / ") + who(side) + ": " + s;
+        out += (out.empty() ? "" : " / ") + who(side) + ": " + std::to_string(b.fullMoveNumber()) + (side ? "... " : ". ") + s;
         b.makeMove(m);
     }
     return out;
@@ -489,6 +489,10 @@ Facts buildFacts(const FactInput& in) {
         std::string c = side ? "Black" : "White";
         return user < 0 ? c : c + (side == user ? " (you)" : " (your opponent)");
     };
+    auto player = [&](int side) -> std::string {  // a move's label: "you (Black)", "your opponent (White)"
+        std::string c = side ? "Black" : "White";
+        return user < 0 ? c : who(side) + " (" + c + ")";
+    };
     auto is = [&](int side) { return who(side) == "you" ? "are" : "is"; };
     auto has = [&](int side) { return who(side) == "you" ? "have" : "has"; };
     auto evalWords = [&](Score sc, Color stm) -> std::string {  // "White (you) is winning"
@@ -511,12 +515,12 @@ Facts buildFacts(const FactInput& in) {
     std::string bestSan, threatSan, threatLine, threatUci, bestLine;
     if (played != Move::NO_MOVE && !in.bestPv.empty() && in.bestPv[0] != in.moveUci) {
         bestSan = sanOf(before, in.bestPv[0]);
-        if (!bestSan.empty()) bestLine = sideLine(in.fenBefore, in.bestPv, 6, f, [&](int s) { return std::string(s ? "Black" : "White"); });
+        if (!bestSan.empty()) bestLine = sideLine(in.fenBefore, in.bestPv, 6, f, player);
     }
     if (played != Move::NO_MOVE && !in.replyPv.empty()) {
         threatSan = sanOf(after, in.replyPv[0]);
         if (!threatSan.empty())
-            threatLine = sideLine(f.fen, in.replyPv, 4, f, [&](int s) { return std::string(s ? "Black" : "White"); }, &threatUci);
+            threatLine = sideLine(f.fen, in.replyPv, 4, f, player, &threatUci);
     }
     f.bestSan = bestSan, f.threatSan = threatSan;
 
@@ -586,9 +590,10 @@ Facts buildFacts(const FactInput& in) {
     if (user >= 0)
         line(std::string("Sides: you play ") + (user ? "Black" : "White") + ", your opponent plays " + (user ? "White" : "Black") +
              ". Say \"you\" for " + (user ? "Black" : "White") + " and \"your opponent\" for " + (user ? "White" : "Black") + ".");
+    line("Side to move now: " + tagged(stmAfter) + ".");
 
     if (played != Move::NO_MOVE) {
-        std::string s = tagged(f.mover) + " just played " + withNum(before, playedSan);
+        std::string s = cap(player(f.mover)) + " just played " + withNum(before, playedSan);
         if (in.cls != Cls::None) s += ". Classification: " + clsWord(in.cls);
         line(s + (in.uci ? " (UCI " + in.moveUci + ")." : "."));
         Piece cap = before.at(played.to());
@@ -607,18 +612,18 @@ Facts buildFacts(const FactInput& in) {
             line(e);
         }
         if (!in.bestPv.empty() && in.bestPv[0] == in.moveUci)
-            line(playedSan + " was the engine's top move for " + tagged(f.mover) + ": nothing was better.");
+            line(playedSan + " was the engine's top move for " + player(f.mover) + ": nothing was better.");
         else if (!bestSan.empty())
-            line("Better for " + tagged(f.mover) + " was " + withNum(before, bestSan) + " instead of " + playedSan + ". Engine line: " + bestLine);
+            line("Better for " + player(f.mover) + " was " + withNum(before, bestSan) + " instead of " + playedSan + ". Engine line: " + bestLine);
         if (!threatSan.empty()) {
             int opp = 1 - f.mover;
             std::string u = in.uci ? " (UCI " + threatUci + ")" : "";
-            if (threatSan.back() == '#') line("Now " + tagged(opp) + " can checkmate at once with " + withNum(after, threatSan) + "." + u);
-            else if (bad) line("Now " + tagged(opp) + " threatens " + withNum(after, threatSan) + ". Engine line: " + threatLine + u);
-            else line("Best reply for " + tagged(opp) + ": " + withNum(after, threatSan) + ". Engine line: " + threatLine + u);
+            if (threatSan.back() == '#') line("Now " + player(opp) + " can checkmate at once with " + withNum(after, threatSan) + "." + u);
+            else if (bad) line("Now " + player(opp) + " threatens " + withNum(after, threatSan) + ". Engine line: " + threatLine + u);
+            else line("Best reply for " + player(opp) + ": " + withNum(after, threatSan) + ". Engine line: " + threatLine + u);
         }
     } else {
-        line(tagged(stmAfter) + " to move.");
+        if (user < 0) line(tagged(stmAfter) + " to move.");  // else the "Side to move now" line says it
         if (in.evalAfter) line("Evaluation: " + evalWords(*in.evalAfter, after.sideToMove()) + ".");
     }
 
@@ -704,7 +709,7 @@ Facts buildFacts(const FactInput& in) {
         for (auto& l : in.liveLines) {
             if (l.pv.empty() || k >= 3) continue;
             std::string u;
-            std::string txt = sideLine(f.fen, l.pv, 6, f, [&](int s) { return std::string(s ? "Black" : "White"); }, &u);
+            std::string txt = sideLine(f.fen, l.pv, 6, f, player, &u);
             if (txt.empty()) continue;
             std::string e = evalWords(l.score, after.sideToMove());
             t += "  " + std::to_string(++k) + ") " + e + ": " + txt + (in.uci ? " (UCI " + u + ")" : "") + "\n";
@@ -1292,21 +1297,35 @@ const char* kChatSys =
 
 }  // namespace
 
+namespace {
+const char* colorName(int side) { return side ? "Black" : "White"; }
+// "You play Black, your opponent plays White. White (your opponent) is to move now."
+std::string sidesNote(const Facts& f) {
+    size_t sp = f.fen.find(' ');
+    int stm = sp != std::string::npos && sp + 1 < f.fen.size() && f.fen[sp + 1] == 'b';
+    std::string s, t = colorName(stm);
+    if (f.userColor >= 0) {
+        s = std::string("You play ") + colorName(f.userColor) + ", your opponent plays " + colorName(1 - f.userColor) + ". ";
+        t += stm == f.userColor ? " (you)" : " (your opponent)";
+    }
+    return s + t + " is to move now.";
+}
+}  // namespace
+
 std::vector<ChatMsg> cardPrompt(const Facts& f, const std::string& moveSan) {
-    std::string who;  // "Black's Bg4 (your opponent's move)"
-    if (f.mover >= 0) {
-        who = std::string(f.mover ? "Black's " : "White's ") + moveSan;
-        if (f.userColor >= 0) who += f.mover == f.userColor ? " (your move)" : " (your opponent's move)";
-    } else who = moveSan;
+    std::string who = moveSan;  // "Bg4, played by your opponent (Black)"
+    if (f.mover >= 0)
+        who += std::string(", played by ") +
+               (f.userColor < 0 ? colorName(f.mover) : (f.mover == f.userColor ? "you (" : "your opponent (") + std::string(colorName(f.mover)) + ")");
     return {{"system", kCardSys},
-            {"user", "FACTS:\n" + f.text + "\nExplain the move just played, " + who +
+            {"user", "FACTS:\n" + f.text + "\n" + sidesNote(f) + "\nExplain the move just played, " + who +
                          ", to the player in 1 to 3 short sentences, keeping every move with its side."}};
 }
 
 const char* chatSystemPrompt() { return kChatSys; }
 
 std::string chatTurn(const Facts& f, const std::string& tagHint, const std::string& question) {
-    return "FACTS (current position):\n" + f.text + tagHint + "\nQuestion: " + question;
+    return "FACTS (current position):\n" + f.text + tagHint + "\n" + sidesNote(f) + "\nQuestion: " + question;
 }
 
 // ---------- tags ----------
