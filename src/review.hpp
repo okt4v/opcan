@@ -26,6 +26,8 @@ constexpr int kMinPliesForStats = 4;
 // A side that made fewer moves has no accuracy (-1, shown as n/a) and no estimated rating (0), and is
 // left out of accuracy, classification, pattern and phase stats.
 constexpr int kMinMovesForAccuracy = 5;
+// Below this many moves a side's estimated rating is too noisy to show (it is still stored for the stats).
+constexpr int kMinMovesForRating = 15;
 
 double winPercent(Score s);  // 0..100 for the side to move (lichess formula)
 // Retry a mistake: a try is accepted when it loses at most the Excellent margin of win% vs the best move.
@@ -54,6 +56,7 @@ struct ReviewResult {
     double accuracy[2] = {0, 0};    // [white, black]; -1 if that side made < kMinMovesForAccuracy moves
     int counts[2][(int)Cls::Count] = {};
     int estRating[2] = {0, 0};      // 0 when accuracy is -1
+    int estMargin[2] = {0, 0};      // ± around estRating, wider for short games; 0: don't show (< kMinMovesForRating moves)
     double phaseAccuracy[2][3] = {};  // -1 if the phase never happened (or accuracy is -1)
     std::string openingName, openingEco;
     const MoveReview* forNode(int node) const;  // nullptr if not a reviewed mainline move

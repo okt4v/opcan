@@ -69,9 +69,9 @@ int material(const Board& b, Color c) {
 }
 
 Cls phaseCls(double a) {
-    // ponytail: fixed accuracy cutoffs for the phase icons, tune against chess.com later
-    return a >= 95 ? Cls::Best : a >= 85 ? Cls::Excellent : a >= 75 ? Cls::Good : a >= 60 ? Cls::Inaccuracy
-         : a >= 45 ? Cls::Mistake : Cls::Blunder;
+    // chess.com publishes no cutoffs (it grades against peers): moveAccuracy() at win% losses 1/2/5/10/20, the class margins
+    return a >= 96 ? Cls::Best : a >= 92 ? Cls::Excellent : a >= 80 ? Cls::Good : a >= 64 ? Cls::Inaccuracy
+         : a >= 40 ? Cls::Mistake : Cls::Blunder;
 }
 
 }  // namespace
@@ -1311,11 +1311,20 @@ void App::Impl::drawSummary() {
         ImGui::TableNextRow(0, 26);
         ImGui::TableNextColumn();
         ImGui::TextUnformatted("Game rating");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Guessed from accuracy, a weak predictor: the range narrows with longer games.\n"
+                              "Not shown under %d moves.", kMinMovesForRating);
         for (int side = 0; side < 2; side++) {
             ImGui::TableSetColumnIndex(side ? 3 : 1);
+            if (r.estMargin[side] <= 0) {
+                ImGui::TextDisabled("–");
+                continue;
+            }
             ImGui::PushFont(f.bold, 15);
-            if (r.estRating[side] > 0) ImGui::Text("%d", r.estRating[side]);
-            else ImGui::TextDisabled("–");
+            ImGui::Text("≈%d", r.estRating[side]);
+            ImGui::PopFont();
+            ImGui::PushFont(f.ui, 12);  // the range under it: the column is too narrow for both on one line
+            ImGui::TextDisabled("± %d", r.estMargin[side]);
             ImGui::PopFont();
         }
         if (int u = userSide(); trends && trends->rating && u >= 0) {  // opcan rating: the user's change, the opponent's on the same scale

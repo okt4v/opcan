@@ -170,7 +170,7 @@ void checkReview() {
     CHECK(r.moves[6].cls == Cls::Blunder);
     CHECK(r.moves[6].bestSan == "Nxe5" && r.moves[6].bestPvSan.size() == 1);
     CHECK(r.moves[7].cls == Cls::Best && r.moves[8].cls == Cls::Best);
-    CHECK(r.accuracy[0] >= 0 && r.estRating[0] > 0);
+    CHECK(r.accuracy[0] >= 0 && r.estRating[0] > 0 && r.estMargin[0] == 0);  // 5 moves: kept for stats, not shown
     CHECK(r.forNode(r.line[7]) == &r.moves[6] && !r.forNode(0));
     CHECK(r.counts[0][(int)Cls::Blunder] == 1 && r.counts[1][(int)Cls::Book] == 3);
     CHECK(!r.openingName.empty() && !r.openingEco.empty());
@@ -181,6 +181,20 @@ void checkReview() {
     r = buildReview(syn, evals, book);
     CHECK(r.accuracy[0] > 99.9 && r.accuracy[1] > 99.9);
     CHECK(r.estRating[0] >= 2900 && r.phaseAccuracy[0][Endgame] == -1);
+
+    // game rating range: hidden under kMinMovesForRating moves, narrower for longer games
+    auto shuffle = [&](int moves) {  // knights out and back, every move the best
+        std::string pgn;
+        for (int i = 0; i < moves; i++) pgn += std::to_string(i + 1) + (i % 2 ? ". Ng1 Ng8 " : ". Nf3 Nf6 ");
+        auto g = parsePgn(pgn + "*");
+        return buildReview(g[0], std::vector<PosEval>(2 * moves + 1, ev(0, "")), book);
+    };
+    auto rs = shuffle(kMinMovesForRating - 1), rm = shuffle(kMinMovesForRating), rl = shuffle(80);
+    CHECK(rs.moves.size() == 2 * (kMinMovesForRating - 1) && rs.estRating[0] > 0);
+    CHECK(rs.estMargin[0] == 0 && rs.estMargin[1] == 0);
+    CHECK(rm.estMargin[0] > 0 && rm.estMargin[1] > 0 && rl.estMargin[0] > 0 && rl.estMargin[0] < rm.estMargin[0]);
+    std::printf("review: rating range ok (±%d at %d moves, ±%d at 80)\n", rm.estMargin[0], kMinMovesForRating,
+                rl.estMargin[0]);
     std::printf("review: synthetic ok (opening: %s %s)\n", r.openingEco.c_str(), r.openingName.c_str());
 
     // real engine run

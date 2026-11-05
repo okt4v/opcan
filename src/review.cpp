@@ -185,7 +185,7 @@ Move legalUci(const Board& b, const std::string& u) {
     return Move::NO_MOVE;
 }
 
-// ponytail: rough heuristic, accuracy is a weak rating predictor
+// accuracy is a weak rating predictor: shown with ratingMargin()
 int ratingFor(double acc) {
     static const double pts[][2] = {{0, 100},     {40, 400},    {50, 700},    {60, 1000},   {70, 1400}, {80, 1800},
                                     {85, 2050},   {90, 2350},   {95, 2700},   {98, 2900},   {100, 3000}};
@@ -195,6 +195,11 @@ int ratingFor(double acc) {
             return (int)std::lround(pts[i - 1][1] + t * (pts[i][1] - pts[i - 1][1]));
         }
     return 3000;
+}
+
+// ±300 at 40 moves, shrinking with sqrt(moves), to the nearest 50, 200..500
+int ratingMargin(int moves) {
+    return std::clamp((int)std::lround(300 * std::sqrt(40.0 / moves) / 50) * 50, 200, 500);
 }
 
 double stddev(const std::vector<double>& xs) {
@@ -361,6 +366,7 @@ ReviewResult buildReview(const Game& game, const std::vector<PosEval>& evals, co
             continue;
         }
         r.estRating[c] = ratingFor(r.accuracy[c]);
+        if (moved[c] >= kMinMovesForRating) r.estMargin[c] = ratingMargin(moved[c]);
         for (int p = 0; p < 3; p++) r.phaseAccuracy[c][p] = phaseCnt[c][p] ? phaseSum[c][p] / phaseCnt[c][p] : -1;
     }
     return r;
